@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Genix
+GenericName=3D CAD
+Comment=Parametric 3D CAD
+Exec=genix %f
+Icon=genix
+Terminal=false
+Categories=Graphics;Engineering;
+MimeType=application/x-genix;
+StartupWMClass=genix

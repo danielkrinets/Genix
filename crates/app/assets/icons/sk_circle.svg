@@ -1,0 +1,11 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g transform="translate(-787 -686)">
+<g>
+<g>
+<path d="M799 707C803.971 707 808 702.971 808 698C808 693.029 803.971 689 799 689C794.029 689 790 693.029 790 698C790 702.971 794.029 707 799 707Z" stroke="#D5D9DF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M793 704L805 692" stroke="#48C7FF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="2.3 2.3"/>
+<path d="M793 704L793.7 700.3L796.7 703.3L793 704ZM805 692L804.3 695.7L801.3 692.7L805 692Z" fill="#48C7FF"/>
+</g>
+</g>
+</g>
+</svg>

@@ -1,0 +1,13 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g transform="translate(-1107 -348)">
+<g>
+<g>
+<path d="M1115 353C1113.85 353.706 1112.93 354.731 1112.34 355.95C1111.76 357.169 1111.54 358.53 1111.72 359.87C1111.89 361.21 1112.45 362.47 1113.33 363.5C1114.2 364.529 1115.35 365.284 1116.65 365.672C1117.94 366.06 1119.32 366.065 1120.62 365.688C1121.92 365.31 1123.08 364.564 1123.96 363.542C1124.84 362.519 1125.41 361.263 1125.59 359.925C1125.78 358.587 1125.57 357.224 1125 356" stroke="#D5D9DF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="2 3"/>
+<path d="M1121 351H1117V355H1121V351Z" stroke="#D5D9DF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M1124 361H1128V365H1124V361ZM1110 361H1114V365H1110V361Z" stroke="#48C7FF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M1123 351C1126 352 1128 355 1128 358L1125 356" stroke="#48C7FF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M1119.9 359.1H1118.1V360.9H1119.9V359.1Z" fill="#48C7FF"/>
+</g>
+</g>
+</g>
+</svg>

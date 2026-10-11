@@ -1,0 +1,11 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g transform="translate(-467 -992)">
+<g>
+<g>
+<path d="M479 1001C481.761 1001 484 999.657 484 998C484 996.343 481.761 995 479 995C476.239 995 474 996.343 474 998C474 999.657 476.239 1001 479 1001Z" stroke="#D5D9DF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M474 998V1010C474 1014 484 1014 484 1010V998" stroke="#D5D9DF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M484 995L488 997V1012L484 1010V995Z" stroke="#48C7FF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+</g>
+</g>
+</svg>

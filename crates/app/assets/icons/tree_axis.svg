@@ -1,0 +1,12 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g transform="translate(-627 -416)">
+<g>
+<g>
+<path d="M631 436L636 431M642 425L647 420" stroke="#D5D9DF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3 2"/>
+<path d="M644 420H647V423" stroke="#D5D9DF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M636 431L642 425" stroke="#48C7FF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M639 431C640.657 431 642 429.657 642 428C642 426.343 640.657 425 639 425C637.343 425 636 426.343 636 428C636 429.657 637.343 431 639 431Z" stroke="#D5D9DF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+</g>
+</g>
+</svg>

@@ -1,0 +1,185 @@
+name: Genix — сборка для всех систем
+
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: genix-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    name: macOS (Apple Silicon + Intel)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+      - name: Сборка для Apple Silicon
+        run: cargo build --release -p fusion-app --target aarch64-apple-darwin
+      - name: Сборка для Intel
+        env:
+          CMAKE_OSX_ARCHITECTURES: x86_64
+        run: cargo build --release -p fusion-app --target x86_64-apple-darwin
+      - name: Универсальный бинарник
+        run: |
+          lipo -create target/aarch64-apple-darwin/release/genix target/x86_64-apple-darwin/release/genix -output genix-universal
+          lipo -info genix-universal
+      - name: Упаковка .app
+        run: packaging/macos/bundle.sh genix-universal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Genix-macOS
+          path: dist/Genix-macOS.zip
+
+  linux:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.arch == 'aarch64' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-22.04 }
+          - { arch: aarch64, runner: ubuntu-22.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Системные библиотеки
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev libgl1-mesa-dev libvulkan-dev curl file
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          key: ${{ matrix.arch }}
+      - name: Тесты
+        run: cargo test --release --workspace
+      - name: Сборка
+        run: cargo build --release -p fusion-app
+      - name: AppImage
+        run: packaging/linux/appimage.sh target/release/genix ${{ matrix.arch }}
+      - name: Архив tar.gz
+        run: |
+          mkdir -p dist/pkg && cp target/release/genix dist/pkg/ && cp README.md LICENSE dist/pkg/
+          tar -C dist/pkg -czf dist/Genix-linux-${{ matrix.arch }}.tar.gz .
+      - uses: taiki-e/install-action@v2
+        continue-on-error: true
+        with:
+          tool: cargo-deb,cargo-generate-rpm
+      - name: Пакет .deb (Debian, Ubuntu)
+        continue-on-error: true
+        run: cargo deb -p fusion-app --no-build -o dist/Genix-linux-${{ matrix.arch }}.deb
+      - name: Пакет .rpm (Fedora, RHEL, openSUSE — dnf)
+        continue-on-error: true
+        run: cargo generate-rpm -p crates/app -o dist/Genix-linux-${{ matrix.arch }}.rpm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Genix-linux-${{ matrix.arch }}
+          path: |
+            dist/*.AppImage
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+
+  windows:
+    name: Windows ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.arch == 'arm64' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: windows-latest, target: x86_64-pc-windows-msvc }
+          - { arch: arm64, runner: windows-11-arm, target: aarch64-pc-windows-msvc }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          key: ${{ matrix.arch }}
+      - name: Сборка
+        run: cargo build --release -p fusion-app --target ${{ matrix.target }}
+      - name: Упаковка zip
+        run: |
+          mkdir -p dist/pkg
+          cp target/${{ matrix.target }}/release/genix.exe dist/pkg/
+          cp README.md LICENSE dist/pkg/
+          7z a dist/Genix-windows-${{ matrix.arch }}.zip ./dist/pkg/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Genix-windows-${{ matrix.arch }}
+          path: dist/*.zip
+
+  freebsd:
+    name: FreeBSD x86_64
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Сборка в виртуальной машине FreeBSD
+        uses: cross-platform-actions/action@v0.26.0
+        with:
+          operating_system: freebsd
+          version: "14.2"
+          memory: 6G
+          shell: bash
+          run: |
+            sudo pkg install -y rust cmake gmake pkgconf libxkbcommon wayland libX11 libXcursor libXi libXrandr
+            cargo build --release -p fusion-app
+            mkdir -p dist/pkg && cp target/release/genix README.md LICENSE dist/pkg/
+            tar -C dist/pkg -czf dist/Genix-freebsd-x86_64.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Genix-freebsd-x86_64
+          path: dist/*.tar.gz
+
+  publish:
+    name: Публикация в Releases
+    needs: [macos, linux, windows, freebsd]
+    if: ${{ always() && needs.macos.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - run: ls -la out
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: genix-latest
+          name: Genix — последняя сборка
+          prerelease: true
+          make_latest: false
+          target_commitish: ${{ github.sha }}
+          body: |
+            ## Скачать
+            | Система | Файл |
+            |---|---|
+            | macOS (Apple Silicon и Intel) | `Genix-macOS.zip` |
+            | Windows 10/11 x64 | `Genix-windows-x86_64.zip` |
+            | Windows 11 ARM | `Genix-windows-arm64.zip` |
+            | Linux x86_64 | `Genix-linux-x86_64.AppImage`, `.deb`, `.rpm` или `.tar.gz` |
+            | Linux ARM64 | `Genix-linux-aarch64.AppImage`, `.deb`, `.rpm` или `.tar.gz` |
+            | FreeBSD x86_64 | `Genix-freebsd-x86_64.tar.gz` |
+
+            Если какого-то файла нет — эта сборка у него не удалась, остальные работают. Подробности — в `README.md`.
+            Сборка из коммита ${{ github.sha }}.
+          files: out/*

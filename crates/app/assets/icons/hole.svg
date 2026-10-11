@@ -1,0 +1,11 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g transform="translate(-947 -312)">
+<g>
+<g>
+<path d="M967.5 320.5V328L959 332.5L950.5 328V320.5L959 316L967.5 320.5ZM950.5 320.5L959 325L967.5 320.5" stroke="#D5D9DF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M959 322.3C960.712 322.3 962.1 321.494 962.1 320.5C962.1 319.506 960.712 318.7 959 318.7C957.288 318.7 955.9 319.506 955.9 320.5C955.9 321.494 957.288 322.3 959 322.3Z" stroke="#48C7FF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M959 322.3V328.7" stroke="#48C7FF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="2 2"/>
+</g>
+</g>
+</g>
+</svg>

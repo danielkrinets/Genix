@@ -1,0 +1,13 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g transform="translate(-627 -992)">
+<g>
+<g>
+<path d="M630 1007L637 996L648 1002L641 1013L630 1007Z" stroke="#D5D9DF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M633 1006L638 999L645 1003L633 1006Z" stroke="#D5D9DF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="2 3"/>
+<path d="M633.9 1005.1H632.1V1006.9H633.9V1005.1Z" fill="#48C7FF"/>
+<path d="M638.9 998.1H637.1V999.9H638.9V998.1Z" fill="#48C7FF"/>
+<path d="M645.9 1002.1H644.1V1003.9H645.9V1002.1Z" fill="#48C7FF"/>
+</g>
+</g>
+</g>
+</svg>

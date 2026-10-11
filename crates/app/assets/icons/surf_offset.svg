@@ -1,0 +1,11 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g transform="translate(-627 -1324)">
+<g>
+<g>
+<path d="M630 1336C635 1331 640 1340 647 1335L646 1343C640 1346 635 1337 630 1342V1336Z" stroke="#D5D9DF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M630 1330V1336M647 1329V1335" stroke="#D5D9DF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="1 3"/>
+<path d="M630 1330C635 1326 640 1334 647 1329M639 1337V1330M641 1332L639 1330L637 1332" stroke="#48C7FF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+</g>
+</g>
+</svg>

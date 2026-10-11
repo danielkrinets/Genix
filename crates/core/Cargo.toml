@@ -1,0 +1,11 @@
+[package]
+name = "fusion-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+earcut = "0.4.11"
+glam = "0.32"
+manifold-csg = { version = "0.4.1", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.152"

@@ -1,0 +1,16 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g transform="translate(-787 -312)">
+<g>
+<g>
+<path d="M799 319C800.823 319 802.3 318.194 802.3 317.2C802.3 316.206 800.823 315.4 799 315.4C797.177 315.4 795.7 316.206 795.7 317.2C795.7 318.194 797.177 319 799 319Z" stroke="#D5D9DF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M795.7 317.2C795.7 319.5 792 321 792 324C792 327 793.8 328.5 793.8 330.8M802.3 317.2C802.3 319.5 806 321 806 324C806 327 804.2 328.5 804.2 330.8" stroke="#D5D9DF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M799 332.8C801.872 332.8 804.2 331.905 804.2 330.8C804.2 329.695 801.872 328.8 799 328.8C796.128 328.8 793.8 329.695 793.8 330.8C793.8 331.905 796.128 332.8 799 332.8Z" stroke="#D5D9DF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M799 326.4C802.866 326.4 806 325.325 806 324C806 322.675 802.866 321.6 799 321.6C795.134 321.6 792 322.675 792 324C792 325.325 795.134 326.4 799 326.4Z" stroke="#48C7FF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<g>
+<path d="M792.9 323.1H791.1V324.9H792.9V323.1Z" fill="#48C7FF"/>
+<path d="M806.9 323.1H805.1V324.9H806.9V323.1Z" fill="#48C7FF"/>
+</g>
+</g>
+</g>
+</g>
+</svg>

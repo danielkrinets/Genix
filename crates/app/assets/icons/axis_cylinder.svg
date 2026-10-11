@@ -1,0 +1,11 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g transform="translate(-787 -992)">
+<g>
+<g>
+<path d="M799 1001C802.314 1001 805 999.657 805 998C805 996.343 802.314 995 799 995C795.686 995 793 996.343 793 998C793 999.657 795.686 1001 799 1001Z" stroke="#D5D9DF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M793 998V1010C793 1014 805 1014 805 1010V998" stroke="#D5D9DF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M799 995V1013" stroke="#48C7FF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3 2"/>
+</g>
+</g>
+</g>
+</svg>

@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/app"]
+
+# Быстрая программа в релизе; зависимости оптимизируются и в отладке — так интерфейс не тормозит.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.dev.package."*"]
+opt-level = 2
