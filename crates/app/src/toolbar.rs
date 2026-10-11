@@ -103,12 +103,24 @@ pub fn group(ui: &mut egui::Ui, title: &'static str, quick: &[&str], all: &'stat
         egui::popup::popup_below_widget(ui, popup_id, &title_resp, egui::popup::PopupCloseBehavior::CloseOnClick, |ui| {
             ui.set_min_width(250.0);
             for item in all {
-                let key = if item.key.is_empty() { String::new() } else { item.key.to_string() };
-                let btn = match crate::icons::icon(item.id, 16.0, ui.visuals().text_color()) {
-                    Some(img) => egui::Button::image_and_text(img, tr(item.label)),
-                    None => egui::Button::new(format!("{}  {}", item.icon, tr(item.label))),
-                };
-                let r = ui.add(btn.min_size(egui::vec2(230.0, 24.0)).shortcut_text(key).frame(false)).on_hover_text(tip(item));
+                // строка на всю ширину списка: подсветка при наведении не вылезает и не обрезается
+                let (rect, r) = ui.allocate_exact_size(egui::vec2(ui.available_width().max(250.0), 30.0), Sense::click());
+                let r = r.on_hover_text(tip(item));
+                let p = ui.painter();
+                if r.hovered() {
+                    p.rect_filled(rect.shrink2(egui::vec2(2.0, 1.0)), 5.0, ui.visuals().widgets.hovered.weak_bg_fill);
+                }
+                let col = ui.visuals().text_color();
+                match crate::icons::icon(item.id, 20.0, col) {
+                    Some(img) => img.paint_at(ui, egui::Rect::from_center_size(egui::pos2(rect.left() + 18.0, rect.center().y), egui::vec2(20.0, 20.0))),
+                    None => {
+                        p.text(egui::pos2(rect.left() + 18.0, rect.center().y), Align2::CENTER_CENTER, item.icon, FontId::proportional(15.0), col);
+                    }
+                }
+                p.text(egui::pos2(rect.left() + 36.0, rect.center().y), Align2::LEFT_CENTER, tr(item.label), FontId::proportional(13.5), col);
+                if !item.key.is_empty() {
+                    p.text(egui::pos2(rect.right() - 12.0, rect.center().y), Align2::RIGHT_CENTER, item.key, FontId::proportional(12.0), ui.visuals().weak_text_color());
+                }
                 if r.clicked() {
                     chosen = Some(item.id);
                 }

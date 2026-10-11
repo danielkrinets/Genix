@@ -170,8 +170,8 @@ pub struct App {
 
 /// Кнопка со значком из набора (нет значка — текстовый символ).
 fn icon_button(ui: &mut egui::Ui, id: &str, fallback: &str, selected: bool, tip: &str, min: egui::Vec2) -> bool {
-    let main = if selected { ACCENT } else { ui.visuals().text_color() };
-    let btn = match crate::icons::icon(id, 20.0, main) {
+    let main = if selected { Color32::WHITE } else { ui.visuals().text_color() };
+    let btn = match crate::icons::icon(id, 22.0, main) {
         Some(img) => egui::Button::image(img),
         None => egui::Button::new(RichText::new(fallback).size(16.0)),
     };
