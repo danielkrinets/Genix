@@ -202,6 +202,16 @@ fn eye_toggle(ui: &mut egui::Ui, vis: &mut bool, tip: &str) -> bool {
     false
 }
 
+/// Пункт меню со значком слева.
+fn menu_item(ui: &mut egui::Ui, icon: &str, text: &str) -> bool {
+    let col = ui.visuals().text_color();
+    let btn = match crate::icons::icon(icon, 16.0, col) {
+        Some(img) => egui::Button::image_and_text(img, text),
+        None => egui::Button::new(text),
+    };
+    ui.add(btn.min_size(egui::vec2(220.0, 26.0))).clicked()
+}
+
 fn plane_name(i: usize) -> &'static str {
     [tr("XY (верх)"), tr("XZ (перед)"), tr("YZ (право)")][i]
 }
@@ -1108,11 +1118,11 @@ impl App {
         egui::menu::bar(ui, |ui| {
             ui.add(egui::Image::from_bytes("bytes://genix/logo.svg", crate::home::LOGO_SVG.as_bytes().to_vec()).fit_to_exact_size(egui::vec2(18.0, 18.0)));
             ui.menu_button(tr("Файл"), |ui| {
-                if ui.button(tr("Новый                ⌘N")).clicked() {
+                if menu_item(ui, "file_new", tr("Новый                ⌘N")) {
                     ui.close_menu();
                     self.request(Confirm::New);
                 }
-                if ui.button(tr("Открыть…            ⌘O")).clicked() {
+                if menu_item(ui, "file_open", tr("Открыть…            ⌘O")) {
                     ui.close_menu();
                     self.request(Confirm::Open);
                 }
@@ -1127,24 +1137,24 @@ impl App {
                     }
                 });
                 ui.separator();
-                if ui.button(tr("Сохранить           ⌘S")).clicked() {
+                if menu_item(ui, "file_save", tr("Сохранить           ⌘S")) {
                     ui.close_menu();
                     self.save(false, now);
                 }
-                if ui.button(tr("Сохранить как…    ⇧⌘S")).clicked() {
+                if menu_item(ui, "file_saveas", tr("Сохранить как…    ⇧⌘S")) {
                     ui.close_menu();
                     self.save(true, now);
                 }
                 ui.separator();
-                if ui.button(tr("Экспорт STL (3D-печать)…")).clicked() {
+                if menu_item(ui, "file_export_stl", tr("Экспорт STL (3D-печать)…")) {
                     ui.close_menu();
                     self.export(false, now);
                 }
-                if ui.button(tr("Снимок модели PNG без фона…")).clicked() {
+                if menu_item(ui, "sk_photo", tr("Снимок модели PNG без фона…")) {
                     ui.close_menu();
                     self.export_png(now);
                 }
-                if ui.button(tr("Экспорт OBJ…")).clicked() {
+                if menu_item(ui, "file_export_obj", tr("Экспорт OBJ…")) {
                     ui.close_menu();
                     self.export(true, now);
                 }
@@ -1164,7 +1174,7 @@ impl App {
                     self.params_open = true;
                 }
                 ui.separator();
-                if ui.button(tr("Настройки…")).clicked() {
+                if menu_item(ui, "settings", tr("Настройки…")) {
                     ui.close_menu();
                     self.settings_open = true;
                 }
@@ -1900,6 +1910,7 @@ impl App {
         }
         self.paint_labels(ui, rect, &model);
         self.nav_bar(ui, rect, now);
+        self.value_box(ui, rect);
         match viewcube::show(ui, rect, &self.cam, self.theme == Theme::Dark) {
             CubeAction::View(n, r) => {
                 let (yaw, pitch) = Camera::angles_for(n, r);
@@ -2850,6 +2861,35 @@ impl App {
                     self.after_doc_change();
                 }
             }
+        }
+    }
+
+    /// Поле значения над моделью: главный размер текущей команды можно вписать прямо в окне (как в Fusion).
+    fn value_box(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        let Mode::Command(cmd) = &self.mode else { return };
+        let uid = cmd.uid;
+        let params = self.doc.params.clone();
+        let Some(f) = self.doc.feature_mut(uid) else { return };
+        let (label, unit, expr): (&str, &'static str, &mut Expr) = match &mut f.kind {
+            FeatureKind::Extrude { extent: fusion_core::doc::Extent::OneSide(e) | fusion_core::doc::Extent::Symmetric(e), .. } => ("Расстояние", "мм", e),
+            FeatureKind::Fillet { radius, .. } => ("Радиус", "мм", radius),
+            FeatureKind::Chamfer { dist, .. } => ("Расстояние", "мм", dist),
+            FeatureKind::Hole { dia, .. } => ("Диаметр", "мм", dia),
+            FeatureKind::Shell { thickness, .. } => ("Толщина", "мм", thickness),
+            FeatureKind::OffsetPlane { offset, .. } => ("Расстояние", "мм", offset),
+            _ => return,
+        };
+        let mut changed = false;
+        egui::Area::new(egui::Id::new("value_box")).fixed_pos(Pos2::new(rect.center().x, rect.top() + 14.0)).pivot(egui::Align2::CENTER_TOP).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(tr(label)).strong());
+                    changed = crate::widgets::expr_field(ui, ("value_box", uid), expr, &params, unit);
+                });
+            });
+        });
+        if changed {
+            self.after_doc_change();
         }
     }
 
