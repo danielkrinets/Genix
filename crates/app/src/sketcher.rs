@@ -1265,7 +1265,9 @@ impl SketchSession {
         // на грани тела сетка лежит в одной плоскости с гранью — рисуем её поверх, иначе её не видно
         let on_face = *pl != Plane::XY && *pl != Plane::XZ && *pl != Plane::YZ;
         let mut g = Vec::new();
-        render::grid_adaptive(&mut g, pl, center, wpp, ext, c.grid_minor, c.grid_major);
+        // на светлой грани тела обычная (светлая) сетка не видна — рисуем тёмную
+        let (gm, gM) = if on_face { (Color32::from_rgba_unmultiplied(25, 35, 50, 150), Color32::from_rgba_unmultiplied(25, 35, 50, 230)) } else { (c.grid_minor, c.grid_major) };
+        render::grid_adaptive(&mut g, pl, center, wpp, ext, gm, gM);
         if on_face { ov.lines_top.extend(g) } else { ov.lines.extend(g) }
         ov.lines.push(render::line(pl.to_world([-ext, 0.0]), pl.to_world([ext, 0.0]), Color32::from_rgb(210, 60, 60), 1.2));
         ov.lines.push(render::line(pl.to_world([0.0, -ext]), pl.to_world([0.0, ext]), Color32::from_rgb(60, 170, 60), 1.2));
