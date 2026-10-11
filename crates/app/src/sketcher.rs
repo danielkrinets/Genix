@@ -136,6 +136,7 @@ pub struct SketchSession {
     /// Число сторон правильного многоугольника.
     pub poly_sides: u32,
     pub trace: Option<crate::trace_ui::TraceDialog>,
+    pub show_constraints: bool,
     pending_resolve: bool,
     pub offset_dist: f64,
     pub corner_r: f64,
@@ -167,6 +168,7 @@ impl SketchSession {
             snap_grid: true,
             poly_sides: 6,
             trace: None,
+            show_constraints: false,
             pending_resolve: false,
             offset_dist: 5.0,
             corner_r: 5.0,
@@ -1193,6 +1195,7 @@ impl SketchSession {
         }
         ui.label(RichText::new(tr("ПАРАМЕТРЫ")).small().weak());
         ui.checkbox(&mut self.snap_grid, tr("Привязка к сетке"));
+        ui.checkbox(&mut self.show_constraints, tr("Показывать значки ограничений"));
         if ui.button(tr("Вспомогательная линия (X)")).on_hover_text(tr("Выбранные кривые станут вспомогательными (не образуют профилей) и обратно")).clicked() {
             self.toggle_construction(params);
         }
@@ -1259,7 +1262,11 @@ impl SketchSession {
         // сетка вокруг центра обзора
         let center = pl.to_local(cam.target);
         let ext = (cam.distance * 1.2).max(wpp * 800.0);
-        render::grid_adaptive(&mut ov.lines, pl, center, wpp, ext, c.grid_minor, c.grid_major);
+        // на грани тела сетка лежит в одной плоскости с гранью — рисуем её поверх, иначе её не видно
+        let on_face = *pl != Plane::XY && *pl != Plane::XZ && *pl != Plane::YZ;
+        let mut g = Vec::new();
+        render::grid_adaptive(&mut g, pl, center, wpp, ext, c.grid_minor, c.grid_major);
+        if on_face { ov.lines_top.extend(g) } else { ov.lines.extend(g) }
         ov.lines.push(render::line(pl.to_world([-ext, 0.0]), pl.to_world([ext, 0.0]), Color32::from_rgb(210, 60, 60), 1.2));
         ov.lines.push(render::line(pl.to_world([0.0, -ext]), pl.to_world([0.0, ext]), Color32::from_rgb(60, 170, 60), 1.2));
 
@@ -1452,6 +1459,10 @@ impl SketchSession {
         for (i, cons) in self.sketch.constraints.iter().enumerate() {
             let pick = Pick::Cons(i);
             let hl = self.selection.contains(&pick) || self.hover == Some(pick);
+            // значки ограничений (=, •, ⟂…) показываем только по запросу, чтобы не захламлять чертёж
+            if !cons.is_dimension() && !hl && !self.show_constraints && !matches!(self.tool, Tool::Cons(_)) {
+                continue;
+            }
             let col = if hl { c.sketch_selected } else { c.dim_text };
             let anchor = self.cons_anchor(cons, cam, rect, params);
             let Some((pos, text)) = anchor else { continue };

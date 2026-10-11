@@ -635,4 +635,7 @@ pub const EN: &[(&str, &str)] = &[
     ("Сменить лицензию", "Change license"),
     ("Завершить чертёж", "Finish blueprint"),
     ("Воспроизвести", "Play"),
+    ("Привязка к детали", "Snap to part"),
+    ("Поставить отверстие сюда (отступ от края — радиус + 2 мм)", "Place the hole here (edge inset — radius + 2 mm)"),
+    ("Показывать значки ограничений", "Show constraint badges"),
 ];

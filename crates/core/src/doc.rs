@@ -1179,6 +1179,27 @@ mod new_ops {
     }
 
     #[test]
+    fn editing_a_value_after_the_fact_rebuilds() {
+        // правка числа в уже созданном шаге (отверстие, масштаб) должна менять модель при том же Evaluator
+        let top = Plane { origin: [0.0, 0.0, 10.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+        let (mut d, body) = plate();
+        let hole = d.insert(FeatureKind::Hole { plane: top, at: [Expr::num(20.0), Expr::num(15.0)], dia: Expr::num(6.0), depth: None, kind: HoleKind::Simple });
+        d.insert(FeatureKind::Scale { bodies: vec![body], factor: [Expr::num(1.0), Expr::num(1.0), Expr::num(1.0)], uniform: true });
+        let mut ev = Evaluator::default();
+        ev.evaluate(&d);
+        let v1 = ev.model().bodies[0].solid.volume();
+        if let Some(f) = d.feature_mut(hole) {
+            if let FeatureKind::Hole { dia, .. } = &mut f.kind {
+                *dia = Expr::num(14.0);
+            }
+        }
+        ev.evaluate(&d);
+        let v2 = ev.model().bodies[0].solid.volume();
+        assert!(v2 < v1 - 500.0, "объём не изменился: {v1} -> {v2}");
+        assert!(ev.steps().iter().all(|s| s.error.is_none()));
+    }
+
+    #[test]
     fn shell_open_plate() {
         let top = Plane { origin: [0.0, 0.0, 10.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
         let (mut d, _) = plate();
@@ -1254,6 +1275,18 @@ mod new_ops {
         d.insert(FeatureKind::Fillet { body, edges, radius: Expr::num(3.0) });
         let ev = run(&d);
         assert!(ev.model().bodies[0].solid.volume() < 12000.0 - 100.0);
+        // правка радиуса после создания меняет результат
+        let (mut d, body) = plate();
+        let fid = d.insert(FeatureKind::Fillet { body, edges: vec![EdgeRef::line([0.0, 0.0, 10.0], [40.0, 0.0, 10.0])], radius: Expr::num(1.0) });
+        let mut ev = Evaluator::default();
+        ev.evaluate(&d);
+        let v1 = ev.model().bodies[0].solid.volume();
+        if let FeatureKind::Fillet { radius, .. } = &mut d.feature_mut(fid).unwrap().kind {
+            *radius = Expr::num(4.0);
+        }
+        ev.evaluate(&d);
+        let v2 = ev.model().bodies[0].solid.volume();
+        assert!(v2 < v1 - 20.0, "радиус не повлиял: {v1} -> {v2}");
         // нет ребра -> ошибка, а не паника
         let (mut d, body) = plate();
         d.insert(FeatureKind::Chamfer { body, edges: vec![EdgeRef::line([1.0, 1.0, 1.0], [2.0, 1.0, 1.0])], dist: Expr::num(1.0) });

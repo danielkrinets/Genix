@@ -8,7 +8,7 @@ use eframe::egui::{self, Color32, RichText};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-const LOGO_SVG: &str = include_str!("../assets/logo.svg");
+pub const LOGO_SVG: &str = include_str!("../assets/logo.svg");
 
 // ------------------------------------------------------------------ лицензия
 

@@ -140,6 +140,7 @@ fn smooth(a: f64, b: f64, x: f64) -> f64 {
 /// Сетка, плавно «растущая» вместе с камерой: уровни по степеням десяти, каждый проявляется,
 /// когда его клетки становятся достаточно широкими, и остаётся, пока не уйдёт за пределы экрана.
 pub fn grid_adaptive(out: &mut Vec<LineInst>, plane: &Plane, center: P2, wpp: f64, radius: f64, minor: Color32, major: Color32) {
+    let radius = radius * 0.7; // сетка конечная и растворяется к краям, а не уходит в бесконечность
     let e0 = (wpp.max(1e-9) * 9.0).log10().ceil() as i32;
     for e in e0..e0 + 4 {
         let step = 10f64.powi(e);
@@ -166,7 +167,7 @@ fn grid_level(out: &mut Vec<LineInst>, plane: &Plane, center: P2, step: f64, hal
             let (t0, t1) = (k as f64 / K as f64, (k + 1) as f64 / K as f64);
             let mid = [a[0] + (b[0] - a[0]) * (t0 + t1) / 2.0, a[1] + (b[1] - a[1]) * (t0 + t1) / 2.0];
             let d = ((mid[0] - center[0]).powi(2) + (mid[1] - center[1]).powi(2)).sqrt() / radius;
-            let alpha = (1.0 - d).clamp(0.0, 1.0).powf(1.2) as f32;
+            let alpha = (1.0 - d).clamp(0.0, 1.0).powf(1.7) as f32;
             if alpha < 0.03 {
                 continue;
             }

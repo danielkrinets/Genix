@@ -1049,6 +1049,7 @@ impl App {
 
     fn menu_bar(&mut self, ui: &mut egui::Ui, now: f64) {
         egui::menu::bar(ui, |ui| {
+            ui.add(egui::Image::from_bytes("bytes://genix/logo.svg", crate::home::LOGO_SVG.as_bytes().to_vec()).fit_to_exact_size(egui::vec2(18.0, 18.0)));
             ui.menu_button(tr("Файл"), |ui| {
                 if ui.button(tr("Новый                ⌘N")).clicked() {
                     ui.close_menu();
@@ -2048,7 +2049,7 @@ impl App {
         if self.settings.show_grid && self.settings.grid_numbers {
             let col = if self.theme == Theme::Dark { Color32::from_rgb(170, 180, 195) } else { Color32::from_rgb(90, 98, 110) };
             match &self.mode {
-                Mode::Sketch(s) => render::axis_labels(&painter, &self.cam, rect, &s.plane, render::decade_step(self.cam.world_per_pixel(rect), 55.0), col),
+                Mode::Sketch(s) => render::axis_labels(&painter, &self.cam, rect, &s.plane, render::decade_step(self.cam.world_per_pixel(rect), 55.0), col.gamma_multiply(0.55)),
                 _ => render::axis_labels(&painter, &self.cam, rect, &Plane::XY, render::decade_step(self.cam.world_per_pixel(rect), 55.0), col),
             }
         }

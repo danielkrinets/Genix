@@ -107,6 +107,7 @@ fn negate(e: &Expr) -> Expr {
 /// Нарисовать содержимое диалога. Меняет шаг в документе напрямую.
 pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mut Command, body_name: &dyn Fn(u64) -> String, sketches: &[(u64, String)]) -> CmdResult {
     let params = doc.params.clone();
+    let my_index = doc.index_of(cmd.uid);
     let has_bodies = doc.index_of(cmd.uid).is_some_and(|i| !ev.model_before(i).bodies.is_empty());
     let mut changed = false;
     let Some(f) = doc.feature_mut(cmd.uid) else { return CmdResult::Cancel };
@@ -327,11 +328,50 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
             changed |= ui.checkbox(keep_tools, tr("Сохранить инструменты")).changed();
         }
         FeatureKind::Remove { bodies } => bodies_ui(ui, bodies, body_name, &mut changed),
-        FeatureKind::Hole { at, dia, depth, kind, .. } => {
+        FeatureKind::Hole { plane, at, dia, depth, kind } => {
             section(ui, tr("ПОЛОЖЕНИЕ"));
             ui.label(RichText::new(tr("Щёлкните другую грань, чтобы перенести отверстие")).weak());
             for (i, a) in ["X", "Y"].iter().enumerate() {
                 changed |= row(ui, a, |ui| expr_field(ui, ("hole_at", uid, i), &mut at[i], p, "мм"));
+            }
+            // быстрая привязка по габаритам детали на этой плоскости: углы, середины сторон, центр
+            if let Some(idx) = my_index {
+                let mut lo = [f64::MAX; 2];
+                let mut hi = [f64::MIN; 2];
+                for b in &ev.model_before(idx).bodies {
+                    if let Some((l, h)) = b.mesh().bounds() {
+                        for k in 0..8 {
+                            let corner = glam::DVec3::new(if k & 1 == 0 { l.x } else { h.x }, if k & 2 == 0 { l.y } else { h.y }, if k & 4 == 0 { l.z } else { h.z });
+                            let q = plane.to_local(corner);
+                            for a in 0..2 {
+                                lo[a] = lo[a].min(q[a]);
+                                hi[a] = hi[a].max(q[a]);
+                            }
+                        }
+                    }
+                }
+                if lo[0] < hi[0] {
+                    let inset = dia.eval(p).unwrap_or(8.0) / 2.0 + 2.0;
+                    ui.label(RichText::new(tr("Привязка к детали")).small().weak());
+                    egui::Grid::new(("hole_snap", uid)).spacing([3.0, 3.0]).show(ui, |ui| {
+                        for ry in (0..3).rev() {
+                            for rx in 0..3 {
+                                let pick = |a: usize, r: usize| match r {
+                                    0 => lo[a] + inset,
+                                    1 => (lo[a] + hi[a]) / 2.0,
+                                    _ => hi[a] - inset,
+                                };
+                                let label = ["↙", "↓", "↘", "←", "●", "→", "↖", "↑", "↗"][(2 - ry) * 3 + rx];
+                                if ui.add_sized([30.0, 26.0], egui::Button::new(label)).on_hover_text(tr("Поставить отверстие сюда (отступ от края — радиус + 2 мм)")).clicked() {
+                                    at[0] = num((pick(0, rx) * 100.0).round() / 100.0);
+                                    at[1] = num((pick(1, ry) * 100.0).round() / 100.0);
+                                    changed = true;
+                                }
+                            }
+                            ui.end_row();
+                        }
+                    });
+                }
             }
             section(ui, tr("РАЗМЕРЫ"));
             changed |= row(ui, tr("Диаметр"), |ui| expr_field(ui, ("hole_d", uid), dia, p, "мм"));
