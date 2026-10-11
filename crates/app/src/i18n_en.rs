@@ -642,4 +642,5 @@ pub const EN: &[(&str, &str)] = &[
     ("Все рёбра тела, включая внутренние (вогнутые) и круглые", "All edges of the body, including inner (concave) and circular ones"),
     ("Снимок модели PNG без фона…", "Model snapshot PNG (transparent)…"),
     ("Снимок сохранён (прозрачный фон)", "Snapshot saved (transparent background)"),
+    ("Снимок модели PNG без фона (⇧⌘P)", "Model snapshot PNG, transparent (⇧⌘P)"),
 ];

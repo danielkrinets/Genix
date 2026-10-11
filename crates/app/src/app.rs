@@ -2533,6 +2533,9 @@ impl App {
         if cmd(egui::Key::O) {
             self.request(Confirm::Open);
         }
+        if cmd_shift(egui::Key::P) {
+            self.export_png(now);
+        }
         if cmd(egui::Key::N) || cmd(egui::Key::T) {
             self.request(Confirm::New);
         }
@@ -3097,6 +3100,9 @@ impl App {
                         self.show_planes = !self.show_planes;
                     }
                     ui.separator();
+                    if b(ui, "sk_photo", "📷", tr("Снимок модели PNG без фона (⇧⌘P)")) {
+                        self.export_png(now);
+                    }
                     if b(ui, "nav_settings", "⚙", tr("Настройки")) {
                         self.settings_open = true;
                     }
