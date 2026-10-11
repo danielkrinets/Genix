@@ -166,6 +166,42 @@ fn icon_button(ui: &mut egui::Ui, id: &str, fallback: &str, selected: bool, tip:
     ui.add(btn.selected(selected).frame(selected).min_size(min)).on_hover_text(tip).clicked()
 }
 
+/// Группа дерева в стиле Fusion: стрелка, значок папки, название; вся строка подсвечивается при наведении.
+fn tree_group(ui: &mut egui::Ui, id: &str, icon: &str, title: String, default_open: bool, body: impl FnOnce(&mut egui::Ui)) {
+    use egui::collapsing_header::CollapsingState;
+    let cid = ui.make_persistent_id(id);
+    let mut st = CollapsingState::load_with_default_open(ui.ctx(), cid, default_open);
+    let open = st.is_open();
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect.shrink2(egui::vec2(0.0, 1.0)), 5.0, ui.visuals().widgets.hovered.weak_bg_fill);
+    }
+    let col = ui.visuals().text_color();
+    let mut x = rect.left() + 4.0;
+    let mut draw = |name: &str, size: f32, x: &mut f32| {
+        if let Some(img) = crate::icons::icon(name, size, col) {
+            img.paint_at(ui, egui::Rect::from_min_size(egui::pos2(*x, rect.center().y - size / 2.0), egui::vec2(size, size)));
+        }
+        *x += size + 4.0;
+    };
+    draw(if open { "tree_arrow_down" } else { "tree_arrow_right" }, 14.0, &mut x);
+    draw(icon, 18.0, &mut x);
+    ui.painter().text(egui::pos2(x + 2.0, rect.center().y), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(13.5), col);
+    if resp.clicked() {
+        st.toggle(ui);
+    }
+    st.show_body_indented(&resp, ui, body);
+}
+
+/// Значок глаза (показать/скрыть). true — значение изменилось.
+fn eye_toggle(ui: &mut egui::Ui, vis: &mut bool, tip: &str) -> bool {
+    if icon_button(ui, if *vis { "tree_eye" } else { "tree_eye_off" }, "👁", false, tip, egui::vec2(24.0, 24.0)) {
+        *vis = !*vis;
+        return true;
+    }
+    false
+}
+
 fn plane_name(i: usize) -> &'static str {
     [tr("XY (верх)"), tr("XZ (перед)"), tr("YZ (право)")][i]
 }
@@ -351,6 +387,27 @@ impl App {
                 self.toast(tf!("Ошибка сохранения: {}", e), true, now);
                 false
             }
+        }
+    }
+
+    /// Снимок выбранных (или всех видимых) тел с текущего ракурса — PNG с прозрачным фоном.
+    fn export_png(&mut self, now: f64) {
+        let model = self.ev.model();
+        let mut bodies: Vec<&fusion_core::doc::Body> = model.bodies.iter().filter(|b| self.selection.contains(&b.id)).collect();
+        if bodies.is_empty() {
+            bodies = model.bodies.iter().filter(|b| !self.doc.hidden_bodies.contains(&b.id)).collect();
+        }
+        let meshes: Vec<&Mesh> = bodies.iter().map(|b| b.mesh()).collect();
+        let Some(img) = crate::thumb::render(&meshes, self.cam.yaw, self.cam.pitch, 1800, 1350) else {
+            self.toast(tr("Нет тел для экспорта"), true, now);
+            return;
+        };
+        let name = format!("{}.png", self.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| tr("модель").into()));
+        let Some(p) = rfd::FileDialog::new().add_filter("PNG", &["png"]).set_file_name(&name).save_file() else { return };
+        let buf = image::RgbaImage::from_raw(img.w as u32, img.h as u32, img.data).unwrap();
+        match buf.save(&p) {
+            Ok(()) => self.toast(tr("Снимок сохранён (прозрачный фон)"), false, now),
+            Err(e) => self.toast(tf!("Ошибка экспорта: {}", e), true, now),
         }
     }
 
@@ -1083,6 +1140,10 @@ impl App {
                     ui.close_menu();
                     self.export(false, now);
                 }
+                if ui.button(tr("Снимок модели PNG без фона…")).clicked() {
+                    ui.close_menu();
+                    self.export_png(now);
+                }
                 if ui.button(tr("Экспорт OBJ…")).clicked() {
                     ui.close_menu();
                     self.export(true, now);
@@ -1181,10 +1242,10 @@ impl App {
         ui.add_space(4.0);
         ui.label(RichText::new(tr("ДЕРЕВО")).small().strong().weak());
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            egui::CollapsingHeader::new(tr("Настройки документа")).default_open(false).show(ui, |ui| {
+            tree_group(ui, "t_doc", "tree_doc_settings", tr("Настройки документа").to_string(), false, |ui| {
                 ui.label(tr("Единицы: мм, г"));
             });
-            egui::CollapsingHeader::new(tf!("Именованные виды ({})", self.doc.views.len())).default_open(false).show(ui, |ui| {
+            tree_group(ui, "t_views", "tree_views", tf!("Именованные виды ({})", self.doc.views.len()), false, |ui| {
                 let mut go = None;
                 let mut del = None;
                 for (i, v) in self.doc.views.iter().enumerate() {
@@ -1215,19 +1276,19 @@ impl App {
                     self.doc.views.remove(i);
                 }
             });
-            egui::CollapsingHeader::new(tr("Начало координат")).default_open(false).show(ui, |ui| {
+            tree_group(ui, "t_origin", "tree_origin", tr("Начало координат").to_string(), false, |ui| {
                 ui.checkbox(&mut self.show_planes, tr("Показывать плоскости"));
                 ui.checkbox(&mut self.settings.show_grid, tr("Показывать сетку"));
             });
             let model = self.shown();
-            egui::CollapsingHeader::new(tf!("Тела ({})", model.bodies.len())).default_open(true).show(ui, |ui| {
+            tree_group(ui, "t_bodies", "tree_bodies", tf!("Тела ({})", model.bodies.len()), true, |ui| {
                 if model.bodies.is_empty() {
                     ui.label(RichText::new(tr("Пока нет тел")).weak());
                 }
                 for b in &model.bodies {
                     ui.horizontal(|ui| {
                         let mut vis = !self.doc.hidden_bodies.contains(&b.id);
-                        if ui.checkbox(&mut vis, "").on_hover_text(tr("Показать/скрыть")).changed() {
+                        if eye_toggle(ui, &mut vis, tr("Показать/скрыть")) {
                             if vis {
                                 self.doc.hidden_bodies.remove(&b.id);
                             } else {
@@ -1251,7 +1312,7 @@ impl App {
                             }
                         }
                         let sel = self.selection.contains(&b.id);
-                        let r = ui.selectable_label(sel, format!("◼ {}", tr_name(self.doc.body_name(b))));
+                        let r = ui.selectable_label(sel, tr_name(self.doc.body_name(b)));
                         if r.clicked() {
                             if ui.input(|i| i.modifiers.shift) {
                                 if sel {
@@ -1287,11 +1348,11 @@ impl App {
                 .filter(|f| matches!(f.kind, FeatureKind::Sketch { .. }))
                 .map(|f| (f.uid, f.name.clone(), self.ev.error(f.uid).is_some()))
                 .collect();
-            egui::CollapsingHeader::new(tf!("Чертежи ({})", sketches.len())).default_open(true).show(ui, |ui| {
+            tree_group(ui, "t_sketches", "tree_sketches", tf!("Чертежи ({})", sketches.len()), true, |ui| {
                 for (uid, name, err) in sketches {
                     ui.horizontal(|ui| {
                         let mut vis = self.doc.visible_sketches.contains(&uid);
-                        if ui.checkbox(&mut vis, "").on_hover_text(tr("Показать/скрыть чертёж")).changed() {
+                        if eye_toggle(ui, &mut vis, tr("Показать/скрыть чертёж")) {
                             if vis {
                                 self.doc.visible_sketches.insert(uid);
                             } else {
@@ -1299,7 +1360,7 @@ impl App {
                             }
                         }
                         let name = tr_name(&name);
-                        let text = if err { RichText::new(format!("✏ {name} ⚠")).color(Color32::from_rgb(200, 40, 40)) } else { RichText::new(format!("✏ {name}")) };
+                        let text = if err { RichText::new(format!("{name} ⚠")).color(Color32::from_rgb(200, 40, 40)) } else { RichText::new(name.to_string()) };
                         let r = ui.selectable_label(false, text).on_hover_text(tr("Двойной щелчок — изменить чертёж"));
                         if r.double_clicked() {
                             self.edit_feature(uid, now);
@@ -1307,7 +1368,7 @@ impl App {
                     });
                 }
             });
-            egui::CollapsingHeader::new(tf!("Параметры ({})", self.doc.params.items.len())).default_open(false).show(ui, |ui| {
+            tree_group(ui, "t_params", "tree_params", tf!("Параметры ({})", self.doc.params.items.len()), false, |ui| {
                 for (k, v) in &self.doc.params.items {
                     let val = self.doc.params.eval(&v.0).map(format_num).unwrap_or_else(|_| "?".into());
                     ui.label(format!("{k} = {val}"));
@@ -2239,7 +2300,7 @@ impl eframe::App for App {
             self.show_dialogs(ctx);
             return;
         }
-        egui::TopBottomPanel::top("toolbar").frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(8, 5))).show(ctx, |ui| self.toolbar(ui, now));
+        egui::TopBottomPanel::top("toolbar").frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(10, 10))).show(ctx, |ui| self.toolbar(ui, now));
         egui::TopBottomPanel::bottom("timeline").frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(8, 6))).show(ctx, |ui| self.timeline(ui, now));
         if self.settings.show_left_panel {
             egui::SidePanel::left("browser").default_width(210.0).width_range(150.0..=420.0).resizable(true).show(ctx, |ui| self.browser(ui, now));

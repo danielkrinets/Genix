@@ -7,6 +7,8 @@ use crate::theme::ACCENT;
 use eframe::egui::{self, Color32, RichText};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 pub const LOGO_SVG: &str = include_str!("../assets/logo.svg");
 
@@ -159,6 +161,24 @@ struct ProjInfo {
 pub struct HomeState {
     search: String,
     infos: HashMap<String, ProjInfo>,
+    thumbs: HashMap<String, egui::TextureHandle>,
+    pending: Arc<Mutex<Vec<(String, crate::thumb::Rgba)>>>,
+    busy: Arc<AtomicUsize>,
+}
+
+/// Отрисовать превью документа на фоновом потоке (прозрачный фон, изометрия).
+fn spawn_thumb(key: String, doc: fusion_core::Document, pending: Arc<Mutex<Vec<(String, crate::thumb::Rgba)>>>, busy: Arc<AtomicUsize>) {
+    busy.fetch_add(1, Ordering::SeqCst);
+    std::thread::spawn(move || {
+        let mut ev = fusion_core::Evaluator::default();
+        ev.evaluate(&doc);
+        let model = ev.model();
+        let meshes: Vec<&fusion_core::Mesh> = model.bodies.iter().filter(|b| !doc.hidden_bodies.contains(&b.id)).map(|b| b.mesh()).collect();
+        if let Some(img) = crate::thumb::render(&meshes, crate::camera::Camera::ISO.0, crate::camera::Camera::ISO.1, 264, 176) {
+            pending.lock().unwrap().push((key, img));
+        }
+        busy.fetch_sub(1, Ordering::SeqCst);
+    });
 }
 
 pub enum HomeAction {
@@ -182,11 +202,33 @@ impl HomeState {
             let steps = std::fs::read_to_string(&path).ok().and_then(|s| fusion_core::Document::from_json(&s).ok()).map(|d| d.features.len());
             self.infos.insert(p.clone(), ProjInfo { name, time, steps, exists: meta.is_some() });
         }
+        for p in recent.iter().take(16) {
+            if self.thumbs.contains_key(p) {
+                continue;
+            }
+            if let Some(doc) = std::fs::read_to_string(p).ok().and_then(|s| fusion_core::Document::from_json(&s).ok()) {
+                spawn_thumb(p.clone(), doc, self.pending.clone(), self.busy.clone());
+            }
+        }
+        for (i, f) in [crate::examples::bracket as fn() -> fusion_core::Document, crate::examples::bushing].into_iter().enumerate() {
+            let key = format!("ex:{i}");
+            if !self.thumbs.contains_key(&key) {
+                spawn_thumb(key, f(), self.pending.clone(), self.busy.clone());
+            }
+        }
     }
 }
 
 pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &Settings) -> HomeAction {
     let mut action = HomeAction::None;
+    let ready: Vec<_> = std::mem::take(&mut *h.pending.lock().unwrap());
+    for (k, img) in ready {
+        let ci = egui::ColorImage::from_rgba_unmultiplied([img.w, img.h], &img.data);
+        h.thumbs.insert(k.clone(), ui.ctx().load_texture(format!("thumb-{k}"), ci, egui::TextureOptions::LINEAR));
+    }
+    if h.busy.load(Ordering::SeqCst) > 0 {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
+    }
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.add_space(16.0);
         ui.horizontal(|ui| {
@@ -216,9 +258,26 @@ pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &Settings) -> HomeActio
             ui.add(egui::TextEdit::singleline(&mut h.search).hint_text(tr("Поиск проектов")).desired_width(240.0));
         });
         ui.add_space(14.0);
-        let card = |ui: &mut egui::Ui, glyph: &str, title: &str, sub: &str| -> egui::Response {
-            let text = format!("{glyph}  {title}\n\n{sub}");
-            ui.add(egui::Button::new(RichText::new(text).size(13.0)).min_size(egui::vec2(236.0, 92.0)).wrap())
+        let thumbs = &h.thumbs;
+        let card = |ui: &mut egui::Ui, key: &str, title: &str, sub: &str| -> egui::Response {
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(240.0, 160.0), egui::Sense::click());
+            let v = ui.visuals();
+            let fill = if resp.hovered() { v.widgets.hovered.weak_bg_fill } else { v.widgets.inactive.weak_bg_fill };
+            let stroke = if resp.hovered() { v.widgets.hovered.bg_stroke } else { v.widgets.inactive.bg_stroke };
+            let p = ui.painter_at(rect);
+            p.rect(rect, 8.0, fill, stroke, egui::StrokeKind::Inside);
+            let area = egui::Rect::from_min_size(rect.min + egui::vec2(8.0, 8.0), egui::vec2(rect.width() - 16.0, 94.0));
+            if let Some(t) = thumbs.get(key) {
+                let s = t.size_vec2();
+                let k = (area.width() / s.x).min(area.height() / s.y);
+                let r = egui::Rect::from_center_size(area.center(), s * k);
+                p.image(t.id(), r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+            } else {
+                p.text(area.center(), egui::Align2::CENTER_CENTER, "…", egui::FontId::proportional(22.0), v.weak_text_color());
+            }
+            p.text(rect.left_top() + egui::vec2(12.0, 112.0), egui::Align2::LEFT_TOP, title, egui::FontId::proportional(14.0), v.text_color());
+            p.text(rect.left_top() + egui::vec2(12.0, 134.0), egui::Align2::LEFT_TOP, sub, egui::FontId::proportional(11.5), v.weak_text_color());
+            resp
         };
         let q = h.search.trim().to_lowercase();
         ui.horizontal(|ui| {
@@ -237,7 +296,7 @@ pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &Settings) -> HomeActio
             for p in shown {
                 let Some(info) = h.infos.get(p).cloned() else { continue };
                 let sub = if info.exists { format!("{} · {}", info.time, info.steps.map(|n| tf!("шагов: {}", n)).unwrap_or_else(|| tr("не читается").into())) } else { tr("файл не найден").into() };
-                let r = card(ui, "◈", &info.name, &sub).on_hover_text(p.as_str());
+                let r = card(ui, p.as_str(), &info.name, &sub).on_hover_text(p.as_str());
                 if r.clicked() && info.exists {
                     action = HomeAction::OpenPath(PathBuf::from(p));
                 }
@@ -257,7 +316,7 @@ pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &Settings) -> HomeActio
         ui.horizontal_wrapped(|ui| {
             ui.add_space(24.0);
             for (i, (name, sub)) in [(tr("Кронштейн (параметрический)"), tr("пластина с отверстиями и стойка")), (tr("Втулка (вращение)"), tr("деталь вращения"))].into_iter().enumerate() {
-                if card(ui, "▣", name, sub).clicked() {
+                if card(ui, &format!("ex:{i}"), name, sub).clicked() {
                     action = HomeAction::Example(i);
                 }
             }

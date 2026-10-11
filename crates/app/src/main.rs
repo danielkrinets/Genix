@@ -16,6 +16,7 @@ mod render;
 mod settings;
 mod sketcher;
 mod theme;
+mod thumb;
 mod toolbar;
 mod viewcube;
 mod widgets;

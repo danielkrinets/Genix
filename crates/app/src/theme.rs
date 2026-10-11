@@ -120,6 +120,8 @@ impl Theme {
             w.fg_stroke = Stroke::new(1.0_f32, fg);
         }
         v.widgets.noninteractive.corner_radius = r;
+        // понятный hover у всего: подсветка фона и контура
+        v.widgets.hovered.expansion = 0.0;
         v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, border);
         v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, if dark { c(139, 148, 158) } else { c(175, 184, 193) });
         v.widgets.active.bg_stroke = Stroke::new(1.0_f32, ACCENT);

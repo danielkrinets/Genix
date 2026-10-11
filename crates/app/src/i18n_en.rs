@@ -640,4 +640,6 @@ pub const EN: &[(&str, &str)] = &[
     ("Показывать значки ограничений", "Show constraint badges"),
     ("Выбрать все рёбра", "Select all edges"),
     ("Все рёбра тела, включая внутренние (вогнутые) и круглые", "All edges of the body, including inner (concave) and circular ones"),
+    ("Снимок модели PNG без фона…", "Model snapshot PNG (transparent)…"),
+    ("Снимок сохранён (прозрачный фон)", "Snapshot saved (transparent background)"),
 ];

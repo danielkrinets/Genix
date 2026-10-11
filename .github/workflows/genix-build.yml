@@ -44,6 +44,7 @@ jobs:
           path: dist/Genix-macOS.zip
 
   linux:
+    if: false  # временно собираем только под macOS
     name: Linux ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.arch == 'aarch64' }}
@@ -94,6 +95,7 @@ jobs:
             dist/*.rpm
 
   windows:
+    if: false  # временно собираем только под macOS
     name: Windows ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.arch == 'arm64' }}
@@ -129,6 +131,7 @@ jobs:
           path: dist/*.zip
 
   freebsd:
+    if: false  # временно собираем только под macOS
     name: FreeBSD x86_64
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -153,7 +156,7 @@ jobs:
 
   publish:
     name: Публикация в Releases
-    needs: [macos, linux, windows, freebsd]
+    needs: [macos]
     if: ${{ always() && needs.macos.result == 'success' }}
     runs-on: ubuntu-latest
     steps:

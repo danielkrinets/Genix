@@ -55,7 +55,7 @@ pub fn tool_button(ui: &mut egui::Ui, id: &str, icon: &str, label: &str, enabled
     let font = FontId::proportional(11.5);
     let galley = ui.painter().layout_no_wrap(label.to_string(), font.clone(), Color32::WHITE);
     let w = (galley.size().x + 12.0).max(58.0);
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 54.0), if enabled { Sense::click() } else { Sense::hover() });
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 66.0), if enabled { Sense::click() } else { Sense::hover() });
     if ui.is_rect_visible(rect) {
         let v = ui.visuals();
         let fill = if selected {
@@ -68,8 +68,8 @@ pub fn tool_button(ui: &mut egui::Ui, id: &str, icon: &str, label: &str, enabled
         let p = ui.painter();
         p.rect(rect, 5.0, fill, if resp.hovered() && enabled { Stroke::new(1.0_f32, v.widgets.hovered.bg_stroke.color) } else { Stroke::NONE }, egui::StrokeKind::Inside);
         let col = if enabled { v.text_color() } else { v.weak_text_color().gamma_multiply(0.6) };
-        let icon_rect = egui::Rect::from_center_size(rect.center_top() + egui::vec2(0.0, 18.0), egui::vec2(26.0, 26.0));
-        match crate::icons::icon(id, 26.0, if selected { ACCENT } else { col }) {
+        let icon_rect = egui::Rect::from_center_size(rect.center_top() + egui::vec2(0.0, 24.0), egui::vec2(34.0, 34.0));
+        match crate::icons::icon(id, 32.0, if selected { ACCENT } else { col }) {
             Some(img) => img.paint_at(ui, icon_rect),
             None => {
                 ui.painter().text(rect.center_top() + egui::vec2(0.0, 5.0), Align2::CENTER_TOP, icon, FontId::proportional(24.0), col);
