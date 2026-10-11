@@ -142,7 +142,7 @@ jobs:
           memory: 6G
           shell: bash
           run: |
-            sudo pkg install -y rust cmake gmake pkgconf libxkbcommon wayland libX11 libXcursor libXi libXrandr
+            sudo pkg install -y git rust cmake gmake pkgconf libxkbcommon wayland libX11 libXcursor libXi libXrandr
             cargo build --release -p fusion-app
             mkdir -p dist/pkg && cp target/release/genix README.md LICENSE dist/pkg/
             tar -C dist/pkg -czf dist/Genix-freebsd-x86_64.tar.gz .
