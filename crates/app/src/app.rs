@@ -53,6 +53,17 @@ enum NavMode {
     Zoom,
 }
 
+/// Перетаскивание элемента манипулятора перемещения: стрелка оси или дуга поворота.
+struct Gizmo {
+    ring: bool,
+    axis: usize,
+    c0: DVec3,
+    grab: f64,
+    start: f64,
+}
+
+const GIZMO_COLORS: [Color32; 3] = [Color32::from_rgb(235, 60, 60), Color32::from_rgb(60, 200, 60), Color32::from_rgb(80, 110, 255)];
+
 /// Перетаскивание стрелки выдавливания.
 struct Manip {
     base: DVec3,
@@ -132,6 +143,7 @@ pub struct App {
     last_autosave: f64,
     last_ray: (DVec3, DVec3),
     manip: Option<Manip>,
+    gizmo: Option<Gizmo>,
     nav: NavMode,
     playing: bool,
     last_play: f64,
@@ -258,6 +270,7 @@ impl App {
             last_autosave: 0.0,
             last_ray: (DVec3::ZERO, DVec3::Z),
             manip: None,
+            gizmo: None,
             nav: NavMode::Default,
             playing: false,
             last_play: 0.0,
@@ -1709,7 +1722,7 @@ impl App {
 
         // ---- стрелка выдавливания: потянуть за кончик
         self.drive_manip(&resp, rect, &ctx);
-        let manip_active = self.manip.is_some();
+        let manip_active = self.manip.is_some() || self.gizmo.is_some();
 
         // ---- навигация
         let shift = ctx.input(|i| i.modifiers.shift);
@@ -2025,6 +2038,35 @@ impl App {
             if let (PickTarget::Edges, Some(e)) = (cm.pick, self.hover_edge) {
                 for w in e.polyline().windows(2) {
                     ov.lines_top.push(render::line(w[0], w[1], c.sketch_hover, 4.0));
+                }
+            }
+        }
+        // манипулятор перемещения: стрелки по осям и дуги поворота
+        if let Some((c0, t, r, len)) = self.move_gizmo(rect) {
+            let c = c0 + DVec3::from(t);
+            let _ = r;
+            for (i, dir) in [DVec3::X, DVec3::Y, DVec3::Z].into_iter().enumerate() {
+                let hot = self.gizmo.as_ref().is_some_and(|g| g.axis == i && !g.ring);
+                let col = if hot { Color32::from_rgb(255, 200, 60) } else { GIZMO_COLORS[i] };
+                let tip = c + dir * len;
+                ov.lines_top.push(render::line(c, tip, col, 3.0));
+                let (x, y) = fusion_core::geom::perp_frame(dir);
+                let head = len * 0.16;
+                let base = tip - dir * head;
+                let cone: Vec<DVec3> = (0..8).map(|k| base + (x * (std::f64::consts::TAU * k as f64 / 8.0).cos() + y * (std::f64::consts::TAU * k as f64 / 8.0).sin()) * head * 0.45).collect();
+                for (k, q) in cone.iter().enumerate() {
+                    ov.lines_top.push(render::line(tip, *q, col, 2.4));
+                    ov.lines_top.push(render::line(*q, cone[(k + 1) % cone.len()], col, 2.0));
+                }
+                // дуга поворота вокруг этой оси
+                let hotr = self.gizmo.as_ref().is_some_and(|g| g.axis == i && g.ring);
+                let rc = if hotr { Color32::from_rgb(255, 200, 60) } else { col.gamma_multiply(0.85) };
+                let pts: Vec<DVec3> = (0..=40).map(|k| {
+                    let a = std::f64::consts::TAU * k as f64 / 40.0;
+                    c + (x * a.cos() + y * a.sin()) * len * 0.62
+                }).collect();
+                for w in pts.windows(2) {
+                    ov.lines_top.push(render::line(w[0], w[1], rc, 2.2));
                 }
             }
         }
@@ -2815,7 +2857,118 @@ impl App {
     }
 
     /// Тянем кончик стрелки: расстояние выдавливания следует за курсором (шаг 1 мм, с Alt — свободно).
+    /// Центр перемещаемых тел, текущий сдвиг, поворот и длина стрелок (для манипулятора перемещения).
+    fn move_gizmo(&self, rect: Rect) -> Option<(DVec3, [f64; 3], [f64; 3], f64)> {
+        let Mode::Command(c) = &self.mode else { return None };
+        let f = self.doc.feature(c.uid)?;
+        let FeatureKind::Move { bodies, translate, rotate, .. } = &f.kind else { return None };
+        let idx = self.doc.index_of(c.uid)?;
+        let model = self.ev.model_before(idx);
+        let (mut lo, mut hi) = (DVec3::splat(f64::MAX), DVec3::splat(f64::MIN));
+        for b in model.bodies.iter().filter(|b| bodies.contains(&b.id)) {
+            if let Some((l, h)) = b.mesh().bounds() {
+                lo = lo.min(l);
+                hi = hi.max(h);
+            }
+        }
+        if lo.x > hi.x {
+            return None;
+        }
+        let ev = |e: &Expr| self.doc.params.eval(&e.0).unwrap_or(0.0);
+        let len = self.cam.world_per_pixel(rect) * 90.0;
+        Some(((lo + hi) * 0.5, [ev(&translate[0]), ev(&translate[1]), ev(&translate[2])], [ev(&rotate[0]), ev(&rotate[1]), ev(&rotate[2])], len))
+    }
+
+    fn drive_gizmo(&mut self, resp: &egui::Response, rect: Rect, ctx: &egui::Context) {
+        let dirs = [DVec3::X, DVec3::Y, DVec3::Z];
+        if resp.drag_started_by(egui::PointerButton::Primary) {
+            if let (Some((c0, t, r, len)), Some(press)) = (self.move_gizmo(rect), ctx.input(|i| i.pointer.press_origin())) {
+                let c = c0 + DVec3::from(t);
+                let (o, d) = self.cam.ray(rect, press);
+                let mut best: Option<(f64, Gizmo)> = None;
+                for i in 0..3 {
+                    // кончик стрелки
+                    if let Some(p) = self.cam.project(rect, c + dirs[i] * len) {
+                        let dist = p.distance(press) as f64;
+                        if dist < 18.0 && best.as_ref().is_none_or(|b| dist < b.0) {
+                            let grab = line_param(c0, dirs[i], o, d) - t[i];
+                            best = Some((dist, Gizmo { ring: false, axis: i, c0, grab, start: t[i] }));
+                        }
+                    }
+                    // дуга поворота: ближайшая точка кольца к курсору
+                    let (x, y) = fusion_core::geom::perp_frame(dirs[i]);
+                    for k in 0..48 {
+                        let a = std::f64::consts::TAU * k as f64 / 48.0;
+                        if let Some(p) = self.cam.project(rect, c + (x * a.cos() + y * a.sin()) * len * 0.62) {
+                            let dist = p.distance(press) as f64 + 4.0; // стрелки важнее дуг
+                            if dist < 12.0 && best.as_ref().is_none_or(|b| dist < b.0) {
+                                best = Some((dist, Gizmo { ring: true, axis: i, c0, grab: a, start: r[i] }));
+                            }
+                        }
+                    }
+                }
+                if let Some((_, mut g)) = best {
+                    if g.ring {
+                        g.grab = self.ring_angle(rect, c, g.axis, press);
+                    }
+                    self.gizmo = Some(g);
+                }
+            }
+        }
+        let Some(g) = &self.gizmo else { return };
+        if !resp.dragged_by(egui::PointerButton::Primary) {
+            self.gizmo = None;
+            return;
+        }
+        let Some(pos) = ctx.pointer_interact_pos() else { return };
+        let alt = ctx.input(|i| i.modifiers.alt);
+        let (axis, ring, c0, grab, start) = (g.axis, g.ring, g.c0, g.grab, g.start);
+        let value = if ring {
+            let Some((cc0, t, _, _)) = self.move_gizmo(rect) else { return };
+            let c = cc0 + DVec3::from(t);
+            let delta = (self.ring_angle(rect, c, axis, pos) - grab).to_degrees();
+            let v = start + delta;
+            if alt { (v * 10.0).round() / 10.0 } else { (v / 5.0).round() * 5.0 }
+        } else {
+            let (o, d) = self.cam.ray(rect, pos);
+            let v = line_param(c0, dirs[axis], o, d) - grab;
+            if alt { (v * 100.0).round() / 100.0 } else { v.round() }
+        };
+        let uid = match &self.mode {
+            Mode::Command(c) => c.uid,
+            _ => return,
+        };
+        if let Some(f) = self.doc.feature_mut(uid) {
+            if let FeatureKind::Move { translate, rotate, .. } = &mut f.kind {
+                let target = if ring { &mut rotate[axis] } else { &mut translate[axis] };
+                let new = Expr::num(value);
+                if *target != new {
+                    *target = new;
+                    self.after_doc_change();
+                }
+            }
+        }
+    }
+
+    /// Угол курсора вокруг оси `axis` через центр `c` (луч пересекается с плоскостью кольца).
+    fn ring_angle(&self, rect: Rect, c: DVec3, axis: usize, pos: Pos2) -> f64 {
+        let n = [DVec3::X, DVec3::Y, DVec3::Z][axis];
+        let (o, d) = self.cam.ray(rect, pos);
+        let den = d.dot(n);
+        if den.abs() < 1e-9 {
+            return 0.0;
+        }
+        let t = (c - o).dot(n) / den;
+        let p = o + d * t - c;
+        let (x, y) = fusion_core::geom::perp_frame(n);
+        p.dot(y).atan2(p.dot(x))
+    }
+
     fn drive_manip(&mut self, resp: &egui::Response, rect: Rect, ctx: &egui::Context) {
+        self.drive_gizmo(resp, rect, ctx);
+        if self.gizmo.is_some() {
+            return;
+        }
         if resp.drag_started_by(egui::PointerButton::Primary) {
             if let (Some((base, dir, dist)), Some(press)) = (self.extrude_handle(), ctx.input(|i| i.pointer.press_origin())) {
                 if self.cam.project(rect, base + dir * dist).is_some_and(|p| p.distance(press) < 18.0) {
