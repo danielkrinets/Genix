@@ -156,6 +156,16 @@ pub struct App {
     now: f64,
 }
 
+/// Кнопка со значком из набора (нет значка — текстовый символ).
+fn icon_button(ui: &mut egui::Ui, id: &str, fallback: &str, selected: bool, tip: &str, min: egui::Vec2) -> bool {
+    let main = if selected { ACCENT } else { ui.visuals().text_color() };
+    let btn = match crate::icons::icon(id, 20.0, main) {
+        Some(img) => egui::Button::image(img),
+        None => egui::Button::new(RichText::new(fallback).size(16.0)),
+    };
+    ui.add(btn.selected(selected).frame(selected).min_size(min)).on_hover_text(tip).clicked()
+}
+
 fn plane_name(i: usize) -> &'static str {
     [tr("XY (верх)"), tr("XZ (перед)"), tr("YZ (право)")][i]
 }
@@ -1313,18 +1323,26 @@ impl App {
             ui.label(RichText::new(tr("ИСТОРИЯ")).small().strong().weak());
             let n = self.doc.features.len();
             let enabled = matches!(self.mode, Mode::Idle);
-            let roll = |ui: &mut egui::Ui, label: &str, tip: &str, to: usize, me: &mut Self| {
-                if ui.add_enabled(enabled, egui::Button::new(label).small()).on_hover_text(tip).clicked() {
+            let roll = |ui: &mut egui::Ui, id: &str, tip: &str, to: usize, me: &mut Self| {
+                let btn = match crate::icons::icon(id, 16.0, ui.visuals().text_color()) {
+                    Some(img) => egui::Button::image(img),
+                    None => egui::Button::new(id).small(),
+                };
+                if ui.add_enabled(enabled, btn).on_hover_text(tip).clicked() {
                     me.doc.rollback = to.min(n);
                     me.after_doc_change();
                 }
             };
             let r = self.doc.rollback;
-            roll(ui, "⏮", tr("В начало истории"), 0, self);
-            roll(ui, "◀", tr("Шаг назад"), r.saturating_sub(1), self);
-            roll(ui, "▶", tr("Шаг вперёд"), r + 1, self);
-            roll(ui, "⏭", tr("В конец истории"), n, self);
-            if ui.add_enabled(enabled && n > 0, egui::Button::new(if self.playing { tr("Пауза") } else { tr("▶ Воспроизвести") }).small()).on_hover_text(tr("Показать построение шаг за шагом")).clicked() {
+            roll(ui, "tl_first", tr("В начало истории"), 0, self);
+            roll(ui, "tl_prev", tr("Шаг назад"), r.saturating_sub(1), self);
+            roll(ui, "tl_next", tr("Шаг вперёд"), r + 1, self);
+            roll(ui, "tl_last", tr("В конец истории"), n, self);
+            let play_btn = match crate::icons::icon(if self.playing { "tl_pause" } else { "tl_play" }, 16.0, ui.visuals().text_color()) {
+                Some(img) => egui::Button::image_and_text(img, if self.playing { tr("Пауза") } else { tr("Воспроизвести") }),
+                None => egui::Button::new(if self.playing { tr("Пауза") } else { tr("▶ Воспроизвести") }).small(),
+            };
+            if ui.add_enabled(enabled && n > 0, play_btn).on_hover_text(tr("Показать построение шаг за шагом")).clicked() {
                 self.playing = !self.playing;
                 if self.playing {
                     if self.doc.rollback >= n {
@@ -2780,27 +2798,28 @@ impl App {
             egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(6, 3)).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 3.0;
-                    let b = |ui: &mut egui::Ui, icon: &str, tip: &str| ui.add(egui::Button::new(RichText::new(icon).size(16.0)).frame(false).min_size(egui::vec2(28.0, 26.0))).on_hover_text(tip).clicked();
-                    for (m, icon, tip) in [(NavMode::Orbit, "↻", "Вращение левой кнопкой"), (NavMode::Pan, "↔", "Сдвиг левой кнопкой"), (NavMode::Zoom, "🔍", "Масштаб левой кнопкой")] {
+                    let sz = egui::vec2(30.0, 28.0);
+                    let b = |ui: &mut egui::Ui, id: &str, icon: &str, tip: &str| icon_button(ui, id, icon, false, tip, sz);
+                    for (m, id, icon, tip) in [(NavMode::Orbit, "nav_orbit", "↻", "Вращение левой кнопкой"), (NavMode::Pan, "nav_pan", "↔", "Сдвиг левой кнопкой"), (NavMode::Zoom, "nav_zoom", "🔍", "Масштаб левой кнопкой")] {
                         let on = self.nav == m;
-                        if ui.add(egui::Button::new(RichText::new(icon).size(15.0)).selected(on).frame(false).min_size(egui::vec2(28.0, 26.0))).on_hover_text(tr(tip)).clicked() {
+                        if icon_button(ui, id, icon, on, tr(tip), sz) {
                             self.nav = if on { NavMode::Default } else { m };
                         }
                     }
                     ui.separator();
-                    for (icon, tip, on) in [("◧", "Левая панель", &mut self.settings.show_left_panel), ("◨", "Правая панель", &mut self.settings.show_right_panel)] {
-                        if ui.add(egui::Button::new(RichText::new(icon).size(15.0)).selected(*on).frame(false).min_size(egui::vec2(26.0, 26.0))).on_hover_text(tr(tip)).clicked() {
+                    for (id, icon, tip, on) in [("nav_panel_left", "◧", "Левая панель", &mut self.settings.show_left_panel), ("nav_panel_right", "◨", "Правая панель", &mut self.settings.show_right_panel)] {
+                        if icon_button(ui, id, icon, *on, tr(tip), sz) {
                             *on = !*on;
                         }
                     }
                     ui.separator();
-                    if b(ui, "⌖", tr("Вписать модель (F)")) {
+                    if b(ui, "nav_fit", "⌖", tr("Вписать модель (F)")) {
                         self.fit_view(now, false);
                     }
-                    if b(ui, "+", tr("Приблизить")) {
+                    if b(ui, "nav_zoom_in", "+", tr("Приблизить")) {
                         self.cam.zoom_at(0.8, rect, None);
                     }
-                    if b(ui, "−", tr("Отдалить")) {
+                    if b(ui, "nav_zoom_out", "−", tr("Отдалить")) {
                         self.cam.zoom_at(1.25, rect, None);
                     }
                     ui.separator();
@@ -2819,11 +2838,11 @@ impl App {
                         self.settings.show_grid = g;
                         self.settings.save();
                     }
-                    if ui.add(egui::Button::new(RichText::new("⊞").size(16.0)).selected(self.show_planes).frame(false).min_size(egui::vec2(28.0, 26.0))).on_hover_text(tr("Плоскости начала координат")).clicked() {
+                    if icon_button(ui, "tree_plane", "⊞", self.show_planes, tr("Плоскости начала координат"), sz) {
                         self.show_planes = !self.show_planes;
                     }
                     ui.separator();
-                    if b(ui, "⚙", tr("Настройки")) {
+                    if b(ui, "nav_settings", "⚙", tr("Настройки")) {
                         self.settings_open = true;
                     }
                 });

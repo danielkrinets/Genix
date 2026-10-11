@@ -634,4 +634,5 @@ pub const EN: &[(&str, &str)] = &[
     ("Выйти из аккаунта", "Sign out"),
     ("Сменить лицензию", "Change license"),
     ("Завершить чертёж", "Finish blueprint"),
+    ("Воспроизвести", "Play"),
 ];

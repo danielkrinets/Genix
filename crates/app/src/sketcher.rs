@@ -1048,10 +1048,10 @@ impl SketchSession {
             let main = if sel { crate::theme::ACCENT } else { ui.visuals().text_color() };
             let text = label.split_once(' ').map(|x| x.1).unwrap_or(label);
             let btn = match crate::icons::icon(icon_id, 18.0, main) {
-                Some(img) => egui::Button::image_and_text(img, text),
+                Some(img) => egui::Button::image(img),
                 None => egui::Button::new(label),
             };
-            let r = ui.add(btn.selected(sel).min_size(egui::vec2(0.0, 28.0)));
+            let r = ui.add(btn.selected(sel).min_size(egui::vec2(34.0, 30.0))).on_hover_text(text);
             let r = if key.is_empty() { r } else { r.on_hover_text(tf!("Клавиша {}", key)) };
             let r = match t {
                 Tool::CenterRect => r.on_hover_text(tr("Прямоугольник от центра")),
@@ -1147,7 +1147,24 @@ impl SketchSession {
         egui::Grid::new("cons_grid").num_columns(2).spacing([4.0, 4.0]).show(ui, |ui| {
             for (i, k) in ConsKind::ALL.iter().enumerate() {
                 let sel = self.tool == Tool::Cons(*k);
-                if ui.add_sized([118.0, 22.0], egui::Button::new(k.label()).selected(sel)).on_hover_text(k.hint()).clicked() {
+                let cid = match k {
+                    ConsKind::Horizontal => "c_horizontal",
+                    ConsKind::Vertical => "c_vertical",
+                    ConsKind::Parallel => "c_parallel",
+                    ConsKind::Perpendicular => "c_perpendicular",
+                    ConsKind::Tangent => "c_tangent",
+                    ConsKind::Equal => "c_equal",
+                    ConsKind::Concentric => "c_concentric",
+                    ConsKind::Coincident => "c_coincident",
+                    ConsKind::Midpoint => "c_midpoint",
+                    ConsKind::Fix => "c_fix",
+                };
+                let main = if sel { crate::theme::ACCENT } else { ui.visuals().text_color() };
+                let cbtn = match crate::icons::icon(cid, 16.0, main) {
+                    Some(img) => egui::Button::image_and_text(img, k.label()),
+                    None => egui::Button::new(k.label()),
+                };
+                if ui.add_sized([118.0, 24.0], cbtn.selected(sel)).on_hover_text(k.hint()).clicked() {
                     self.set_tool(Tool::Cons(*k));
                 }
                 if i % 2 == 1 {
