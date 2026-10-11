@@ -505,9 +505,17 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                 edges.clear();
                 changed = true;
             }
+            if let Some(idx) = my_index {
+                if ui.button(tr("Выбрать все рёбра")).on_hover_text(tr("Все рёбра тела, включая внутренние (вогнутые) и круглые")).clicked() {
+                    if let Some(b) = ev.model_before(idx).body(*body) {
+                        *edges = crate::app::compute_straight_edges(b.mesh());
+                        changed = true;
+                    }
+                }
+            }
             section(ui, tr("РАЗМЕР"));
             changed |= row(ui, if f_is_fillet { tr("Радиус") } else { tr("Расстояние") }, |ui| expr_field(ui, ("edge_size", uid), size, p, "мм"));
-            ui.label(RichText::new(tr("Работают прямые выпуклые рёбра между плоскими гранями")).weak().small());
+            ui.label(RichText::new(tr("Работают прямые и круглые рёбра между гранями, выпуклые и вогнутые")).weak().small());
         }
         FeatureKind::OffsetPlane { offset, .. } => {
             section(ui, tr("ОСНОВА"));

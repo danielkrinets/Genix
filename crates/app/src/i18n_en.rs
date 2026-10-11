@@ -207,7 +207,7 @@ pub const EN: &[(&str, &str)] = &[
     ("РЁБРА", "EDGES"),
     ("РАЗМЕР", "SIZE"),
     ("РАЗМЕРЫ", "SIZES"),
-    ("Работают прямые выпуклые рёбра между плоскими гранями", "Works on straight convex edges between flat faces"),
+    ("Работают прямые и круглые рёбра между гранями, выпуклые и вогнутые", "Works on straight and circular edges, convex and concave"),
     ("Равно", "Equal"),
     ("Радиус", "Radius"),
     ("Размер", "Dimension"),
@@ -638,4 +638,6 @@ pub const EN: &[(&str, &str)] = &[
     ("Привязка к детали", "Snap to part"),
     ("Поставить отверстие сюда (отступ от края — радиус + 2 мм)", "Place the hole here (edge inset — radius + 2 mm)"),
     ("Показывать значки ограничений", "Show constraint badges"),
+    ("Выбрать все рёбра", "Select all edges"),
+    ("Все рёбра тела, включая внутренние (вогнутые) и круглые", "All edges of the body, including inner (concave) and circular ones"),
 ];

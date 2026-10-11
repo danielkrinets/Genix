@@ -495,15 +495,11 @@ fn edge_faces(mesh: &Mesh, a: DVec3, b: DVec3) -> Result<[(DVec3, DVec3); 2], St
     if found.len() != 2 {
         return Err("выберите ребро между двумя гранями".into());
     }
-    let (f1, f2) = (found[0], found[1]);
-    if f1.1.dot(f2.0) > 1e-6 || f2.1.dot(f1.0) > 1e-6 {
-        return Err("вогнутые рёбра пока не поддерживаются".into());
-    }
-    Ok([f1, f2])
+    Ok([found[0], found[1]])
 }
 
 /// Сечение инструмента вокруг точки ребра `eo` (в плоскости, перпендикулярной ребру).
-fn section_points(eo: DVec3, f: &[(DVec3, DVec3); 2], op: EdgeOp) -> Result<Vec<DVec3>, String> {
+fn section_points(eo: DVec3, f: &[(DVec3, DVec3); 2], op: EdgeOp) -> Result<(Vec<DVec3>, bool), String> {
     let ((n1, u1), (n2, u2)) = (f[0], f[1]);
     let theta = u1.dot(u2).clamp(-1.0, 1.0).acos();
     if theta < 0.05 || theta > std::f64::consts::PI - 0.05 {
@@ -532,28 +528,37 @@ fn section_points(eo: DVec3, f: &[(DVec3, DVec3); 2], op: EdgeOp) -> Result<Vec<
             }
         }
     }
+    // вогнутое ребро: грань 2 уходит от ребра в сторону воздуха — материал нужно добавить, а не снять
+    let concave = u2.dot(n1) > 1e-6;
+    if concave {
+        let d = 0.02 * size.max(0.5);
+        let mut fill = vec![t1 - n1 * d];
+        fill.extend(poly);
+        fill.extend([t2 - n2 * d, eo - (n1 + n2) * d]);
+        return Ok((fill, true));
+    }
     poly.extend([t2 + n2 * slack, eo + (n1 + n2) * slack, t1 + n1 * slack]);
-    Ok(poly)
+    Ok((poly, false))
 }
 
-/// Инструмент (тело для вычитания), который снимает фаску или скругляет прямое выпуклое ребро.
-pub fn edge_tool(mesh: &Mesh, a: DVec3, b: DVec3, op: EdgeOp) -> Result<Mesh, String> {
+/// Инструмент для прямого ребра: выпуклое — тело для вычитания, вогнутое (второй результат `true`) — тело для добавления.
+pub fn edge_tool(mesh: &Mesh, a: DVec3, b: DVec3, op: EdgeOp) -> Result<(Mesh, bool), String> {
     let len = a.distance(b);
     let faces = edge_faces(mesh, a, b)?;
     let e = (b - a) / len;
-    let poly = section_points(a, &faces, op)?;
-    let ext = 0.02 * len + 0.05;
+    let (poly, concave) = section_points(a, &faces, op)?;
+    let ext = if concave { 0.0 } else { 0.02 * len + 0.05 };
     let (px, py) = perp_frame(e);
     let mut pts: Vec<[f64; 2]> = poly.iter().map(|q| [(*q - a).dot(px), (*q - a).dot(py)]).collect();
     if crate::sketch::signed_area(&pts) < 0.0 {
         pts.reverse();
     }
     let plane = Plane { origin: (a - e * ext).to_array(), x: px.to_array(), y: py.to_array() };
-    extrude_region(&plane, &Region { outer: pts, holes: vec![], ids: vec![] }, 0.0, len + 2.0 * ext).ok_or_else(|| "не удалось построить инструмент".to_string())
+    extrude_region(&plane, &Region { outer: pts, holes: vec![], ids: vec![] }, 0.0, len + 2.0 * ext).map(|m| (m, concave)).ok_or_else(|| "не удалось построить инструмент".to_string())
 }
 
 /// То же для круглого ребра (окружность вокруг оси `axis` с центром `center`, `p` — точка на ней).
-pub fn circle_tool(mesh: &Mesh, center: DVec3, axis: DVec3, p: DVec3, op: EdgeOp) -> Result<Mesh, String> {
+pub fn circle_tool(mesh: &Mesh, center: DVec3, axis: DVec3, p: DVec3, op: EdgeOp) -> Result<(Mesh, bool), String> {
     let axis = axis.normalize();
     let r = (p - center - axis * (p - center).dot(axis)).length();
     if r < 1e-6 {
@@ -571,7 +576,7 @@ pub fn circle_tool(mesh: &Mesh, center: DVec3, axis: DVec3, p: DVec3, op: EdgeOp
     let faces = edge_faces(mesh, seg.0, seg.1)?;
     let m = (seg.0 + seg.1) * 0.5;
     let radial = ((m - center) - axis * (m - center).dot(axis)).normalize();
-    let poly = section_points(m, &faces, op)?;
+    let (poly, concave) = section_points(m, &faces, op)?;
     let mut pts: Vec<[f64; 2]> = poly.iter().map(|q| [(*q - center).dot(radial), (*q - center).dot(axis)]).collect();
     if pts.iter().any(|q| q[0] <= 1e-6) {
         return Err("размер слишком велик для этого ребра".into());
@@ -580,7 +585,7 @@ pub fn circle_tool(mesh: &Mesh, center: DVec3, axis: DVec3, p: DVec3, op: EdgeOp
         pts.reverse();
     }
     let plane = Plane { origin: center.to_array(), x: radial.to_array(), y: axis.to_array() };
-    revolve_region(&plane, &Region { outer: pts, holes: vec![], ids: vec![] }, [0.0, 0.0], [0.0, 1.0], 360.0)
+    revolve_region(&plane, &Region { outer: pts, holes: vec![], ids: vec![] }, [0.0, 0.0], [0.0, 1.0], 360.0).map(|m| (m, concave))
 }
 
 #[cfg(test)]
@@ -592,6 +597,22 @@ mod tests {
         let mut s = Sketch::default();
         s.add_rect([0.0, 0.0], [w, h]);
         s.regions().remove(0)
+    }
+
+    #[test]
+    fn concave_edge_fillet_adds_material() {
+        use crate::csg::{BoolOp, Solid};
+        let floor = Solid::from_mesh(&box_mesh(DVec3::new(0.0, 0.0, 0.0), DVec3::new(40.0, 40.0, 5.0))).unwrap();
+        let wall = Solid::from_mesh(&box_mesh(DVec3::new(0.0, 0.0, 0.0), DVec3::new(40.0, 5.0, 20.0))).unwrap();
+        let l = floor.boolean(&wall, BoolOp::Union);
+        let v0 = l.volume();
+        // внутреннее ребро вдоль X на стыке пола и стенки
+        let (tool, concave) = edge_tool(&l.mesh, DVec3::new(0.0, 5.0, 5.0), DVec3::new(40.0, 5.0, 5.0), EdgeOp::Fillet(3.0)).unwrap();
+        assert!(concave);
+        let r = l.boolean(&Solid::from_mesh(&tool).unwrap(), BoolOp::Union);
+        let added = r.volume() - v0;
+        let expect = (1.0 - std::f64::consts::FRAC_PI_4) * 9.0 * 40.0;
+        assert!((added - expect).abs() < 3.0, "добавлено {added}, ожидалось {expect}");
     }
 
     #[test]
@@ -722,15 +743,15 @@ mod tests {
         let b = box_mesh(DVec3::ZERO, DVec3::new(20.0, 20.0, 10.0));
         let solid = Solid::from_mesh(&b).unwrap();
         let (a, c) = (DVec3::new(0.0, 0.0, 10.0), DVec3::new(20.0, 0.0, 10.0));
-        let tool = Solid::from_mesh(&edge_tool(&b, a, c, EdgeOp::Chamfer(2.0)).unwrap()).unwrap();
+        let tool = Solid::from_mesh(&edge_tool(&b, a, c, EdgeOp::Chamfer(2.0)).unwrap().0).unwrap();
         let r = solid.boolean(&tool, crate::csg::BoolOp::Subtract);
         assert!((r.volume() - (4000.0 - 0.5 * 4.0 * 20.0)).abs() < 1e-6, "{}", r.volume());
-        let tool = Solid::from_mesh(&edge_tool(&b, a, c, EdgeOp::Fillet(3.0)).unwrap()).unwrap();
+        let tool = Solid::from_mesh(&edge_tool(&b, a, c, EdgeOp::Fillet(3.0)).unwrap().0).unwrap();
         let r = solid.boolean(&tool, crate::csg::BoolOp::Subtract);
         let removed = (9.0 - std::f64::consts::PI * 9.0 / 4.0) * 20.0;
         assert!((r.volume() - (4000.0 - removed)).abs() < 3.0, "{} vs {}", r.volume(), 4000.0 - removed);
         // вертикальное ребро тоже
-        let tool = edge_tool(&b, DVec3::new(20.0, 20.0, 0.0), DVec3::new(20.0, 20.0, 10.0), EdgeOp::Chamfer(1.0)).unwrap();
+        let tool = edge_tool(&b, DVec3::new(20.0, 20.0, 0.0), DVec3::new(20.0, 20.0, 10.0), EdgeOp::Chamfer(1.0)).unwrap().0;
         assert!(Solid::from_mesh(&tool).is_ok());
         // ребро не из меша
         assert!(edge_tool(&b, DVec3::new(5.0, 5.0, 5.0), DVec3::new(6.0, 5.0, 5.0), EdgeOp::Chamfer(1.0)).is_err());
@@ -741,19 +762,19 @@ mod tests {
         let cyl = cylinder_mesh(DVec3::ZERO, 10.0, 20.0);
         let solid = Solid::from_mesh(&cyl).unwrap();
         let top_rim = DVec3::new(10.0, 0.0, 20.0);
-        let tool = circle_tool(&cyl, DVec3::new(0.0, 0.0, 20.0), DVec3::Z, top_rim, EdgeOp::Chamfer(2.0)).unwrap();
+        let tool = circle_tool(&cyl, DVec3::new(0.0, 0.0, 20.0), DVec3::Z, top_rim, EdgeOp::Chamfer(2.0)).unwrap().0;
         let r = solid.boolean(&Solid::from_mesh(&tool).unwrap(), crate::csg::BoolOp::Subtract);
         let removed = std::f64::consts::PI * 2.0 * (10.0 - 2.0 / 3.0) * 2.0;
         assert!((solid.volume() - r.volume() - removed).abs() / removed < 0.03, "{} vs {removed}", solid.volume() - r.volume());
         // скругление
-        let tool = circle_tool(&cyl, DVec3::new(0.0, 0.0, 20.0), DVec3::Z, top_rim, EdgeOp::Fillet(3.0)).unwrap();
+        let tool = circle_tool(&cyl, DVec3::new(0.0, 0.0, 20.0), DVec3::Z, top_rim, EdgeOp::Fillet(3.0)).unwrap().0;
         let r = solid.boolean(&Solid::from_mesh(&tool).unwrap(), crate::csg::BoolOp::Subtract);
         assert!(solid.volume() - r.volume() > 20.0);
         // кромка отверстия в пластине
         let plate = box_mesh(DVec3::new(-20.0, -20.0, 0.0), DVec3::new(20.0, 20.0, 10.0));
         let hole = cylinder_mesh(DVec3::new(0.0, 0.0, -1.0), 5.0, 12.0);
         let holed = Solid::from_mesh(&plate).unwrap().boolean(&Solid::from_mesh(&hole).unwrap(), crate::csg::BoolOp::Subtract);
-        let tool = circle_tool(&holed.mesh, DVec3::new(0.0, 0.0, 10.0), DVec3::Z, DVec3::new(5.0, 0.0, 10.0), EdgeOp::Chamfer(1.0)).unwrap();
+        let tool = circle_tool(&holed.mesh, DVec3::new(0.0, 0.0, 10.0), DVec3::Z, DVec3::new(5.0, 0.0, 10.0), EdgeOp::Chamfer(1.0)).unwrap().0;
         let r = holed.boolean(&Solid::from_mesh(&tool).unwrap(), crate::csg::BoolOp::Subtract);
         let removed = std::f64::consts::PI * 2.0 * (5.0 + 1.0 / 3.0) * 0.5;
         assert!((holed.volume() - r.volume() - removed).abs() / removed < 0.05, "{} vs {removed}", holed.volume() - r.volume());

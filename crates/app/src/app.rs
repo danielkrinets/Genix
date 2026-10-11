@@ -2555,7 +2555,7 @@ fn tool_id(kind: &FeatureKind) -> &'static str {
 }
 
 /// Рёбра тела для выбора: прямые (коллинеарные куски склеены) и круглые (замкнутые окружности).
-fn compute_straight_edges(mesh: &Mesh) -> Vec<EdgeRef> {
+pub(crate) fn compute_straight_edges(mesh: &Mesh) -> Vec<EdgeRef> {
     use std::collections::HashMap;
     let segs = mesh.sharp_edges(30.0);
     let pos = |i: u32| DVec3::from(mesh.vertices[i as usize]);

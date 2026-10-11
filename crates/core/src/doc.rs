@@ -872,17 +872,24 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             }
             let v = positive(size, p, if is_fillet { "радиус" } else { "расстояние" })?;
             let op = if is_fillet { EdgeOp::Fillet(v) } else { EdgeOp::Chamfer(v) };
-            let mut tools = Vec::new();
+            let (mut cuts, mut adds) = (Vec::new(), Vec::new());
             for e in edges {
-                let t = if e.circle {
+                let (t, concave) = if e.circle {
                     geom::circle_tool(b.mesh(), DVec3::from(e.b), DVec3::from(e.axis), DVec3::from(e.a), op)?
                 } else {
                     geom::edge_tool(b.mesh(), DVec3::from(e.a), DVec3::from(e.b), op)?
                 };
-                tools.push(Solid::from_mesh(&t)?);
+                let s = Solid::from_mesh(&t)?;
+                if concave { adds.push(s) } else { cuts.push(s) }
             }
-            let tool = if tools.len() == 1 { tools.remove(0) } else { Solid::union_all(&tools) };
-            let r = b.solid.boolean(&tool, BoolOp::Subtract);
+            // выпуклые рёбра снимают материал, вогнутые — добавляют (скругление внутренних углов)
+            let mut r = (*b.solid).clone();
+            if !cuts.is_empty() {
+                r = r.boolean(&Solid::union_all(&cuts), BoolOp::Subtract);
+            }
+            if !adds.is_empty() {
+                r = r.boolean(&Solid::union_all(&adds), BoolOp::Union);
+            }
             if r.is_empty() {
                 return Err("результат пуст — размер слишком большой".into());
             }
