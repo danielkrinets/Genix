@@ -547,7 +547,8 @@ pub fn edge_tool(mesh: &Mesh, a: DVec3, b: DVec3, op: EdgeOp) -> Result<(Mesh, b
     let faces = edge_faces(mesh, a, b)?;
     let e = (b - a) / len;
     let (poly, concave) = section_points(a, &faces, op)?;
-    let ext = if concave { 0.0 } else { 0.02 * len + 0.05 };
+    // скругление не выступает за концы ребра: иначе в общих углах соседних скруглений остаются «шипы»
+    let ext = if concave || matches!(op, EdgeOp::Fillet(_)) { 0.0 } else { 0.02 * len + 0.05 };
     let (px, py) = perp_frame(e);
     let mut pts: Vec<[f64; 2]> = poly.iter().map(|q| [(*q - a).dot(px), (*q - a).dot(py)]).collect();
     if crate::sketch::signed_area(&pts) < 0.0 {
@@ -613,6 +614,27 @@ mod tests {
         let added = r.volume() - v0;
         let expect = (1.0 - std::f64::consts::FRAC_PI_4) * 9.0 * 40.0;
         assert!((added - expect).abs() < 3.0, "добавлено {added}, ожидалось {expect}");
+    }
+
+    #[test]
+    fn four_rim_fillets_around_square_hole() {
+        use crate::csg::{BoolOp, Solid};
+        let block = Solid::from_mesh(&box_mesh(DVec3::ZERO, DVec3::new(40.0, 40.0, 20.0))).unwrap();
+        let hole = Solid::from_mesh(&box_mesh(DVec3::new(10.0, 10.0, -1.0), DVec3::new(30.0, 30.0, 21.0))).unwrap();
+        let b = block.boolean(&hole, BoolOp::Subtract);
+        let v0 = b.volume();
+        let r = 2.0;
+        let rim = [
+            (DVec3::new(10.0, 10.0, 20.0), DVec3::new(30.0, 10.0, 20.0)),
+            (DVec3::new(30.0, 10.0, 20.0), DVec3::new(30.0, 30.0, 20.0)),
+            (DVec3::new(30.0, 30.0, 20.0), DVec3::new(10.0, 30.0, 20.0)),
+            (DVec3::new(10.0, 30.0, 20.0), DVec3::new(10.0, 10.0, 20.0)),
+        ];
+        let tools: Vec<Solid> = rim.iter().map(|(p, q)| Solid::from_mesh(&edge_tool(&b.mesh, *p, *q, EdgeOp::Fillet(r)).unwrap().0).unwrap()).collect();
+        let res = b.boolean(&Solid::union_all(&tools), BoolOp::Subtract);
+        let removed = v0 - res.volume();
+        let ideal = 4.0 * (1.0 - std::f64::consts::FRAC_PI_4) * r * r * 20.0;
+        assert!((removed - ideal).abs() < 2.0, "в углах лишний материал/шипы: снято {removed}, ожидалось ≈ {ideal}");
     }
 
     #[test]
