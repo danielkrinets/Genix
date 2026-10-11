@@ -228,18 +228,25 @@ pub fn grid(out: &mut Vec<LineInst>, plane: &Plane, center: P2, step: f64, half_
 /// Числа вдоль осей X и Y плоскости через каждые 5 шагов сетки.
 pub fn axis_labels(painter: &eframe::egui::Painter, cam: &crate::camera::Camera, rect: eframe::egui::Rect, plane: &Plane, major: f64, color: Color32) {
     let font = eframe::egui::FontId::proportional(10.5);
-    for k in -40..=40i32 {
-        if k == 0 {
-            continue;
-        }
+    // числа не рисуем, если они наползают друг на друга (вид вдоль оси, сильное отдаление): минимум 46 px между подписями
+    let mut drawn: [Vec<eframe::egui::Pos2>; 2] = [Vec::new(), Vec::new()];
+    let mut shown = 0;
+    let mut ks: Vec<i32> = (-40..=40).filter(|k| *k != 0).collect();
+    ks.sort_by_key(|k| k.abs());
+    for k in ks {
         let v = k as f64 * major;
-        for (p, off) in [([v, 0.0], eframe::egui::vec2(0.0, 9.0)), ([0.0, v], eframe::egui::vec2(-11.0, 0.0))] {
-            if let Some(s) = cam.project(rect, plane.to_world(p)) {
-                let q = s + off;
-                if rect.shrink(30.0).contains(q) {
-                    painter.text(q, eframe::egui::Align2::CENTER_CENTER, fusion_core::expr::format_num(v), font.clone(), color);
-                }
+        for (axis, (p, off)) in [([v, 0.0], eframe::egui::vec2(0.0, 9.0)), ([0.0, v], eframe::egui::vec2(-11.0, 0.0))].into_iter().enumerate() {
+            let Some(s) = cam.project(rect, plane.to_world(p)) else { continue };
+            let q = s + off;
+            if !rect.shrink(30.0).contains(q) || shown > 60 {
+                continue;
             }
+            if drawn[axis].iter().any(|l| l.distance(q) < 46.0) {
+                continue;
+            }
+            drawn[axis].push(q);
+            painter.text(q, eframe::egui::Align2::CENTER_CENTER, fusion_core::expr::format_num(v), font.clone(), color);
+            shown += 1;
         }
     }
 }
