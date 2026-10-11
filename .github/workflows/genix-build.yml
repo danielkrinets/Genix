@@ -44,7 +44,6 @@ jobs:
           path: dist/Genix-macOS.zip
 
   linux:
-    if: false  # временно собираем только под macOS
     name: Linux ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.arch == 'aarch64' }}
@@ -53,7 +52,6 @@ jobs:
       matrix:
         include:
           - { arch: x86_64, runner: ubuntu-22.04 }
-          - { arch: aarch64, runner: ubuntu-22.04-arm }
     steps:
       - uses: actions/checkout@v4
       - name: Системные библиотеки
@@ -156,7 +154,7 @@ jobs:
 
   publish:
     name: Публикация в Releases
-    needs: [macos]
+    needs: [macos, linux]
     if: ${{ always() && needs.macos.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
