@@ -543,12 +543,18 @@ fn section_points(eo: DVec3, f: &[(DVec3, DVec3); 2], op: EdgeOp) -> Result<(Vec
 
 /// Инструмент для прямого ребра: выпуклое — тело для вычитания, вогнутое (второй результат `true`) — тело для добавления.
 pub fn edge_tool(mesh: &Mesh, a: DVec3, b: DVec3, op: EdgeOp) -> Result<(Mesh, bool), String> {
+    edge_tool_ext(mesh, a, b, op, 0.0)
+}
+
+/// То же, но инструмент продлён на `ext` за оба конца ребра (для построения угловых стыков).
+pub fn edge_tool_ext(mesh: &Mesh, a: DVec3, b: DVec3, op: EdgeOp, ext: f64) -> Result<(Mesh, bool), String> {
     let len = a.distance(b);
     let faces = edge_faces(mesh, a, b)?;
     let e = (b - a) / len;
     let (poly, concave) = section_points(a, &faces, op)?;
-    // скругление не выступает за концы ребра: иначе в общих углах соседних скруглений остаются «шипы»
-    let ext = if concave || matches!(op, EdgeOp::Fillet(_)) { 0.0 } else { 0.02 * len + 0.05 };
+    // инструмент не выступает за концы ребра: иначе в общих углах соседних рёбер остаются «шипы»;
+    // стык в углу достраивается отдельно (см. угловые вставки в doc.rs)
+    let ext = if concave { 0.0 } else { ext };
     let (px, py) = perp_frame(e);
     let mut pts: Vec<[f64; 2]> = poly.iter().map(|q| [(*q - a).dot(px), (*q - a).dot(py)]).collect();
     if crate::sketch::signed_area(&pts) < 0.0 {
@@ -630,11 +636,26 @@ mod tests {
             (DVec3::new(30.0, 30.0, 20.0), DVec3::new(10.0, 30.0, 20.0)),
             (DVec3::new(10.0, 30.0, 20.0), DVec3::new(10.0, 10.0, 20.0)),
         ];
-        let tools: Vec<Solid> = rim.iter().map(|(p, q)| Solid::from_mesh(&edge_tool(&b.mesh, *p, *q, EdgeOp::Fillet(r)).unwrap().0).unwrap()).collect();
+        let mut tools: Vec<Solid> = rim.iter().map(|(p, q)| Solid::from_mesh(&edge_tool(&b.mesh, *p, *q, EdgeOp::Fillet(r)).unwrap().0).unwrap()).collect();
+        // угловые вставки: пересечение продлённых инструментов соседних рёбер
+        for i in 0..4 {
+            let (p, q) = rim[i];
+            let (p2, q2) = rim[(i + 1) % 4];
+            let t1 = Solid::from_mesh(&edge_tool_ext(&b.mesh, p, q, EdgeOp::Fillet(r), 3.0 * r).unwrap().0).unwrap();
+            let t2 = Solid::from_mesh(&edge_tool_ext(&b.mesh, p2, q2, EdgeOp::Fillet(r), 3.0 * r).unwrap().0).unwrap();
+            tools.push(t1.boolean(&t2, BoolOp::Intersect));
+        }
         let res = b.boolean(&Solid::union_all(&tools), BoolOp::Subtract);
         let removed = v0 - res.volume();
-        let ideal = 4.0 * (1.0 - std::f64::consts::FRAC_PI_4) * r * r * 20.0;
-        assert!((removed - ideal).abs() < 2.0, "в углах лишний материал/шипы: снято {removed}, ожидалось ≈ {ideal}");
+        // прямые участки + 4 угла «под ус»: в углу сечение — квадрат со стороной d(h), d = r − √(r² − u²)
+        let n = 2000;
+        let corner: f64 = (0..n).map(|k| {
+            let u = (k as f64 + 0.5) / n as f64 * r;
+            let d = r - (r * r - u * u).sqrt();
+            d * d * r / n as f64
+        }).sum();
+        let ideal = 4.0 * (1.0 - std::f64::consts::FRAC_PI_4) * r * r * 20.0 + 4.0 * corner;
+        assert!((removed - ideal).abs() < 0.6, "угол скругления неверный: снято {removed}, ожидалось ≈ {ideal}");
     }
 
     #[test]

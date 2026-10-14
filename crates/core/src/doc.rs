@@ -882,6 +882,26 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                 let s = Solid::from_mesh(&t)?;
                 if concave { adds.push(s) } else { cuts.push(s) }
             }
+            // углы, где сходятся два выбранных прямых ребра: стык «под ус» — пересечение продлённых инструментов
+            let straight: Vec<(DVec3, DVec3)> = edges.iter().filter(|e| !e.circle).map(|e| (DVec3::from(e.a), DVec3::from(e.b))).collect();
+            let reach = v * 3.0 + 0.5;
+            for i in 0..straight.len() {
+                for j in i + 1..straight.len() {
+                    let ((a1, b1), (a2, b2)) = (straight[i], straight[j]);
+                    let shares = [a1, b1].iter().any(|p| [a2, b2].iter().any(|q| p.distance(*q) < 1e-6));
+                    if !shares {
+                        continue;
+                    }
+                    let (Ok((t1, c1)), Ok((t2, c2))) = (geom::edge_tool_ext(b.mesh(), a1, b1, op, reach), geom::edge_tool_ext(b.mesh(), a2, b2, op, reach)) else { continue };
+                    if c1 || c2 {
+                        continue;
+                    }
+                    let joint = Solid::from_mesh(&t1)?.boolean(&Solid::from_mesh(&t2)?, BoolOp::Intersect);
+                    if !joint.is_empty() {
+                        cuts.push(joint);
+                    }
+                }
+            }
             // выпуклые рёбра снимают материал, вогнутые — добавляют (скругление внутренних углов)
             let mut r = (*b.solid).clone();
             if !cuts.is_empty() {

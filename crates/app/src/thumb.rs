@@ -118,3 +118,32 @@ mod tests {
         assert!(img.data[centre + 3] > 200, "в центре — деталь");
     }
 }
+
+#[cfg(test)]
+mod viz {
+    use super::*;
+    use fusion_core::doc::{EdgeRef, Shape};
+    use fusion_core::{Document, Evaluator, Expr, FeatureKind, Op};
+
+    /// Ручная проверка: рамка квадратного отверстия со скруглёнными рёбрами (GENIX_VIZ=путь.png).
+    #[test]
+    fn square_hole_rim_fillet_png() {
+        let Ok(out) = std::env::var("GENIX_VIZ") else { return };
+        let n = |v: f64| Expr::num(v);
+        let mut d = Document::default();
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(40.0), d: n(40.0), h: n(20.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(20.0), d: n(20.0), h: n(22.0) }, at: [n(10.0), n(10.0), n(-1.0)], op: Op::Cut });
+        let mut ev = Evaluator::default();
+        ev.evaluate(&d);
+        let body = ev.model().bodies[0].id;
+        let p = |x: f64, y: f64| [x, y, 20.0];
+        let edges = vec![EdgeRef::line(p(10.0, 10.0), p(30.0, 10.0)), EdgeRef::line(p(30.0, 10.0), p(30.0, 30.0)), EdgeRef::line(p(30.0, 30.0), p(10.0, 30.0)), EdgeRef::line(p(10.0, 30.0), p(10.0, 10.0)),
+            EdgeRef::line(p(0.0, 0.0), p(40.0, 0.0)), EdgeRef::line(p(40.0, 0.0), p(40.0, 40.0)), EdgeRef::line(p(40.0, 40.0), p(0.0, 40.0)), EdgeRef::line(p(0.0, 40.0), p(0.0, 0.0))];
+        d.insert(FeatureKind::Fillet { body, edges, radius: n(4.0) });
+        ev.evaluate(&d);
+        assert!(ev.steps().iter().all(|s| s.error.is_none()), "{:?}", ev.steps().iter().map(|s| s.error.clone()).collect::<Vec<_>>());
+        let m = ev.model();
+        let img = render(&[m.bodies[0].mesh()], -0.9, 0.75, 900, 700).unwrap();
+        image::RgbaImage::from_raw(img.w as u32, img.h as u32, img.data).unwrap().save(out).unwrap();
+    }
+}
