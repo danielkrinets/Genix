@@ -57,6 +57,9 @@ jobs:
           workspaces: .
           key: ios
       - name: Сборка для iOS
+        env:
+          CMAKE_TOOLCHAIN_FILE: ${{ github.workspace }}/packaging/ios/ios.toolchain.cmake
+          IPHONEOS_DEPLOYMENT_TARGET: "15.0"
         run: cargo build --release -p fusion-app --target aarch64-apple-ios
       - name: Упаковка .ipa
         run: packaging/ios/bundle.sh target/aarch64-apple-ios/release/genix
