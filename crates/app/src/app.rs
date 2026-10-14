@@ -87,6 +87,27 @@ enum Confirm {
     Quit,
 }
 
+/// Тип устройства: компьютер, планшет (iPad — крупнее и под палец) или телефон (iPhone — только просмотр).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Device {
+    Desktop,
+    Tablet,
+    Phone,
+}
+
+fn detect_device(ctx: &egui::Context) -> Device {
+    match std::env::var("GENIX_DEVICE").as_deref() {
+        Ok("phone") => return Device::Phone,
+        Ok("tablet") => return Device::Tablet,
+        _ => {}
+    }
+    if !cfg!(target_os = "ios") {
+        return Device::Desktop;
+    }
+    let r = ctx.screen_rect();
+    if r.width().min(r.height()) < 600.0 { Device::Phone } else { Device::Tablet }
+}
+
 /// Припаркованное состояние неактивной вкладки-документа.
 #[derive(Default)]
 struct Tab {
@@ -118,6 +139,7 @@ pub struct App {
     tabs: Vec<Tab>,
     active: usize,
     gate: crate::home::Gate,
+    device: Device,
     home: crate::home::HomeState,
     home_active: bool,
     doc: Document,
@@ -253,6 +275,7 @@ impl App {
             tabs: vec![Tab::default()],
             active: 0,
             gate: Default::default(),
+            device: Device::Desktop,
             home: Default::default(),
             home_active: true,
             theme,
@@ -301,7 +324,8 @@ impl App {
             app.settings.license.get_or_insert_with(|| "DEMO".into());
             app.settings.account_skipped = true;
         }
-        app.home.refresh(&app.settings.recent);
+        let list = app.project_list();
+        app.home.refresh(&list);
         app
     }
 
@@ -365,6 +389,19 @@ impl App {
         format!("{name}{} — Genix", if self.dirty() { " •" } else { "" })
     }
 
+    /// Проекты для главной: недавние и (на iPad/iPhone) все файлы из папки «Документы».
+    fn project_list(&self) -> Vec<String> {
+        let mut v = self.settings.recent.clone();
+        if cfg!(target_os = "ios") || self.device != Device::Desktop {
+            for p in crate::files::documents_with(&["genix", "ostov"]) {
+                if !v.contains(&p) {
+                    v.push(p);
+                }
+            }
+        }
+        v
+    }
+
     fn note_recent(&mut self, p: &std::path::Path) {
         let s = p.to_string_lossy().into_owned();
         self.settings.recent.retain(|x| *x != s);
@@ -384,7 +421,7 @@ impl App {
     }
 
     fn open_dialog(&mut self) {
-        if let Some(p) = rfd::FileDialog::new().add_filter("Genix", &["genix", "ostov"]).pick_file() {
+        if let Some(p) = crate::files::open("Genix", &["genix", "ostov"]) {
             self.open_path(p);
         }
     }
@@ -392,7 +429,7 @@ impl App {
     fn save(&mut self, as_new: bool, now: f64) -> bool {
         let path = match (&self.path, as_new) {
             (Some(p), false) => Some(p.clone()),
-            _ => rfd::FileDialog::new().add_filter("Genix", &["genix"]).set_file_name(tr("деталь.genix")).save_file(),
+            _ => crate::files::save("Genix", &["genix"], tr("деталь.genix")),
         };
         let Some(mut p) = path else { return false };
         if p.extension().is_none() {
@@ -426,7 +463,7 @@ impl App {
             return;
         };
         let name = format!("{}.png", self.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| tr("модель").into()));
-        let Some(p) = rfd::FileDialog::new().add_filter("PNG", &["png"]).set_file_name(&name).save_file() else { return };
+        let Some(p) = crate::files::save("PNG", &["png"], &name) else { return };
         let buf = image::RgbaImage::from_raw(img.w as u32, img.h as u32, img.data).unwrap();
         match buf.save(&p) {
             Ok(()) => self.toast(tr("Снимок сохранён (прозрачный фон)"), false, now),
@@ -446,7 +483,7 @@ impl App {
         }
         let (ext, label) = if obj { ("obj", "OBJ") } else { ("stl", tr("STL (3D-печать)")) };
         let name = format!("{}.{ext}", self.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| tr("модель").into()));
-        let Some(p) = rfd::FileDialog::new().add_filter(label, &[ext]).set_file_name(&name).save_file() else { return };
+        let Some(p) = crate::files::save(label, &[ext], &name) else { return };
         let res = if obj {
             let named: Vec<(&str, &Mesh)> = bodies.iter().map(|b| (self.doc.body_name(b), b.mesh())).collect();
             std::fs::write(&p, Mesh::write_obj(&named))
@@ -584,7 +621,8 @@ impl App {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     if ui.add(egui::Button::new(RichText::new(format!("⌂ {}", tr("Главная"))).strong().size(12.5)).selected(self.home_active).frame(self.home_active).min_size(egui::vec2(90.0, 24.0))).clicked() {
                         self.home_active = true;
-                        self.home.refresh(&self.settings.recent);
+                        let list = self.project_list();
+                        self.home.refresh(&list);
                     }
                     ui.add_space(6.0);
                     for (i, (name, dirty)) in titles.iter().enumerate() {
@@ -1791,6 +1829,12 @@ impl App {
             if zoom != 1.0 {
                 self.cam.zoom_at(zoom, rect, cursor);
             }
+            // два пальца на сенсорном экране (iPad/iPhone) — сдвиг вида
+            if let Some(mt) = ctx.multi_touch() {
+                if mt.num_touches >= 2 && mt.translation_delta != egui::Vec2::ZERO {
+                    self.cam.pan(mt.translation_delta.x as f64, mt.translation_delta.y as f64, rect);
+                }
+            }
             if pan != egui::Vec2::ZERO {
                 self.cam.pan(pan.x as f64, pan.y as f64, rect);
             }
@@ -2291,8 +2335,11 @@ impl eframe::App for App {
             self.theme = want;
             want.apply(ctx);
         }
-        if (ctx.zoom_factor() - self.settings.ui_scale).abs() > 1e-3 {
-            ctx.set_zoom_factor(self.settings.ui_scale);
+        self.device = detect_device(ctx);
+        // на планшете и телефоне всё крупнее — под палец
+        let scale = self.settings.ui_scale * if self.device == Device::Desktop { 1.0 } else { 1.25 };
+        if (ctx.zoom_factor() - scale).abs() > 1e-3 {
+            ctx.set_zoom_factor(scale);
         }
         if self.settings.autosave_minutes > 0 && self.path.is_some() && self.dirty() && matches!(self.mode, Mode::Idle) {
             if self.last_autosave == 0.0 {
@@ -2326,6 +2373,10 @@ impl eframe::App for App {
             }
             return;
         }
+        if self.device == Device::Phone {
+            self.phone_ui(ctx, now);
+            return;
+        }
         if !self.home_active {
             self.shortcuts(ctx, now);
         }
@@ -2334,7 +2385,9 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("tabs").frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(8, 3))).show(ctx, |ui| self.tab_bar(ui));
         if self.home_active {
             let mut act = crate::home::HomeAction::None;
-            egui::CentralPanel::default().show(ctx, |ui| act = crate::home::home_ui(ui, &mut self.home, &self.settings));
+            let list = self.project_list();
+            let viewer = self.device == Device::Phone;
+            egui::CentralPanel::default().show(ctx, |ui| act = crate::home::home_ui(ui, &mut self.home, &self.settings, &list, viewer));
             match act {
                 crate::home::HomeAction::None => {}
                 crate::home::HomeAction::New => self.new_blank_tab(),
@@ -2347,7 +2400,8 @@ impl eframe::App for App {
                 crate::home::HomeAction::Forget(p) => {
                     self.settings.recent.retain(|x| *x != p);
                     self.settings.save();
-                    self.home.refresh(&self.settings.recent);
+                    let list = self.project_list();
+                    self.home.refresh(&list);
                 }
             }
             self.show_dialogs(ctx);
@@ -2384,6 +2438,55 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// iPhone: только просмотр — главная со всеми проектами, 3D-вид (вращение пальцем, щипок — масштаб), аккаунт.
+    fn phone_ui(&mut self, ctx: &egui::Context, now: f64) {
+        self.mode = Mode::Idle;
+        egui::TopBottomPanel::top("phone_bar").frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(10, 8))).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(egui::Image::from_bytes("bytes://genix/logo.svg", crate::home::LOGO_SVG.as_bytes().to_vec()).fit_to_exact_size(egui::vec2(22.0, 22.0)));
+                if !self.home_active && ui.add(egui::Button::new(RichText::new(format!("‹ {}", tr("Главная"))).strong()).min_size(egui::vec2(0.0, 34.0))).clicked() {
+                    self.home_active = true;
+                    let list = self.project_list();
+                    self.home.refresh(&list);
+                }
+                let title = if self.home_active { tr("Главная").to_string() } else { self.tab_title(self.active).0 };
+                ui.label(RichText::new(title).strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let who = self.settings.account.clone().unwrap_or_else(|| tr("Войти").to_string());
+                    ui.menu_button(who, |ui| {
+                        if self.settings.account.is_some() {
+                            if ui.button(tr("Выйти из аккаунта")).clicked() {
+                                self.settings.account = None;
+                                self.settings.account_skipped = false;
+                                self.settings.save();
+                                ui.close_menu();
+                            }
+                        } else if ui.button(tr("Войти в аккаунт")).clicked() {
+                            self.settings.account_skipped = false;
+                            self.settings.save();
+                            ui.close_menu();
+                        }
+                    });
+                });
+            });
+        });
+        if self.home_active {
+            let mut act = crate::home::HomeAction::None;
+            let list = self.project_list();
+            egui::CentralPanel::default().show(ctx, |ui| act = crate::home::home_ui(ui, &mut self.home, &self.settings, &list, true));
+            match act {
+                crate::home::HomeAction::OpenPath(p) => self.open_path(p),
+                crate::home::HomeAction::Example(i) => {
+                    let f: fn() -> Document = if i == 0 { crate::examples::bracket } else { crate::examples::bushing };
+                    self.open_in_tab(f(), None);
+                }
+                _ => {}
+            }
+        } else {
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| self.viewport(ui, now));
+        }
+    }
+
     fn show_dialogs(&mut self, ctx: &egui::Context) {
         let now = self.now;
         if self.params_open {

@@ -5,6 +5,7 @@ mod app;
 mod camera;
 mod commands;
 mod examples;
+mod files;
 mod gpu;
 mod home;
 mod icons;

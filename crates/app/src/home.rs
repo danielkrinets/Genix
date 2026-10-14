@@ -219,7 +219,7 @@ impl HomeState {
     }
 }
 
-pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &Settings) -> HomeAction {
+pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &Settings, projects: &[String], viewer: bool) -> HomeAction {
     let mut action = HomeAction::None;
     let ready: Vec<_> = std::mem::take(&mut *h.pending.lock().unwrap());
     for (k, img) in ready {
@@ -247,12 +247,15 @@ pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &Settings) -> HomeActio
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             ui.add_space(24.0);
-            let new = egui::Button::new(RichText::new(tr("+ Новый проект")).strong().color(Color32::WHITE)).fill(ACCENT).min_size(egui::vec2(150.0, 32.0));
-            if ui.add(new).clicked() {
-                action = HomeAction::New;
-            }
-            if ui.add(egui::Button::new(tr("Открыть файл…")).min_size(egui::vec2(130.0, 32.0))).clicked() {
-                action = HomeAction::Open;
+            // на iPhone только просмотр: создавать и открывать через диалоги нечего
+            if !viewer {
+                let new = egui::Button::new(RichText::new(tr("+ Новый проект")).strong().color(Color32::WHITE)).fill(ACCENT).min_size(egui::vec2(150.0, 32.0));
+                if ui.add(new).clicked() {
+                    action = HomeAction::New;
+                }
+                if !cfg!(target_os = "ios") && ui.add(egui::Button::new(tr("Открыть файл…")).min_size(egui::vec2(130.0, 32.0))).clicked() {
+                    action = HomeAction::Open;
+                }
             }
             ui.add_space(12.0);
             ui.add(egui::TextEdit::singleline(&mut h.search).hint_text(tr("Поиск проектов")).desired_width(240.0));
@@ -284,11 +287,11 @@ pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &Settings) -> HomeActio
             ui.add_space(24.0);
             ui.label(RichText::new(tr("НЕДАВНИЕ ПРОЕКТЫ")).small().weak());
         });
-        let shown: Vec<&String> = st.recent.iter().filter(|p| h.infos.get(*p).map(|i| q.is_empty() || i.name.to_lowercase().contains(&q)).unwrap_or(true)).collect();
+        let shown: Vec<&String> = projects.iter().filter(|p| h.infos.get(*p).map(|i| q.is_empty() || i.name.to_lowercase().contains(&q)).unwrap_or(true)).collect();
         if shown.is_empty() {
             ui.horizontal(|ui| {
                 ui.add_space(24.0);
-                ui.label(RichText::new(if st.recent.is_empty() { tr("Пока нет проектов — создайте новый или откройте файл") } else { tr("Ничего не найдено") }).weak());
+                ui.label(RichText::new(if projects.is_empty() { if viewer { tr("Положите файлы .genix в папку Genix в приложении «Файлы»") } else { tr("Пока нет проектов — создайте новый или откройте файл") } } else { tr("Ничего не найдено") }).weak());
             });
         }
         ui.horizontal_wrapped(|ui| {

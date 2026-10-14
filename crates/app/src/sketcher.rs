@@ -1079,7 +1079,7 @@ impl SketchSession {
             group(ui, tr("ИМПОРТ"), |ui| {
                 ui.menu_button(tr("⤓ Файлы ▾"), |ui| {
                 if ui.button(tr("🖼 Фото → чертёж")).on_hover_text(tr("Превратить картинку (PNG, JPG…) в контуры чертежа")).clicked() {
-                    if let Some(path) = rfd::FileDialog::new().add_filter(tr("Изображения"), &["png", "jpg", "jpeg", "bmp", "gif", "webp"]).pick_file() {
+                    if let Some(path) = crate::files::open(tr("Изображения"), &["png", "jpg", "jpeg", "bmp", "gif", "webp"]) {
                         match crate::trace_ui::TraceDialog::load(&path) {
                             Ok(d) => self.trace = Some(d),
                             Err(e) => self.message = Some(tf!("Не удалось открыть картинку: {}", e)),
@@ -1087,7 +1087,7 @@ impl SketchSession {
                     }
                 }
                 if ui.button(tr("📐 Импорт DXF")).on_hover_text(tr("Добавить в чертёж линии, окружности и дуги из файла DXF")).clicked() {
-                    if let Some(path) = rfd::FileDialog::new().add_filter("DXF", &["dxf"]).pick_file() {
+                    if let Some(path) = crate::files::open("DXF", &["dxf"]) {
                         match std::fs::read_to_string(&path) {
                             Ok(text) => {
                                 self.checkpoint();
@@ -1107,7 +1107,7 @@ impl SketchSession {
                     }
                 }
                 if ui.button(tr("📤 Экспорт DXF")).on_hover_text(tr("Сохранить чертёж в файл DXF")).clicked() {
-                    if let Some(path) = rfd::FileDialog::new().add_filter("DXF", &["dxf"]).set_file_name("blueprint.dxf").save_file() {
+                    if let Some(path) = crate::files::save("DXF", &["dxf"], "blueprint.dxf") {
                         self.message = Some(match std::fs::write(&path, fusion_core::dxf::export(&self.sketch)) {
                             Ok(()) => tr("Чертёж сохранён в DXF").into(),
                             Err(e) => tf!("Не удалось сохранить: {}", e),

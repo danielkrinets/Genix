@@ -43,6 +43,28 @@ jobs:
           name: Genix-macOS
           path: dist/Genix-macOS.zip
 
+  ios:
+    name: iPhone / iPad (без подписи)
+    runs-on: macos-14
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          key: ios
+      - name: Сборка для iOS
+        run: cargo build --release -p fusion-app --target aarch64-apple-ios
+      - name: Упаковка .ipa
+        run: packaging/ios/bundle.sh target/aarch64-apple-ios/release/genix
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Genix-iOS
+          path: dist/Genix-iOS-unsigned.ipa
+
   linux:
     name: Linux ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
@@ -154,7 +176,7 @@ jobs:
 
   publish:
     name: Публикация в Releases
-    needs: [macos, linux]
+    needs: [macos, linux, ios]
     if: ${{ always() && needs.macos.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
@@ -175,6 +197,7 @@ jobs:
             | Система | Файл |
             |---|---|
             | macOS (Apple Silicon и Intel) | `Genix-macOS.zip` |
+            | iPad / iPhone (нужна подпись своим Apple ID) | `Genix-iOS-unsigned.ipa` |
             | Windows 10/11 x64 | `Genix-windows-x86_64.zip` |
             | Windows 11 ARM | `Genix-windows-arm64.zip` |
             | Linux x86_64 | `Genix-linux-x86_64.AppImage`, `.deb`, `.rpm` или `.tar.gz` |

@@ -643,4 +643,6 @@ pub const EN: &[(&str, &str)] = &[
     ("Снимок модели PNG без фона…", "Model snapshot PNG (transparent)…"),
     ("Снимок сохранён (прозрачный фон)", "Snapshot saved (transparent background)"),
     ("Снимок модели PNG без фона (⇧⌘P)", "Model snapshot PNG, transparent (⇧⌘P)"),
+    ("Войти в аккаунт", "Sign in to account"),
+    ("Положите файлы .genix в папку Genix в приложении «Файлы»", "Put .genix files into the Genix folder in the Files app"),
 ];
