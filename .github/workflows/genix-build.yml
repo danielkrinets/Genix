@@ -18,6 +18,8 @@ jobs:
   macos:
     name: macOS (Apple Silicon + Intel)
     runs-on: macos-14
+    env:
+      MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -38,6 +40,14 @@ jobs:
           lipo -info genix-universal
       - name: Упаковка .app
         run: packaging/macos/bundle.sh genix-universal
+      - name: Подпись и нотаризация
+        if: ${{ env.MAC_CERT_P12 != '' }}
+        env:
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: packaging/macos/sign.sh
       - uses: actions/upload-artifact@v4
         with:
           name: Genix-macOS

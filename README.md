@@ -60,6 +60,17 @@
 
 Ещё нужно один раз создать приложение в App Store Connect (My Apps → «+» → New App, Bundle ID `com.danielkrinets.genix`). После этого каждый пуш в `main` даёт новую сборку в TestFlight; без ключа API выкладывается только подписанный `Genix-iOS.ipa` в артефакты сборки.
 
+#### Подпись для Mac
+
+Чтобы Genix на Mac открывался двойным щелчком без предупреждений, добавьте ещё два секрета:
+
+| Секрет | Что это |
+|---|---|
+| `MAC_CERT_P12` | сертификат **Developer ID Application** (developer.apple.com → Certificates → «+»), экспортированный в `.p12`, в base64 |
+| `MAC_CERT_PASSWORD` | пароль от этого `.p12` |
+
+Нотаризация использует тот же ключ App Store Connect (`ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8`). Сертификат Developer ID может создать только владелец аккаунта (Account Holder).
+
 ### Первый запуск
 
 - **macOS.** Программа не подписана сертификатом Apple: правой кнопкой → «Открыть» → «Открыть». Если такой кнопки нет (macOS 15+): «Системные настройки» → «Конфиденциальность и безопасность» → «Всё равно открыть». Или в Терминале: `xattr -dr com.apple.quarantine "/Applications/Genix.app"`.
