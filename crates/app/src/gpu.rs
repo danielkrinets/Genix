@@ -112,6 +112,8 @@ pub struct GpuScene {
     srgb_target: bool,
     show_faces: bool,
     show_edges: bool,
+    /// номер данных тел, уже лежащих в буферах
+    pub bodies_gen: u64,
 }
 
 impl GpuScene {
@@ -241,6 +243,7 @@ impl GpuScene {
             srgb_target: color_format.is_srgb(),
             show_faces: true,
             show_edges: true,
+            bodies_gen: 0,
         }
     }
 

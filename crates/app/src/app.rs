@@ -154,10 +154,14 @@ pub struct App {
     selection: Vec<u64>,
     hover: Option<Hit>,
     cache: RenderCache,
-    shown_model: usize,
+    /// модель, чьи буферы уже на GPU (держим ссылку, чтобы адрес не достался новой модели)
+    shown_model: Option<Arc<Model>>,
     shown_edge_w: u32,
     ortho: bool,
-    upload: Option<(Vec<FaceVertex>, Vec<LineInst>)>,
+    /// данные тел для GPU и их номер: сцена перезаливает буферы, когда номер меняется
+    /// (кадр egui может быть выброшен и перерисован, поэтому данные не «забираем», а держим)
+    upload: Arc<(Vec<FaceVertex>, Vec<LineInst>)>,
+    upload_gen: u64,
     show_planes: bool,
     settings: Settings,
     settings_open: bool,
@@ -171,7 +175,7 @@ pub struct App {
     last_play: f64,
     new_view_name: String,
     hover_edge: Option<EdgeRef>,
-    edge_cache: std::cell::RefCell<std::collections::HashMap<usize, Arc<Vec<EdgeRef>>>>,
+    edge_cache: std::cell::RefCell<std::collections::HashMap<usize, (Arc<fusion_core::csg::Solid>, Arc<Vec<EdgeRef>>)>>,
     toast: Option<(String, f64, bool)>,
     rename_body: Option<(u64, String)>,
     rename_feature: Option<(u64, String)>,
@@ -184,7 +188,7 @@ pub struct App {
     context_body: Option<u64>,
     new_param: (String, String),
     viewport: Rect,
-    face_groups: std::cell::RefCell<std::collections::HashMap<usize, Arc<Vec<u32>>>>,
+    face_groups: std::cell::RefCell<std::collections::HashMap<usize, (Arc<fusion_core::csg::Solid>, Arc<Vec<u32>>)>>,
     /// Вид камеры до входа в чертёж — возвращаемся к нему после.
     pre_sketch_view: Option<(f64, f64)>,
     now: f64,
@@ -282,10 +286,11 @@ impl App {
             selection: Vec::new(),
             hover: None,
             cache: RenderCache::default(),
-            shown_model: usize::MAX,
+            shown_model: None,
             shown_edge_w: 0,
             ortho: false,
-            upload: None,
+            upload: Default::default(),
+            upload_gen: 0,
             show_planes: false,
             settings,
             settings_open: false,
@@ -537,7 +542,7 @@ impl App {
         self.selection = t.selection;
         self.mode = Mode::Idle;
         self.home_active = false;
-        self.shown_model = usize::MAX;
+        self.shown_model = None;
         self.after_doc_change();
     }
 
@@ -995,7 +1000,15 @@ impl App {
         if cache.len() > 512 {
             cache.clear();
         }
-        cache.entry(key).or_insert_with(|| Arc::new(b.mesh().planar_faces())).clone()
+        // в записи держим само тело: пока оно живо, его адрес не достанется новому телу
+        match cache.get(&key) {
+            Some((solid, v)) if Arc::ptr_eq(solid, &b.solid) => v.clone(),
+            _ => {
+                let v = Arc::new(b.mesh().planar_faces());
+                cache.insert(key, (b.solid.clone(), v.clone()));
+                v
+            }
+        }
     }
 
     fn handle_click(&mut self, hit: Option<Hit>, shift: bool, now: f64) {
@@ -1914,12 +1927,12 @@ impl App {
 
         self.cam.fov_deg = if self.ortho { 5.0 } else { self.settings.fov_deg as f64 };
         // ---- данные для GPU
-        let model_ptr = Arc::as_ptr(&model) as usize;
         let ew_bits = self.settings.edge_width.to_bits();
-        if model_ptr != self.shown_model || ew_bits != self.shown_edge_w {
-            self.shown_model = model_ptr;
+        if !self.shown_model.as_ref().is_some_and(|m| Arc::ptr_eq(m, &model)) || ew_bits != self.shown_edge_w {
+            self.shown_model = Some(model.clone());
             self.shown_edge_w = ew_bits;
-            self.upload = Some(self.cache.assemble(&model.bodies, self.settings.edge_width));
+            self.upload = Arc::new(self.cache.assemble(&model.bodies, self.settings.edge_width));
+            self.upload_gen += 1;
         }
         let overlay = self.build_overlay(&model, rect, &colors);
         let mut body_colors = Vec::with_capacity(model.bodies.len());
@@ -1958,7 +1971,7 @@ impl App {
             bg_bottom: linear(colors.bg_bottom),
             edge_color: linear(colors.edge),
         };
-        let cb = ViewCallback { frame, colors: body_colors, overlay, upload: self.upload.take(), style: self.settings.visual_style.parts() };
+        let cb = ViewCallback { frame, colors: body_colors, overlay, upload: self.upload.clone(), upload_gen: self.upload_gen, style: self.settings.visual_style.parts() };
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(rect, cb));
 
         // ---- 2D поверх 3D
@@ -2271,7 +2284,8 @@ struct ViewCallback {
     frame: FrameUniform,
     colors: Vec<[f32; 4]>,
     overlay: Overlay,
-    upload: Option<(Vec<FaceVertex>, Vec<LineInst>)>,
+    upload: Arc<(Vec<FaceVertex>, Vec<LineInst>)>,
+    upload_gen: u64,
     style: (bool, bool),
 }
 
@@ -2285,8 +2299,9 @@ impl egui_wgpu::CallbackTrait for ViewCallback {
         res: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         let scene: &mut GpuScene = res.get_mut().unwrap();
-        if let Some((f, e)) = &self.upload {
-            scene.set_bodies(device, queue, f, e);
+        if scene.bodies_gen != self.upload_gen {
+            scene.set_bodies(device, queue, &self.upload.0, &self.upload.1);
+            scene.bodies_gen = self.upload_gen;
         }
         scene.set_style(self.style.0, self.style.1);
         scene.set_overlay(device, queue, &self.overlay);
@@ -2882,7 +2897,14 @@ impl App {
         if cache.len() > 256 {
             cache.clear();
         }
-        cache.entry(key).or_insert_with(|| Arc::new(compute_straight_edges(b.mesh()))).clone()
+        match cache.get(&key) {
+            Some((solid, v)) if Arc::ptr_eq(solid, &b.solid) => v.clone(),
+            _ => {
+                let v = Arc::new(compute_straight_edges(b.mesh()));
+                cache.insert(key, (b.solid.clone(), v.clone()));
+                v
+            }
+        }
     }
 
     /// Ребро под курсором: ближайшее к точке экрана и не закрытое телом.
