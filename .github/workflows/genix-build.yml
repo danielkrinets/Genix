@@ -44,9 +44,11 @@ jobs:
           path: dist/Genix-macOS.zip
 
   ios:
-    name: iPhone / iPad (без подписи)
+    name: iPhone / iPad
     runs-on: macos-14
     continue-on-error: true
+    env:
+      IOS_CERT_P12: ${{ secrets.IOS_CERT_P12 }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -63,10 +65,20 @@ jobs:
         run: cargo build --release -p fusion-app --target aarch64-apple-ios
       - name: Упаковка .ipa
         run: packaging/ios/bundle.sh target/aarch64-apple-ios/release/genix
+      - name: Подпись и TestFlight
+        if: ${{ env.IOS_CERT_P12 != '' }}
+        env:
+          IOS_CERT_PASSWORD: ${{ secrets.IOS_CERT_PASSWORD }}
+          IOS_PROFILE: ${{ secrets.IOS_PROFILE }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: packaging/ios/sign.sh
       - uses: actions/upload-artifact@v4
         with:
           name: Genix-iOS
-          path: dist/Genix-iOS-unsigned.ipa
+          path: dist/*.ipa
 
   linux:
     name: Linux ${{ matrix.arch }}
@@ -200,7 +212,7 @@ jobs:
             | Система | Файл |
             |---|---|
             | macOS (Apple Silicon и Intel) | `Genix-macOS.zip` |
-            | iPad / iPhone (нужна подпись своим Apple ID) | `Genix-iOS-unsigned.ipa` |
+            | iPad / iPhone | через TestFlight (если настроена подпись) или `Genix-iOS-unsigned.ipa` |
             | Windows 10/11 x64 | `Genix-windows-x86_64.zip` |
             | Windows 11 ARM | `Genix-windows-arm64.zip` |
             | Linux x86_64 | `Genix-linux-x86_64.AppImage`, `.deb`, `.rpm` или `.tar.gz` |

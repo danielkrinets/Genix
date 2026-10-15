@@ -44,7 +44,21 @@
 - **iPad** — полная версия: интерфейс крупнее и под палец, один палец вращает вид, два пальца сдвигают, щипок — масштаб.
 - **iPhone** — только просмотр: главная со всеми проектами, 3D-вид модели и вход в аккаунт.
 - Проекты лежат в папке «Genix» в приложении «Файлы» (их туда можно скопировать с Mac через AirDrop/iCloud Drive).
-- Сборка `Genix-iOS-unsigned.ipa` **не подписана**: Apple не даёт ставить такие приложения напрямую. Нужно подписать своим Apple ID (например, через Sideloadly или AltStore) или выложить через TestFlight — для этого нужен аккаунт разработчика Apple.
+- Сборка `Genix-iOS-unsigned.ipa` **не подписана**: Apple не даёт ставить такие приложения напрямую. Нужно подписать своим Apple ID (например, через Sideloadly или AltStore) или выложить через TestFlight.
+
+#### TestFlight (если есть аккаунт Apple Developer)
+
+Сборщик сам подписывает приложение и отправляет его в TestFlight, если в репозитории есть секреты (GitHub → Settings → Secrets and variables → Actions → New repository secret):
+
+| Секрет | Что это |
+|---|---|
+| `IOS_CERT_P12` | сертификат **Apple Distribution**, экспортированный из «Связки ключей» в `.p12`, в base64 (`base64 -i cert.p12 \| pbcopy`) |
+| `IOS_CERT_PASSWORD` | пароль, заданный при экспорте `.p12` |
+| `IOS_PROFILE` | профиль **App Store** для `com.danielkrinets.genix` (`.mobileprovision`), в base64 |
+| `ASC_KEY_ID`, `ASC_ISSUER_ID` | из App Store Connect → Users and Access → Integrations → App Store Connect API |
+| `ASC_KEY_P8` | содержимое скачанного файла `AuthKey_XXXX.p8` |
+
+Ещё нужно один раз создать приложение в App Store Connect (My Apps → «+» → New App, Bundle ID `com.danielkrinets.genix`). После этого каждый пуш в `main` даёт новую сборку в TestFlight; без ключа API выкладывается только подписанный `Genix-iOS.ipa` в артефакты сборки.
 
 ### Первый запуск
 
