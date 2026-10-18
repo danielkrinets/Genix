@@ -52,6 +52,7 @@ fn raw(id: &str) -> Option<&'static str> {
         "help" => include_str!("../assets/icons/help.svg"),
         "hide" => include_str!("../assets/icons/hide.svg"),
         "hole" => include_str!("../assets/icons/hole.svg"),
+        "cutter" => include_str!("../assets/icons/hole.svg"),
         "insert_image" => include_str!("../assets/icons/insert_image.svg"),
         "insert_step" => include_str!("../assets/icons/insert_step.svg"),
         "insert_stl" => include_str!("../assets/icons/insert_stl.svg"),

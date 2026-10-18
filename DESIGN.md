@@ -86,7 +86,7 @@ On macOS, install_fonts attempts to read system SF Pro from SFNS.ttf at runtime 
 
 All source dimensions are egui logical points; frontmatter px values are portable representations. The editor retains menus, tabs, toolbar, bottom timeline, resizable side panels and a geometry viewport. The rounded floating dock groups viewport controls without changing modeling flow.
 
-Home navigation uses a 190-point sidebar at widths of 700 points or more and wraps horizontally below that threshold. Model cards wrap at fixed size. Profile, Updates and Server use a scrollable rounded surface with 28-point inner margin and maximum content width 640. The auth sheet uses 24-point padding and fits within a requested width of 392. Default control interaction height is 30; shared primary and navigation controls are 42. Preserve scrolling and wrapping on narrow windows.
+Home navigation animates between a 64-point icon rail and a 190-point labeled sidebar at widths of 700 points or more. Pointer proximity reveals labels, and the user can pin the expanded state; narrow layouts continue to wrap horizontally. Model cards wrap at fixed size. Profile, Updates, Server and the dedicated Settings page use scrollable rounded surfaces. The auth sheet uses 24-point padding and fits within a requested width of 392. Default control interaction height is 30; shared primary and navigation controls are 42. Preserve scrolling and wrapping on narrow windows.
 
 ## Elevation & Depth
 
@@ -104,6 +104,8 @@ Use the documented radius roles: general controls, primary/navigation controls, 
 - **Switches and swatches:** shared custom switch supports pointer and keyboard activation; focus outlines the track. Swatches present the configured accent choices with check/ring selection feedback.
 - **Model cards:** 240×160, 20-point corners, a 94-point-high inset preview area with 14-point corners, real aspect-fitted geometry, truncated title and smaller metadata. Hover/focus draws an accent outline; press blends the surface. Loading/unavailable previews retain explicit text.
 - **Loading:** accent-colored 18-point spinner plus secondary text; reduced motion replaces rotation with a static dot.
+- **Tool help:** editor tools use a delayed rich tooltip containing the action name, a concise explanation and a small before/after diagram. Disclosure chevrons provide a full-row target and rotate with shared feedback.
+- **Material and cutters:** the body inspector exposes material color/reflection and a switch that renders the body as a translucent cyan cutter until subtraction is applied.
 - **Dock and toast:** viewport controls sit on a rounded flat container. Non-error toasts use the configured accent with computed foreground; errors retain semantic error color. Toasts appear for four seconds, enter over 200ms and fade during the final 400ms. Reduced motion skips entry but the timed exit fade remains in current source.
 
 Shared pointer feedback uses 160ms cubic-bezier(0.23, 1, 0.32, 1), retargeting from the currently painted value on reversal. Keyboard events and the app reduced-motion preference resolve shared feedback immediately. Pointer page navigation raises opacity from 0.65 to 1 over 160ms; initial/programmatic pages are visible by default. The app preference disables page fades and spinner motion; it does not automatically read OS accessibility settings. Keep effects subordinate to CAD operations.

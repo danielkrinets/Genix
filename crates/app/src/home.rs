@@ -1,7 +1,7 @@
 //! Вход по лицензии и в аккаунт (демо) и главная страница со всеми проектами.
 
 use crate::i18n::tr;
-use crate::settings::Settings;
+use crate::settings::{ControlScheme, Settings, ThemeChoice, VisualStyle};
 use crate::tf;
 
 use eframe::egui::{self, Color32, RichText};
@@ -207,6 +207,8 @@ pub struct HomeState {
     inflight: HashSet<String>,
     completed: HashSet<String>,
     busy: Arc<AtomicUsize>,
+    new_project_started: Option<f64>,
+    sidebar_pinned: bool,
 }
 
 /// Отрисовать превью документа на фоновом потоке (прозрачный фон, изометрия).
@@ -232,7 +234,6 @@ pub enum HomeAction {
     OpenPath(PathBuf),
     Example(usize),
     Forget(String),
-    Settings,
     SettingsChanged,
     SignOut,
 }
@@ -278,6 +279,7 @@ pub enum HomePage {
     Profile,
     Updates,
     Server,
+    Settings,
 }
 
 impl HomePage {
@@ -287,6 +289,7 @@ impl HomePage {
             Self::Profile => "Профиль",
             Self::Updates => "Обновления",
             Self::Server => "Сервер",
+            Self::Settings => "Настройки",
         }
     }
 }
@@ -309,42 +312,48 @@ impl HomeState {
     }
 }
 
-fn nav(ui: &mut egui::Ui, h: &mut HomeState, action: &mut HomeAction) {
-    for (page, icon) in [(HomePage::Models, "home_models"), (HomePage::Profile, "profile"), (HomePage::Updates, "updates"), (HomePage::Server, "server")] {
+fn nav(ui: &mut egui::Ui, h: &mut HomeState, expanded: bool) {
+    for (page, icon) in [(HomePage::Models, "home_models"), (HomePage::Profile, "profile"), (HomePage::Updates, "updates"), (HomePage::Server, "server"), (HomePage::Settings, "settings")] {
         let selected = h.page == page;
-        let response = crate::widgets::navigation_button(ui, tr(page.label()), icon, selected);
+        let response = crate::widgets::navigation_button_mode(ui, tr(page.label()), icon, selected, expanded);
         if response.clicked() && !selected {
             h.navigate(page);
             if ui.input(|i| i.pointer.any_released()) { h.transition_started = Some(ui.input(|i| i.time)); }
         }
     }
-    ui.add_space(12.0);
-    if crate::widgets::navigation_button(ui, tr("Настройки"), "settings", false).clicked() { *action = HomeAction::Settings; }
 }
 
 pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects: &[String], viewer: bool) -> HomeAction {
     let mut action = HomeAction::None;
     if ui.available_width() < 700.0 {
-        ui.horizontal_wrapped(|ui| nav(ui, h, &mut action));
+        ui.horizontal_wrapped(|ui| nav(ui, h, true));
         ui.separator();
         let content = hub_content(ui, h, st, projects, viewer);
         if !matches!(content, HomeAction::None) { action = content; }
     } else {
         let height = ui.available_height();
+        let left = ui.min_rect().left();
+        let hover_nav = ui.ctx().pointer_hover_pos().is_some_and(|p| p.x >= left && p.x <= left + 205.0);
+        let expanded = h.sidebar_pinned || hover_nav;
+        let open = crate::widgets::feedback(ui, ui.id().with("home-sidebar-open"), expanded);
+        let nav_width = 64.0 + (190.0 - 64.0) * open;
         ui.horizontal_top(|ui| {
-            ui.allocate_ui_with_layout(egui::vec2(190.0, height), egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.allocate_ui_with_layout(egui::vec2(nav_width, height), egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.add_space(20.0);
                 ui.horizontal(|ui| {
                     ui.add(egui::Image::from_bytes("bytes://genix/logo.svg", LOGO_SVG.as_bytes().to_vec()).fit_to_exact_size(egui::vec2(28.0, 28.0)));
-                    ui.label(RichText::new("Genix").size(23.0).strong());
+                    if open > 0.72 { ui.label(RichText::new("Genix").size(23.0).strong()); }
                 });
                 ui.add_space(28.0);
                 ui.spacing_mut().item_spacing.y = 6.0;
-                nav(ui, h, &mut action);
+                nav(ui, h, open > 0.72);
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     ui.add_space(16.0);
-                    ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).color(muted(ui)).small());
-                    ui.label(RichText::new(if st.account.is_some() { st.display_name.as_str() } else { tr("Локальное пространство") }).strong());
+                    if open > 0.72 {
+                        crate::widgets::checkbox(ui, &mut h.sidebar_pinned, tr("Закрепить панель"));
+                        ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).color(muted(ui)).small());
+                        ui.label(RichText::new(if st.account.is_some() { st.display_name.as_str() } else { tr("Локальное пространство") }).strong());
+                    }
                 });
             });
             ui.separator();
@@ -451,11 +460,86 @@ fn hub_content_inner(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, pr
                         h.checkout = true;
                     }
                 }
+                HomePage::Settings => settings_page(ui, st, &mut action),
                 HomePage::Models => {},
             }
         });
     });
     action
+}
+
+fn settings_page(ui: &mut egui::Ui, st: &mut Settings, action: &mut HomeAction) {
+    let before = st.clone();
+    ui.heading(tr("Настройки"));
+    ui.label(RichText::new(tr("Параметры интерфейса, редактора и локального аккаунта")).color(muted(ui)));
+    ui.add_space(22.0);
+
+    crate::widgets::section(ui, tr("ВНЕШНИЙ ВИД"));
+    egui::Grid::new("home-settings-appearance").num_columns(2).spacing([28.0, 12.0]).show(ui, |ui| {
+        ui.label(tr("Тема"));
+        egui::ComboBox::from_id_salt("home-theme").selected_text(match st.theme { ThemeChoice::Auto => tr("Как в системе"), ThemeChoice::Light => tr("Светлая"), ThemeChoice::Dark => tr("Тёмная") }).show_ui(ui, |ui| {
+            ui.selectable_value(&mut st.theme, ThemeChoice::Auto, tr("Как в системе"));
+            ui.selectable_value(&mut st.theme, ThemeChoice::Light, tr("Светлая"));
+            ui.selectable_value(&mut st.theme, ThemeChoice::Dark, tr("Тёмная"));
+        });
+        ui.end_row();
+        ui.label(tr("Акцентный цвет"));
+        ui.horizontal(|ui| { for color in crate::theme::Accent::ALL { if crate::widgets::accent_swatch(ui, color, st.accent == color).clicked() { st.accent = color; } } });
+        ui.end_row();
+        ui.label(tr("Масштаб интерфейса"));
+        ui.add(egui::Slider::new(&mut st.ui_scale, 0.8..=1.6).step_by(0.05).fixed_decimals(2));
+        ui.end_row();
+        ui.label(tr("Анимации"));
+        crate::widgets::toggle(ui, &mut st.reduce_motion, tr("Уменьшить движение"));
+        ui.end_row();
+    });
+
+    ui.add_space(22.0);
+    crate::widgets::section(ui, tr("РЕДАКТОР"));
+    egui::Grid::new("home-settings-editor").num_columns(2).spacing([28.0, 12.0]).show(ui, |ui| {
+        ui.label(tr("Стиль отображения"));
+        egui::ComboBox::from_id_salt("home-vstyle").selected_text(tr(st.visual_style.label())).show_ui(ui, |ui| {
+            for style in VisualStyle::ALL { ui.selectable_value(&mut st.visual_style, style, tr(style.label())); }
+        });
+        ui.end_row();
+        ui.label(tr("Схема управления"));
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut st.controls, ControlScheme::Standard, tr("Стандартная"));
+            ui.selectable_value(&mut st.controls, ControlScheme::Blender, "Blender");
+        });
+        ui.end_row();
+        ui.label(tr("Сетка"));
+        crate::widgets::toggle(ui, &mut st.show_grid, tr("показывать"));
+        ui.end_row();
+        ui.label(tr("Привязка в чертеже"));
+        crate::widgets::toggle(ui, &mut st.snap_grid, tr("включена"));
+        ui.end_row();
+        ui.label(tr("Толщина рёбер"));
+        ui.add(egui::Slider::new(&mut st.edge_width, 0.8..=3.0).fixed_decimals(1));
+        ui.end_row();
+        ui.label(tr("Угол обзора"));
+        ui.add(egui::Slider::new(&mut st.fov_deg, 10.0..=70.0).suffix("°").fixed_decimals(0));
+        ui.end_row();
+        ui.label(tr("Материал новых тел"));
+        const MATERIALS: [&str; 7] = ["Сталь", "Нерж. сталь", "Алюминий", "Латунь", "PLA (3D-печать)", "ABS/PETG", "Дерево (сосна)"];
+        egui::ComboBox::from_id_salt("home-material").selected_text(tr(MATERIALS[st.material.min(MATERIALS.len()-1)])).show_ui(ui, |ui| {
+            for (index, name) in MATERIALS.iter().enumerate() { ui.selectable_value(&mut st.material, index, tr(name)); }
+        });
+        ui.end_row();
+        ui.label(tr("Автосохранение"));
+        ui.add(egui::DragValue::new(&mut st.autosave_minutes).range(0..=60).suffix(tr(" мин")));
+        ui.end_row();
+    });
+
+    ui.add_space(22.0);
+    crate::widgets::section(ui, tr("АККАУНТ"));
+    ui.label(st.account.as_deref().unwrap_or(tr("Локальное пространство")));
+    ui.label(RichText::new(tr("Выход не удаляет локальные проекты.")).color(muted(ui)).small());
+    if ui.add(egui::Button::new(RichText::new(tr("Выйти из аккаунта")).color(Color32::from_rgb(220, 70, 70)))).clicked() {
+        *action = HomeAction::SignOut;
+    }
+
+    if *st != before && matches!(action, HomeAction::None) { *action = HomeAction::SettingsChanged; }
 }
 
 fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, _st: &Settings, projects: &[String], viewer: bool) -> HomeAction {
@@ -492,8 +576,17 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, _st: &Settings, projects: &
             ui.add_space(24.0);
             // на iPhone только просмотр: создавать и открывать через диалоги нечего
             if !viewer {
-                if crate::widgets::primary_button(ui, tr("+ Новый проект"), 170.0).clicked() {
-                    action = HomeAction::New;
+                if let Some(started) = h.new_project_started {
+                    new_project_button(ui, true);
+                    if ui.input(|i| i.time) - started >= 0.55 {
+                        h.new_project_started = None;
+                        action = HomeAction::New;
+                    } else {
+                        ui.ctx().request_repaint();
+                    }
+                } else if new_project_button(ui, false).clicked() {
+                    h.new_project_started = Some(ui.input(|i| i.time));
+                    ui.ctx().request_repaint();
                 }
                 if !cfg!(target_os = "ios") && ui.add(egui::Button::new(tr("Открыть файл…")).min_size(egui::vec2(130.0, 42.0))).clicked() {
                     action = HomeAction::Open;
@@ -510,7 +603,13 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, _st: &Settings, projects: &
             ui.painter().circle_stroke(center,7.0,stroke);
             ui.painter().line_segment([center+egui::vec2(5.0,5.0),center+egui::vec2(10.0,10.0)],stroke);
             if !h.search.is_empty() && ui.button(tr("Очистить")).clicked() { h.search.clear(); }
-            if ui.add(egui::Button::new(if h.filters.active() { format!("{} •", tr("Фильтры")) } else { tr("Фильтры").into() }).corner_radius(12).selected(h.filters_open || h.filters.active())).clicked() { h.filters_open = !h.filters_open; }
+            let filters_selected = h.filters_open || h.filters.active();
+            let filters_label = if h.filters.active() { format!("{} •", tr("Фильтры")) } else { tr("Фильтры").into() };
+            // This compact control sits directly on the accent fill. Keep its
+            // label white even when the global accent contrast heuristic
+            // chooses dark text for larger primary buttons.
+            let filters_text = RichText::new(filters_label).color(if filters_selected { egui::Color32::WHITE } else { ui.visuals().text_color() });
+            if ui.add(egui::Button::new(filters_text).corner_radius(12).selected(filters_selected)).clicked() { h.filters_open = !h.filters_open; }
         });
         let openness = crate::widgets::feedback(ui, ui.id().with("project-filters"), h.filters_open);
         if openness > 0.0 {
@@ -638,6 +737,38 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, _st: &Settings, projects: &
         });
     });
     action
+}
+
+fn new_project_button(ui: &mut egui::Ui, loading: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(210.0, 48.0), if loading { egui::Sense::hover() } else { egui::Sense::click() });
+    let hover = crate::widgets::feedback(ui, response.id.with("hover"), response.hovered() && !loading);
+    let press = crate::widgets::feedback(ui, response.id.with("press"), response.is_pointer_button_down_on());
+    let paint = rect.shrink(press * 1.5);
+    ui.painter().rect_filled(paint, 14.0, crate::theme::accent());
+    if hover > 0.0 { ui.painter().rect_filled(paint, 14.0, Color32::from_white_alpha((hover * 20.0) as u8)); }
+    let color = crate::theme::on_accent();
+    if loading {
+        let center = paint.left_center() + egui::vec2(25.0, 0.0);
+        if crate::theme::reduced_motion() {
+            ui.painter().circle_filled(center, 4.0, color);
+        } else {
+            let time = ui.input(|i| i.time) as f32;
+            for i in 0..8 {
+                let a = time * 5.5 + i as f32 * std::f32::consts::TAU / 8.0;
+                let dir = egui::vec2(a.cos(), a.sin());
+                ui.painter().line_segment([center + dir * 5.0, center + dir * 9.0], egui::Stroke::new(2.0_f32, color.gamma_multiply((i + 1) as f32 / 8.0)));
+            }
+            ui.ctx().request_repaint();
+        }
+        ui.painter().text(paint.left_center() + egui::vec2(44.0, 0.0), egui::Align2::LEFT_CENTER, tr("Подготовка проекта…"), egui::FontId::proportional(14.5), color);
+    } else {
+        if let Some(icon) = crate::icons::icon("add", 22.0, color) {
+            icon.paint_at(ui, egui::Rect::from_center_size(paint.left_center() + egui::vec2(25.0, 0.0), egui::vec2(22.0, 22.0) * (1.0 - press * 0.10)));
+        }
+        ui.painter().text(paint.left_center() + egui::vec2(44.0, 0.0), egui::Align2::LEFT_CENTER, tr("Новый проект"), egui::FontId::proportional(15.0), color);
+    }
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, !loading, tr("Новый проект")));
+    response
 }
 
 #[cfg(test)]

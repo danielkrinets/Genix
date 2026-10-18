@@ -42,7 +42,13 @@ fn main() -> eframe::Result {
             renderer: eframe::Renderer::Wgpu,
             ..Default::default()
         },
-        Box::new(|cc| { desktop::attach(&cc.egui_ctx); Ok(Box::new(app::App::new(cc, open))) }),
+        Box::new(|cc| {
+            // Winit installs its default macOS menu while creating the window,
+            // so apply Genix's document menu once the native window exists.
+            desktop::ensure_menu();
+            desktop::attach(&cc.egui_ctx);
+            Ok(Box::new(app::App::new(cc, open)))
+        }),
     )
 }
 

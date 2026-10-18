@@ -111,4 +111,22 @@ mod tests {
             assert!(result.volume()>solid.volume()*0.95);
         }
     }
+
+    #[test]
+    fn adjacent_round_rims_have_an_overlapping_fillet_joint() {
+        use fusion_core::csg::{BoolOp, Solid};
+        use fusion_core::geom::{circle_tool_span_ext, cylinder_mesh, EdgeOp};
+        let a=Solid::from_mesh(&cylinder_mesh(glam::DVec3::new(-4.0,0.0,0.0),6.0,5.0)).unwrap();
+        let b=Solid::from_mesh(&cylinder_mesh(glam::DVec3::new(4.0,0.0,0.0),6.0,5.0)).unwrap();
+        let solid=a.boolean(&b,BoolOp::Union);
+        let arcs:Vec<_>=selectable(&solid.mesh).into_iter().filter(|e|e.circle && e.sweep.is_some() && e.a[2]>4.9).collect();
+        let pair=arcs.iter().enumerate().find_map(|(i,a)| arcs.iter().skip(i+1).find(|b| {
+            let pa=a.polyline();let pb=b.polyline();
+            [pa[0],*pa.last().unwrap()].iter().any(|p|[pb[0],*pb.last().unwrap()].iter().any(|q|p.distance(*q)<0.5))
+        }).map(|b|(a,b))).unwrap_or_else(|| panic!("two top arcs share the lobe intersection: {arcs:?}"));
+        let tool=|e:&EdgeRef| circle_tool_span_ext(&solid.mesh,e.b.into(),e.axis.into(),e.a.into(),EdgeOp::Fillet(0.5),e.sweep.unwrap(),12.0).unwrap().0;
+        let joint=Solid::from_mesh(&tool(pair.0)).unwrap().boolean(&Solid::from_mesh(&tool(pair.1)).unwrap(),BoolOp::Intersect);
+        assert!(!joint.is_empty());
+        assert!(joint.volume()>1e-6);
+    }
 }

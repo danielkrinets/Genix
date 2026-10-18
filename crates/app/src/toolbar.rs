@@ -40,6 +40,7 @@ pub const MODIFY: &[Item] = &[
     it("shell", "◰", "Оболочка", "", "Выдолбить тело, оставив стенки"),
     it("chamfer", "◢", "Фаска", "", "Снять фаску с прямых рёбер"),
     it("combine", "∪", "Комбинировать", "", "Объединить, вычесть или пересечь тела"),
+    it("cutter", "", "Тело-отверстие", "", "Сделать выбранное тело прозрачным инструментом для вычитания"),
     it("remove", "✖", "Удалить", "Del", "Удалить тела"),
 ];
 
@@ -48,7 +49,7 @@ pub const REFERENCE: &[Item] = &[it("plane", "▱", "Смещённая плос
 pub const INSPECT: &[Item] = &[it("measure", "↔", "Измерить", "", "Расстояние между двумя точками тела")];
 
 const QUICK_CREATE: &[&str] = &["sketch", "extrude", "revolve", "hole"];
-const QUICK_MODIFY: &[&str] = &["move", "fillet", "chamfer", "combine"];
+const QUICK_MODIFY: &[&str] = &["move", "fillet", "chamfer", "cutter"];
 
 /// Большая кнопка: значок над подписью.
 pub fn tool_button(ui: &mut egui::Ui, id: &str, icon: &str, label: &str, enabled: bool, selected: bool) -> Response {
@@ -87,15 +88,24 @@ pub fn group(ui: &mut egui::Ui, title: &'static str, quick: &[&str], all: &'stat
             ui.spacing_mut().item_spacing.x = 2.0;
             for id in quick {
                 if let Some(item) = all.iter().find(|i| i.id == *id) {
-                    let r = tool_button(ui, item.id, item.icon, tr(item.label), enabled, active == Some(item.id)).on_hover_text(tip(item));
+                    let r = tool_button(ui, item.id, item.icon, tr(item.label), enabled, active == Some(item.id)).on_hover_ui(|ui| rich_tip(ui, item));
                     if r.clicked() {
                         chosen = Some(item.id);
                     }
                 }
             }
         });
-        let title_resp = ui.add_enabled(enabled, egui::Button::new(RichText::new(format!("{} ▾", tr(title))).small().strong()).frame(false));
         let popup_id = ui.make_persistent_id(("toolbar_group", title));
+        let open = ui.memory(|m| m.is_popup_open(popup_id));
+        let (title_rect, title_resp) = ui.allocate_exact_size(egui::vec2(ui.available_width().max(92.0), 28.0), if enabled { Sense::click() } else { Sense::hover() });
+        if title_resp.hovered() && enabled { ui.painter().rect_filled(title_rect, 7.0, ui.visuals().widgets.hovered.weak_bg_fill); }
+        let col = if enabled { ui.visuals().text_color() } else { ui.visuals().weak_text_color() };
+        ui.painter().text(title_rect.left_center() + egui::vec2(8.0, 0.0), Align2::LEFT_CENTER, tr(title), FontId::proportional(12.5), col);
+        let turn = crate::widgets::feedback(ui, title_resp.id.with("chevron"), open);
+        let center = title_rect.right_center() - egui::vec2(13.0, 0.0);
+        let rot = egui::emath::Rot2::from_angle(std::f32::consts::PI * turn);
+        let points = [egui::vec2(-5.0, -2.0), egui::vec2(0.0, 3.0), egui::vec2(5.0, -2.0)].map(|p| center + rot * p);
+        ui.painter().line(points.to_vec(), Stroke::new(2.0_f32, col));
         if title_resp.clicked() {
             ui.memory_mut(|m| m.toggle_popup(popup_id));
         }
@@ -104,7 +114,7 @@ pub fn group(ui: &mut egui::Ui, title: &'static str, quick: &[&str], all: &'stat
             for item in all {
                 // строка на всю ширину списка: подсветка при наведении не вылезает и не обрезается
                 let (rect, r) = ui.allocate_exact_size(egui::vec2(ui.available_width().max(250.0), 30.0), Sense::click());
-                let r = r.on_hover_text(tip(item));
+                let r = r.on_hover_ui(|ui| rich_tip(ui, item));
                 let p = ui.painter();
                 if r.hovered() {
                     p.rect_filled(rect.shrink2(egui::vec2(2.0, 1.0)), 10.0, ui.visuals().widgets.hovered.weak_bg_fill);
@@ -132,6 +142,52 @@ pub fn group(ui: &mut egui::Ui, title: &'static str, quick: &[&str], all: &'stat
 fn tip(item: &Item) -> String {
     let t = tr(item.tip);
     if item.key.is_empty() { t.to_string() } else { format!("{t} ({})", item.key) }
+}
+
+fn rich_tip(ui: &mut egui::Ui, item: &Item) {
+    visual_tip(ui, tr(item.label), &tip(item), item.id);
+}
+
+pub fn visual_tip(ui: &mut egui::Ui, title: &str, body: &str, kind: &str) {
+    ui.set_max_width(270.0);
+    ui.label(RichText::new(title).strong().size(15.0));
+    ui.label(RichText::new(body).color(crate::theme::secondary(ui)));
+    ui.add_space(6.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(250.0, 112.0), Sense::hover());
+    let p = ui.painter_at(rect);
+    p.rect_filled(rect, 12.0, ui.visuals().extreme_bg_color);
+    let ink = ui.visuals().text_color().gamma_multiply(0.72);
+    let accent = accent();
+    let base = egui::Rect::from_min_max(rect.min + egui::vec2(24.0, 55.0), rect.min + egui::vec2(104.0, 88.0));
+    p.rect_filled(base, 5.0, ink.gamma_multiply(0.18));
+    p.rect_stroke(base, 5.0, Stroke::new(1.5_f32, ink), egui::StrokeKind::Inside);
+    let result = egui::Rect::from_min_max(rect.min + egui::vec2(148.0, 30.0), rect.min + egui::vec2(226.0, 88.0));
+    match kind {
+        "hole" => {
+            p.rect_filled(result, 7.0, accent.gamma_multiply(0.25));
+            p.rect_stroke(result, 7.0, Stroke::new(1.5_f32, accent), egui::StrokeKind::Inside);
+            p.circle_filled(result.center(), 13.0, ui.visuals().extreme_bg_color);
+            p.circle_stroke(result.center(), 13.0, Stroke::new(2.0_f32, accent));
+        }
+        "fillet" | "chamfer" => {
+            let a = result.left_bottom(); let b = result.right_top();
+            p.line_segment([a + egui::vec2(0.0,-18.0), a + egui::vec2(28.0,-18.0)], Stroke::new(4.0_f32, accent));
+            p.add(egui::Shape::line(vec![a + egui::vec2(28.0,-18.0), b-egui::vec2(20.0,0.0), b], Stroke::new(4.0_f32, accent)));
+        }
+        "sketch" => {
+            p.rect_stroke(result.shrink(15.0), 2.0, Stroke::new(2.5_f32, accent), egui::StrokeKind::Inside);
+            p.circle_stroke(result.center(), 11.0, Stroke::new(2.0_f32, accent));
+        }
+        _ => {
+            p.rect_filled(result, 7.0, accent.gamma_multiply(0.28));
+            p.rect_stroke(result, 7.0, Stroke::new(1.5_f32, accent), egui::StrokeKind::Inside);
+            p.line_segment([result.left_top()+egui::vec2(10.0,12.0), result.right_top()+egui::vec2(-10.0,12.0)], Stroke::new(2.0_f32, accent));
+        }
+    }
+    let y = rect.center().y;
+    p.line_segment([egui::pos2(base.right()+12.0,y), egui::pos2(result.left()-12.0,y)], Stroke::new(2.0_f32, accent));
+    p.line_segment([egui::pos2(result.left()-18.0,y-5.0), egui::pos2(result.left()-12.0,y)], Stroke::new(2.0_f32, accent));
+    p.line_segment([egui::pos2(result.left()-18.0,y+5.0), egui::pos2(result.left()-12.0,y)], Stroke::new(2.0_f32, accent));
 }
 
 /// Все группы вкладки «Твердотельное моделирование». Возвращает выбранный инструмент.

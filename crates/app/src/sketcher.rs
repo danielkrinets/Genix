@@ -753,12 +753,12 @@ impl SketchSession {
             Entity::Line { a, .. } => a,
             _ => unreachable!(),
         };
-        if let Some(e) = dims[0].clone() {
-            self.sketch.constraints.push(Constraint::Length(l[0], e));
-        }
-        if let Some(e) = dims[1].clone() {
-            self.sketch.constraints.push(Constraint::Length(l[1], e));
-        }
+        // Прямоугольник всегда остаётся параметрическим: даже при построении
+        // мышью ширина и высота сохраняются как редактируемые размеры.
+        let width = dims[0].clone().unwrap_or_else(|| Expr::num(round3((p1[0] - p0[0]).abs())));
+        let height = dims[1].clone().unwrap_or_else(|| Expr::num(round3((p1[1] - p0[1]).abs())));
+        self.sketch.constraints.push(Constraint::Length(l[0], width));
+        self.sketch.constraints.push(Constraint::Length(l[1], height));
         // привязанные углы совмещаем с существующими точками (сначала больший индекс)
         let mut merges = vec![];
         if let Some(q) = pt {
@@ -1053,7 +1053,7 @@ impl SketchSession {
                 Some(img) => egui::Button::image(img),
                 None => egui::Button::new(label),
             };
-            let r = ui.add(btn.selected(sel).min_size(egui::vec2(44.0, 42.0))).on_hover_text(text);
+            let r = ui.add(btn.selected(sel).min_size(egui::vec2(44.0, 42.0))).on_hover_ui(|ui| crate::toolbar::visual_tip(ui, text, tr("Инструмент параметрического чертежа"), icon_id));
             let r = if key.is_empty() { r } else { r.on_hover_text(tf!("Клавиша {}", key)) };
             let r = match t {
                 Tool::CenterRect => r.on_hover_text(tr("Прямоугольник от центра")),
@@ -1077,8 +1077,11 @@ impl SketchSession {
             });
             ui.separator();
             group(ui, tr("ИМПОРТ"), |ui| {
-                ui.menu_button(tr("⤓ Файлы ▾"), |ui| {
-                if ui.button(tr("🖼 Фото → чертёж")).on_hover_text(tr("Превратить картинку (PNG, JPG…) в контуры чертежа")).clicked() {
+                let photo = match crate::icons::icon("sk_photo", 24.0, ui.visuals().text_color()) {
+                    Some(img) => egui::Button::image_and_text(img, tr("Фото → скетч")),
+                    None => egui::Button::new(tr("Фото → скетч")),
+                };
+                if ui.add(photo.min_size(egui::vec2(128.0,42.0))).on_hover_ui(|ui| crate::toolbar::visual_tip(ui, tr("Фото → скетч"), tr("PNG или JPG превращается в редактируемые контуры с реальным размером"), "sketch")).clicked() {
                     if let Some(path) = crate::files::open(tr("Изображения"), &["png", "jpg", "jpeg", "bmp", "gif", "webp"]) {
                         match crate::trace_ui::TraceDialog::load(&path) {
                             Ok(d) => self.trace = Some(d),
@@ -1086,6 +1089,7 @@ impl SketchSession {
                         }
                     }
                 }
+                ui.menu_button(tr("DXF"), |ui| {
                 if ui.button(tr("📐 Импорт DXF")).on_hover_text(tr("Добавить в чертёж линии, окружности и дуги из файла DXF")).clicked() {
                     if let Some(path) = crate::files::open("DXF", &["dxf"]) {
                         match std::fs::read_to_string(&path) {

@@ -8,13 +8,13 @@ The product path is local mock registration → model library with real geometry
 
 ## Source map
 
-- `crates/core/src/doc.rs`: document/evaluator, features, history and `EdgeRef` serialization.
+- `crates/core/src/doc.rs`: document/evaluator, features, history, `EdgeRef` serialization, per-body materials and transparent cutter-body state.
 - `crates/core/src/geom.rs`: geometric tools, including bounded circular-arc fillets/chamfers.
 - `crates/app/src/app.rs`: app lifecycle, tabs, history, selection, viewport, hole center/axis snapping, settings.
 - `crates/app/src/edges.rs`: mesh sharp-edge recovery into lines, full circles and **open arcs**. Never fit partial arcs by averaging their vertices or silently revolve a full 360° tool for them.
 - `crates/app/src/commands.rs`: operation properties, hole center button and placement grid.
-- `crates/app/src/desktop.rs`: document request queue, macOS open-document AppleEvent handler, Finder reveal. **Do not replace Winit's NSApplication delegate**: the installed Winit version requires its own delegate and aborts if replaced. The handler registers only the `aevt/odoc` AppleEvent.
-- `crates/app/src/home.rs`: account gate, library/search/filters, profile and subscription mocks.
+- `crates/app/src/desktop.rs`: document request queue, native macOS menus, open-document AppleEvent handler and Finder reveal. **Do not replace Winit's NSApplication delegate**: the installed Winit version requires its own delegate and aborts if replaced.
+- `crates/app/src/home.rs`: account gate, library/search/filters, auto-hiding navigation, dedicated settings, profile and subscription mocks.
 - `crates/app/src/widgets.rs`: shared checkboxes/switches, feedback and accessibility semantics.
 - `crates/app/src/backgrounds.rs`: native adaptations of React Bits waves; passive mouse light and bounded, decaying ripples, reduced-motion and touch handling.
 - `crates/app/src/files.rs`: system dialogs and atomic writes. Preserve old data on write failure.

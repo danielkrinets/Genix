@@ -15,6 +15,7 @@ use crate::toolbar;
 use eframe::egui::{self, Color32, Pos2, Rect, RichText};
 use eframe::egui_wgpu::{self, wgpu};
 use fusion_core::doc::{EdgeRef, Model, SketchResult};
+use fusion_core::csg::BoolOp;
 use fusion_core::expr::format_num;
 use fusion_core::sketch::{region_at, ProfileRef};
 use fusion_core::{Document, Evaluator, Expr, FeatureKind, Mesh, Params, Plane, Sketch};
@@ -129,15 +130,20 @@ struct Tab {
 
 struct Materials;
 impl Materials {
-    const LIST: [(&'static str, f64); 7] = [
-        ("Сталь", 7.85),
-        ("Нерж. сталь", 8.0),
-        ("Алюминий", 2.70),
-        ("Латунь", 8.5),
-        ("PLA (3D-печать)", 1.24),
-        ("ABS/PETG", 1.05),
-        ("Дерево (сосна)", 0.52),
+    /// Название, плотность г/см³, базовый цвет, сила отражения.
+    const LIST: [(&'static str, f64, Color32, f32); 7] = [
+        ("Сталь", 7.85, Color32::from_rgb(142, 151, 162), 0.72),
+        ("Нерж. сталь", 8.0, Color32::from_rgb(190, 198, 207), 0.92),
+        ("Алюминий", 2.70, Color32::from_rgb(178, 190, 205), 0.62),
+        ("Латунь", 8.5, Color32::from_rgb(191, 145, 52), 0.78),
+        ("PLA (3D-печать)", 1.24, Color32::from_rgb(103, 151, 214), 0.16),
+        ("ABS/PETG", 1.05, Color32::from_rgb(103, 111, 126), 0.24),
+        ("Дерево (сосна)", 0.52, Color32::from_rgb(177, 123, 73), 0.06),
     ];
+
+    fn get(index: usize) -> (&'static str, f64, Color32, f32) {
+        Self::LIST[index.min(Self::LIST.len() - 1)]
+    }
 }
 
 pub struct App {
@@ -449,7 +455,6 @@ impl App {
                 let list = self.project_list();
                 self.home.refresh(&list);
             }
-            HomeAction::Settings => self.settings_open = true,
             HomeAction::SettingsChanged => self.settings.save(),
             HomeAction::SignOut => {
                 self.settings.account = None;
@@ -902,6 +907,18 @@ impl App {
                 } else {
                     let ids = self.selection.clone();
                     self.delete_bodies(ids);
+                }
+            }
+            "cutter" => {
+                if self.selection.is_empty() {
+                    self.toast(tr("Сначала выберите одно или несколько тел"), true, now);
+                } else {
+                    self.checkpoint();
+                    let make_cutter = self.selection.iter().any(|id| !self.doc.cutter_bodies.contains(id));
+                    for id in self.selection.clone() {
+                        if make_cutter { self.doc.cutter_bodies.insert(id); } else { self.doc.cutter_bodies.remove(&id); }
+                    }
+                    self.after_doc_change();
                 }
             }
             other => self.start_command(other, now),
@@ -1368,7 +1385,9 @@ impl App {
                 ui.separator();
                 if menu_item(ui, "settings", tr("Настройки…")) {
                     ui.close_menu();
-                    self.settings_open = true;
+                    self.commit_pending_edits();
+                    self.home_active = true;
+                    self.home.navigate(crate::home::HomePage::Settings);
                 }
             });
             ui.menu_button(tr("Вид"), |ui| {
@@ -1402,16 +1421,16 @@ impl App {
             if ui.add_enabled(!self.redo.is_empty() && !matches!(self.mode, Mode::Sketch(_)), egui::Button::new("↷")).on_hover_text(tr("Повторить (⇧⌘Z)")).clicked() {
                 self.do_redo();
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(tr("Мои модели")).clicked() {
-                    self.commit_pending_edits();
-                    self.home_active = true;
-                    self.home.navigate(crate::home::HomePage::Models);
-                    let list = self.project_list();
-                    self.home.refresh(&list);
-                }
-                ui.label(RichText::new(self.title()).strong());
-            });
+        });
+    }
+
+    fn header_bar(&mut self, ui: &mut egui::Ui, now: f64) {
+        ui.horizontal_centered(|ui| {
+            if !self.home_active {
+                ui.allocate_ui_with_layout(egui::vec2(430.0, 28.0), egui::Layout::left_to_right(egui::Align::Center), |ui| self.menu_bar(ui, now));
+                ui.separator();
+            }
+            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 28.0), egui::Layout::left_to_right(egui::Align::Center), |ui| self.tab_bar(ui));
         });
     }
 
@@ -1840,6 +1859,9 @@ impl App {
         }
         let size = hi - lo;
         let r1 = |v: f64| format_num((v * 100.0).round() / 100.0);
+        let selected_ids = self.selection.clone();
+        let mut selected_material = selected_ids.first().and_then(|id| self.doc.body_materials.get(id)).copied().unwrap_or(self.settings.material);
+        let mut material_changed = false;
         egui::Grid::new("inspector").num_columns(2).show(ui, |ui| {
             ui.label(tr("Выбрано тел"));
             ui.label(format!("{}", sel.len()));
@@ -1854,16 +1876,45 @@ impl App {
             ui.label(tf!("{} см²", r1(area / 100.0)));
             ui.end_row();
             ui.label(tr("Материал"));
-            egui::ComboBox::from_id_salt("material").selected_text(tr(Materials::LIST[self.settings.material].0)).show_ui(ui, |ui| {
-                for (i, (n, _)) in Materials::LIST.iter().enumerate() {
-                    ui.selectable_value(&mut self.settings.material, i, tr(n));
+            egui::ComboBox::from_id_salt("material").selected_text(tr(Materials::get(selected_material).0)).show_ui(ui, |ui| {
+                for (i, (n, _, _, _)) in Materials::LIST.iter().enumerate() {
+                    material_changed |= ui.selectable_value(&mut selected_material, i, tr(n)).changed();
                 }
             });
             ui.end_row();
             ui.label(tr("Масса"));
-            ui.label(tf!("{} г", r1(vol / 1000.0 * Materials::LIST[self.settings.material].1)));
+            ui.label(tf!("{} г", r1(vol / 1000.0 * Materials::get(selected_material).1)));
             ui.end_row();
         });
+        if material_changed {
+            self.checkpoint();
+            for id in &selected_ids { self.doc.body_materials.insert(*id, selected_material); }
+            self.settings.material = selected_material;
+            self.settings.save();
+            self.after_doc_change();
+        }
+        let all_cutters = selected_ids.iter().all(|id| self.doc.cutter_bodies.contains(id));
+        let mut cutter = all_cutters;
+        if crate::widgets::toggle(ui, &mut cutter, tr("Использовать как прозрачное отверстие")).changed() {
+            self.checkpoint();
+            for id in &selected_ids {
+                if cutter { self.doc.cutter_bodies.insert(*id); } else { self.doc.cutter_bodies.remove(id); }
+            }
+            self.after_doc_change();
+        }
+        let target = selected_ids.iter().copied().find(|id| !self.doc.cutter_bodies.contains(id));
+        let tools: Vec<u64> = selected_ids.iter().copied().filter(|id| self.doc.cutter_bodies.contains(id)).collect();
+        if let Some(target) = target {
+            if !tools.is_empty() && crate::widgets::primary_button(ui, tr("Вычесть прозрачные тела"), 220.0).clicked() {
+                self.checkpoint();
+                self.doc.insert(FeatureKind::Combine { target, tools: tools.clone(), op: BoolOp::Subtract, keep_tools: false });
+                for id in &tools { self.doc.cutter_bodies.remove(id); }
+                self.selection = vec![target];
+                self.after_doc_change();
+            }
+        } else if all_cutters {
+            ui.label(RichText::new(tr("Выберите также обычное тело — из него будут вычтены прозрачные.")).color(crate::theme::secondary(ui)).small());
+        }
         ui.horizontal(|ui| {
             if ui.button(tr("Удалить")).clicked() {
                 let ids = self.selection.clone();
@@ -2084,14 +2135,19 @@ impl App {
             _ => vec![],
         };
         for (slot, b) in model.bodies.iter().enumerate() {
+            let material = Materials::get(self.doc.body_materials.get(&b.id).copied().unwrap_or(self.settings.material));
             let c = if self.doc.hidden_bodies.contains(&b.id) {
                 [0.0; 4]
+            } else if self.doc.cutter_bodies.contains(&b.id) {
+                let mut c = linear(Color32::from_rgb(82, 205, 232));
+                c[3] = -0.32;
+                c
             } else if self.selection.contains(&b.id) || cmd_bodies.contains(&b.id) {
-                linear(colors.body_selected)
+                let mut c = linear(colors.body_selected); c[3] = material.3; c
             } else if hover_slot == Some(slot) {
-                linear(colors.body_hover)
+                let mut c = linear(colors.body_hover); c[3] = material.3; c
             } else {
-                linear(colors.body)
+                let mut c = linear(material.2); c[3] = material.3; c
             };
             body_colors.push(c);
         }
@@ -2174,9 +2230,18 @@ impl App {
                 let base = if i == 0 { Color32::from_rgba_unmultiplied(225, 225, 232, 150) } else { Color32::from_rgba_unmultiplied(235, 150, 70, 95) };
                 let col = if hov { c.plane_hover } else { base };
                 let (lo, hi) = (0.1 * s, 1.1 * s);
-                fill_quad(&mut ov.tris, pl, [lo, lo], [hi, hi], col);
+                if matches!(self.mode, Mode::PickPlane) {
+                    fill_quad(&mut ov.tris_top, pl, [lo, lo], [hi, hi], col);
+                } else {
+                    fill_quad(&mut ov.tris, pl, [lo, lo], [hi, hi], col);
+                }
                 let corners = [[lo, lo], [hi, lo], [hi, hi], [lo, hi]].map(|q| pl.to_world(q));
-                polyline(&mut ov.lines, &corners, if hov { c.plane_hover.to_opaque() } else { base.to_opaque() }, 1.2, true);
+                let line_color = if hov { c.plane_hover.to_opaque() } else { base.to_opaque() };
+                if matches!(self.mode, Mode::PickPlane) {
+                    polyline(&mut ov.lines_top, &corners, line_color, 2.0, true);
+                } else {
+                    polyline(&mut ov.lines, &corners, line_color, 1.2, true);
+                }
             }
             // яркие оси из начала координат
             for (d, col) in [(DVec3::X, Color32::from_rgb(235, 40, 40)), (DVec3::Y, Color32::from_rgb(40, 210, 40)), (DVec3::Z, Color32::from_rgb(50, 80, 255))] {
@@ -2190,9 +2255,11 @@ impl App {
             let hov = matches!(self.hover, Some(Hit::UserPlane(k, _)) if k == i);
             let col = if hov { c.plane_hover } else { c.plane.gamma_multiply(0.7) };
             let (a, b) = ([cl[0] - s, cl[1] - s], [cl[0] + s, cl[1] + s]);
-            fill_quad(&mut ov.tris, pl, a, b, col);
+            if matches!(self.mode, Mode::PickPlane) { fill_quad(&mut ov.tris_top, pl, a, b, col); }
+            else { fill_quad(&mut ov.tris, pl, a, b, col); }
             let corners = [[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]].map(|q| pl.to_world(q));
-            polyline(&mut ov.lines, &corners, col.to_opaque(), 1.2, true);
+            if matches!(self.mode, Mode::PickPlane) { polyline(&mut ov.lines_top, &corners, col.to_opaque(), 2.0, true); }
+            else { polyline(&mut ov.lines, &corners, col.to_opaque(), 1.2, true); }
         }
         // измерение
         if let Mode::Measure(pts) = &self.mode {
@@ -2215,7 +2282,7 @@ impl App {
         let face_pick = face_pick;
         if let (true, Some(Hit::Body { slot, tri, .. })) = (face_pick, self.hover) {
             if let Some((_, tris)) = self.face_plane(model, slot, tri) {
-                fill_tris(&mut ov.tris, model.bodies[slot].mesh(), tris.into_iter(), c.plane_hover);
+                fill_tris(&mut ov.tris_top, model.bodies[slot].mesh(), tris.into_iter(), c.plane_hover);
             }
         }
         if matches!(&self.mode,Mode::Command(cm) if self.doc.feature(cm.uid).is_some_and(|f|matches!(f.kind,FeatureKind::Hole{..}))) {
@@ -2553,6 +2620,28 @@ impl eframe::App for App {
             self.confirm_window(ctx, now);
             return;
         }
+        for action in crate::desktop::take_actions() {
+            match action {
+                crate::desktop::Action::New => self.request(Confirm::New),
+                crate::desktop::Action::Open => self.request(Confirm::Open),
+                crate::desktop::Action::Save => { self.save(false, now); }
+                crate::desktop::Action::SaveAs => { self.save(true, now); }
+                crate::desktop::Action::Undo => self.do_undo(),
+                crate::desktop::Action::Redo => self.do_redo(),
+                crate::desktop::Action::Home => {
+                    self.commit_pending_edits();
+                    self.home_active = true;
+                    self.home.navigate(crate::home::HomePage::Models);
+                    let list = self.project_list();
+                    self.home.refresh(&list);
+                }
+                crate::desktop::Action::Settings => {
+                    self.commit_pending_edits();
+                    self.home_active = true;
+                    self.home.navigate(crate::home::HomePage::Settings);
+                }
+            }
+        }
         if self.confirm.is_none() && matches!(self.mode,Mode::Idle) {
             for path in crate::desktop::take() {
                 if crate::desktop::project_path(&path) {self.open_path(path);}
@@ -2568,10 +2657,7 @@ impl eframe::App for App {
             self.shortcuts(ctx, now);
         }
 
-        if !self.home_active {
-            egui::TopBottomPanel::top("menu").show(ctx, |ui| self.menu_bar(ui, now));
-        }
-        egui::TopBottomPanel::top("tabs").frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(8, 3))).show(ctx, |ui| self.tab_bar(ui));
+        egui::TopBottomPanel::top("header").frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(8, 3))).show(ctx, |ui| self.header_bar(ui, now));
         if self.home_active {
             let mut act = crate::home::HomeAction::None;
             let list = self.project_list();
@@ -3296,7 +3382,9 @@ impl App {
                         self.export_png(now);
                     }
                     if b(ui, "nav_settings", "⚙", tr("Настройки")) {
-                        self.settings_open = true;
+                        self.commit_pending_edits();
+                        self.home_active = true;
+                        self.home.navigate(crate::home::HomePage::Settings);
                     }
                 });
             });
@@ -3354,8 +3442,8 @@ impl App {
                         ui.add(egui::Slider::new(&mut st.ui_scale, 0.8..=1.6).step_by(0.05).fixed_decimals(2));
                     });
                     row(ui, tr("Материал по умолчанию"), &mut |ui| {
-                        egui::ComboBox::from_id_salt("mat_default").selected_text(tr(Materials::LIST[st.material].0)).show_ui(ui, |ui| {
-                            for (i, (n, _)) in Materials::LIST.iter().enumerate() {
+                        egui::ComboBox::from_id_salt("mat_default").selected_text(tr(Materials::get(st.material).0)).show_ui(ui, |ui| {
+                            for (i, (n, _, _, _)) in Materials::LIST.iter().enumerate() {
                                 ui.selectable_value(&mut st.material, i, tr(n));
                             }
                         });

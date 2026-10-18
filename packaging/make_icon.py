@@ -1,30 +1,17 @@
-"""Рисует иконку приложения (изометрический «каркас» детали) во всех размерах для macOS."""
+"""Готовит фирменный знак Genix во всех размерах с системным отступом macOS."""
 import os, sys
-from PIL import Image, ImageDraw
+from PIL import Image
 
 def draw(size):
-    S = 1024
-    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    # скруглённый квадрат-основа в стиле macOS
-    pad = 90
-    d.rounded_rectangle([pad, pad, S - pad, S - pad], radius=190, fill=(24, 32, 46, 255))
-    # изометрический куб
-    cx, cy, a = S / 2, S / 2 + 40, 250
-    h = a * 0.58
-    top = [(cx, cy - 2 * h), (cx + a, cy - h), (cx, cy), (cx - a, cy - h)]
-    left = [(cx - a, cy - h), (cx, cy), (cx, cy + 2 * h - 40), (cx - a, cy + h - 40)]
-    right = [(cx + a, cy - h), (cx, cy), (cx, cy + 2 * h - 40), (cx + a, cy + h - 40)]
-    d.polygon(top, fill=(235, 238, 243))
-    d.polygon(left, fill=(160, 168, 180))
-    d.polygon(right, fill=(110, 118, 132))
-    # отверстие сверху
-    ex, ey, rw, rh = cx, cy - h, 92, 53
-    d.ellipse([ex - rw, ey - rh, ex + rw, ey + rh], fill=(70, 78, 92))
-    # фирменный синий акцент — рёбра
-    for poly in (top, left, right):
-        d.line(poly + [poly[0]], fill=(6, 150, 215), width=14, joint="curve")
-    return img.resize((size, size), Image.LANCZOS)
+    source = Image.open(os.path.join(os.path.dirname(__file__), "logo", "genix-1024.png")).convert("RGBA")
+    # Dock визуально сравнивает непрозрачную площадь, а не размер PNG. 72% оставляет
+    # фирменный квадрат на одной оптической высоте с системными macOS-иконками.
+    mark = max(1, round(size * 0.72))
+    source = source.resize((mark, mark), Image.Resampling.LANCZOS)
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    pad = (size - mark) // 2
+    img.alpha_composite(source, (pad, pad))
+    return img
 
 out = sys.argv[1]
 os.makedirs(out, exist_ok=True)

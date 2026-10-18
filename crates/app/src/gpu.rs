@@ -214,7 +214,7 @@ impl GpuScene {
             depth_write: true,
             compare: wgpu::CompareFunction::Less,
             bias: wgpu::DepthBiasState { constant: 4, slope_scale: 2.0, clamp: 0.0 },
-            blend: false,
+            blend: true,
         });
         let fill_bias = wgpu::DepthBiasState { constant: -60, slope_scale: -6.0, clamp: 0.0 };
         let line = make(P { label: "lines", vs: "vs_line", fs: "fs_line", buffers: &line_layout, depth_write: false, compare: wgpu::CompareFunction::LessEqual, bias: toward, blend: true });

@@ -570,6 +570,12 @@ pub fn circle_tool(mesh: &Mesh, center: DVec3, axis: DVec3, p: DVec3, op: EdgeOp
 }
 
 pub fn circle_tool_span(mesh: &Mesh, center: DVec3, axis: DVec3, p: DVec3, op: EdgeOp, sweep: f64) -> Result<(Mesh, bool), String> {
+    circle_tool_span_ext(mesh, center, axis, p, op, sweep, 0.0)
+}
+
+/// Инструмент для дуги с продолжением за оба конца. Продолжённая версия нужна
+/// только при построении стыка двух соседних скруглений.
+pub fn circle_tool_span_ext(mesh: &Mesh, center: DVec3, axis: DVec3, p: DVec3, op: EdgeOp, sweep: f64, extend_deg: f64) -> Result<(Mesh, bool), String> {
     if !sweep.is_finite() || sweep <= 0.0 || sweep > 360.0 { return Err("некорректный угол дуги".into()); }
     let axis = axis.normalize();
     let r = (p - center - axis * (p - center).dot(axis)).length();
@@ -598,8 +604,10 @@ pub fn circle_tool_span(mesh: &Mesh, center: DVec3, axis: DVec3, p: DVec3, op: E
         pts.reverse();
     }
     let start = (p-center-axis*(p-center).dot(axis)).normalize();
+    let ext = extend_deg.max(0.0).min(45.0).min((360.0 - sweep) * 0.49);
+    let start = glam::DQuat::from_axis_angle(axis, -ext.to_radians()) * start;
     let plane = Plane { origin: center.to_array(), x: start.to_array(), y: axis.to_array() };
-    revolve_region(&plane, &Region { outer: pts, holes: vec![], ids: vec![] }, [0.0, 0.0], [0.0, 1.0], sweep).map(|m| (m, concave))
+    revolve_region(&plane, &Region { outer: pts, holes: vec![], ids: vec![] }, [0.0, 0.0], [0.0, 1.0], sweep + ext * 2.0).map(|m| (m, concave))
 }
 
 #[cfg(test)]

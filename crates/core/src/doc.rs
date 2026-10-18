@@ -272,6 +272,13 @@ pub struct Document {
     pub body_names: BTreeMap<u64, String>,
     #[serde(default)]
     pub hidden_bodies: BTreeSet<u64>,
+    /// Индекс визуального материала тела. Отсутствующее значение означает
+    /// материал по умолчанию приложения и сохраняет совместимость старых файлов.
+    #[serde(default)]
+    pub body_materials: BTreeMap<u64, usize>,
+    /// Полупрозрачные тела-инструменты, вычитаемые как «отверстия».
+    #[serde(default)]
+    pub cutter_bodies: BTreeSet<u64>,
     /// Чертежи, показанные в окне (по uid).
     #[serde(default)]
     pub visible_sketches: BTreeSet<u64>,
@@ -290,6 +297,8 @@ impl Default for Document {
             rollback: 0,
             body_names: BTreeMap::new(),
             hidden_bodies: BTreeSet::new(),
+            body_materials: BTreeMap::new(),
+            cutter_bodies: BTreeSet::new(),
             visible_sketches: BTreeSet::new(),
             views: Vec::new(),
         }
@@ -887,17 +896,33 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                 let s = Solid::from_mesh(&t)?;
                 if concave { adds.push(s) } else { cuts.push(s) }
             }
-            // углы, где сходятся два выбранных прямых ребра: стык «под ус» — пересечение продлённых инструментов
-            let straight: Vec<(DVec3, DVec3)> = edges.iter().filter(|e| !e.circle).map(|e| (DVec3::from(e.a), DVec3::from(e.b))).collect();
+            // Стык «под ус» для любых соседних рёбер. Дуги тоже нужно немного
+            // продолжать: иначе на общей вершине двух дуг остаётся тонкий шип.
             let reach = v * 3.0 + 0.5;
-            for i in 0..straight.len() {
-                for j in i + 1..straight.len() {
-                    let ((a1, b1), (a2, b2)) = (straight[i], straight[j]);
-                    let shares = [a1, b1].iter().any(|p| [a2, b2].iter().any(|q| p.distance(*q) < 1e-6));
+            let ends = |e: &EdgeRef| {
+                let p = e.polyline();
+                (*p.first().unwrap(), *p.last().unwrap())
+            };
+            let extended = |e: &EdgeRef| {
+                if e.circle {
+                    let radius = DVec3::from(e.a).distance(DVec3::from(e.b)).max(1e-6);
+                    let ext_deg = (reach / radius).to_degrees();
+                    geom::circle_tool_span_ext(b.mesh(), DVec3::from(e.b), DVec3::from(e.axis), DVec3::from(e.a), op, e.sweep.unwrap_or(360.0), ext_deg)
+                } else {
+                    geom::edge_tool_ext(b.mesh(), DVec3::from(e.a), DVec3::from(e.b), op, reach)
+                }
+            };
+            for i in 0..edges.len() {
+                for j in i + 1..edges.len() {
+                    let ((a1, b1), (a2, b2)) = (ends(&edges[i]), ends(&edges[j]));
+                    // Аппроксимированные дуги могут оканчиваться в соседних
+                    // вершинах сетки, хотя геометрически образуют один угол.
+                    let join_tol = if edges[i].circle || edges[j].circle { (v * 0.75).max(1e-4) } else { 1e-6 };
+                    let shares = [a1, b1].iter().any(|p| [a2, b2].iter().any(|q| p.distance(*q) < join_tol));
                     if !shares {
                         continue;
                     }
-                    let (Ok((t1, c1)), Ok((t2, c2))) = (geom::edge_tool_ext(b.mesh(), a1, b1, op, reach), geom::edge_tool_ext(b.mesh(), a2, b2, op, reach)) else { continue };
+                    let (Ok((t1, c1)), Ok((t2, c2))) = (extended(&edges[i]), extended(&edges[j])) else { continue };
                     if c1 || c2 {
                         continue;
                     }
@@ -1158,6 +1183,8 @@ mod tests {
     #[test]
     fn json_roundtrip_and_delete() {
         let (mut d, sk) = plate_doc();
+        d.body_materials.insert(2000, 3);
+        d.cutter_bodies.insert(2000);
         let s = d.to_json();
         let back = Document::from_json(&s).unwrap();
         assert_eq!(back, d);

@@ -195,21 +195,23 @@ pub fn accent_swatch(ui: &mut egui::Ui, color: crate::theme::Accent, selected: b
     response.on_hover_text(crate::i18n::tr(color.label()))
 }
 
-pub fn navigation_button(ui: &mut egui::Ui, label: &str, icon: &str, selected: bool) -> egui::Response {
+pub fn navigation_button_mode(ui: &mut egui::Ui, label: &str, icon: &str, selected: bool, expanded: bool) -> egui::Response {
     let text_width = ui.painter().layout_no_wrap(label.into(), egui::FontId::proportional(14.0), ui.visuals().text_color()).size().x;
-    let width = if ui.layout().main_dir().is_vertical() { ui.available_width() } else { text_width + 56.0 };
+    let width = if ui.layout().main_dir().is_vertical() { ui.available_width() } else if expanded { text_width + 56.0 } else { 48.0 };
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 42.0), egui::Sense::click());
     let hover = response.hovered() && !ui.input(|i| i.any_touches());
     let t = feedback(ui, response.id.with("selected"), selected);
+    let press = feedback(ui, response.id.with("press"), response.is_pointer_button_down_on());
     if t > 0.0 || hover { ui.painter().rect_filled(rect, 14.0, crate::theme::tint(if selected { (t * 30.0) as u8 } else { 12 })); }
     if response.has_focus() { ui.painter().rect_stroke(rect, 14.0, egui::Stroke::new(1.5_f32, crate::theme::accent()), egui::StrokeKind::Inside); }
     let color = if selected { crate::theme::accent() } else { ui.visuals().text_color() };
     if let Some(img) = crate::icons::icon(icon, 20.0, color) {
-        img.paint_at(ui, egui::Rect::from_center_size(rect.left_center() + egui::vec2(23.0, 0.0), egui::vec2(20.0, 20.0)));
+        let center = if expanded { rect.left_center() + egui::vec2(23.0, 0.0) } else { rect.center() };
+        img.paint_at(ui, egui::Rect::from_center_size(center, egui::vec2(20.0, 20.0) * (1.0 - press * 0.10)));
     }
-    ui.painter().text(rect.left_center() + egui::vec2(44.0, 0.0), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(14.0), color);
+    if expanded { ui.painter().text(rect.left_center() + egui::vec2(44.0, 0.0), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(14.0), color); }
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label));
-    response
+    if expanded { response } else { response.on_hover_text(label) }
 }
 
 pub fn loading(ui: &mut egui::Ui, label: &str) {

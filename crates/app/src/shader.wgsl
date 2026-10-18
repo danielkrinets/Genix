@@ -63,7 +63,7 @@ fn vs_face(v: FaceIn) -> FaceOut {
     var o: FaceOut;
     o.color = body_colors[v.slot];
     o.clip = frame.view_proj * vec4<f32>(v.pos, 1.0);
-    if o.color.a <= 0.0 {
+    if abs(o.color.a) < 0.001 {
         o.clip = vec4<f32>(0.0, 0.0, -2.0, 1.0); // скрытое тело: выбрасываем вершину
     }
     o.nrm = v.nrm;
@@ -81,15 +81,18 @@ fn fs_face(i: FaceOut) -> @location(0) vec4<f32> {
     let l = normalize(frame.light.xyz);
     let diff = max(dot(n, l), 0.0);
     let h = normalize(l + v);
-    let spec = pow(max(dot(n, h), 0.0), 48.0) * 0.18;
+    let cutter = i.color.a < 0.0;
+    let reflection = select(clamp(i.color.a, 0.0, 1.0), 0.12, cutter);
+    let gloss_power = mix(12.0, 96.0, reflection);
+    let spec = pow(max(dot(n, h), 0.0), gloss_power) * mix(0.03, 0.62, reflection);
     // мягкий «небесный» свет сверху
     let sky = 0.5 + 0.5 * n.z;
     // «окружение»: небо сверху, тёмная земля снизу; на скользящих углах отражение сильнее
     let r = reflect(-v, n);
     let env = mix(vec3<f32>(0.035, 0.04, 0.05), vec3<f32>(0.75, 0.82, 0.95), smoothstep(-0.25, 0.85, r.z));
     let fres = pow(1.0 - max(dot(n, v), 0.0), 3.0);
-    let c = i.color.rgb * (0.22 + 0.16 * sky + 0.62 * diff) + env * (0.05 + 0.30 * fres) + vec3<f32>(spec);
-    return vec4<f32>(encode(c), 1.0);
+    let c = i.color.rgb * (0.22 + 0.16 * sky + 0.62 * diff) + env * (0.03 + reflection * (0.34 + 0.34 * fres)) + vec3<f32>(spec);
+    return vec4<f32>(encode(c), select(1.0, 0.32, cutter));
 }
 
 // ---------------------------------------------------------------- толстые линии
@@ -124,7 +127,7 @@ fn vs_line(v: LineIn) -> LineOut {
     var color = v.color;
     if v.slot != 0xffffffffu {
         let bc = body_colors[v.slot];
-        if bc.a <= 0.0 {
+        if abs(bc.a) < 0.001 {
             o.clip = vec4<f32>(0.0, 0.0, -2.0, 1.0);
             return o;
         }
