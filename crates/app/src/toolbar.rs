@@ -1,7 +1,7 @@
 //! Панель инструментов: группы с быстрыми кнопками и выпадающим списком.
 
 use crate::i18n::tr;
-use crate::theme::ACCENT;
+use crate::theme::accent;
 use eframe::egui::{self, Align2, Color32, FontId, Response, RichText, Sense, Stroke};
 
 pub struct Item {
@@ -58,18 +58,16 @@ pub fn tool_button(ui: &mut egui::Ui, id: &str, icon: &str, label: &str, enabled
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 66.0), if enabled { Sense::click() } else { Sense::hover() });
     if ui.is_rect_visible(rect) {
         let v = ui.visuals();
-        let fill = if selected {
-            ACCENT.gamma_multiply(0.25)
-        } else if resp.hovered() && enabled {
-            v.widgets.hovered.weak_bg_fill
-        } else {
-            Color32::TRANSPARENT
-        };
+        let hover = resp.hovered() && enabled && !ui.input(|i| i.any_touches());
+        let press = crate::widgets::feedback(ui, resp.id.with("press"), resp.is_pointer_button_down_on());
+        let fill = if selected { crate::theme::tint(30) } else if hover { v.widgets.hovered.weak_bg_fill } else { Color32::TRANSPARENT };
         let p = ui.painter();
-        p.rect(rect, 5.0, fill, if resp.hovered() && enabled { Stroke::new(1.0_f32, v.widgets.hovered.bg_stroke.color) } else { Stroke::NONE }, egui::StrokeKind::Inside);
+        let paint_rect = rect.shrink(press * 1.5);
+        p.rect_filled(paint_rect, 12.0, fill);
+        if resp.has_focus() { p.rect_stroke(paint_rect, 12.0, Stroke::new(1.5_f32, accent()), egui::StrokeKind::Inside); }
         let col = if enabled { v.text_color() } else { v.weak_text_color().gamma_multiply(0.6) };
-        let icon_rect = egui::Rect::from_center_size(rect.center_top() + egui::vec2(0.0, 24.0), egui::vec2(34.0, 34.0));
-        match crate::icons::icon(id, 32.0, if selected { ACCENT } else { col }) {
+        let icon_rect = egui::Rect::from_center_size(rect.center_top() + egui::vec2(0.0, 24.0), egui::vec2(34.0, 34.0) * (1.0 - press * 0.03));
+        match crate::icons::icon(id, 32.0, if selected { accent() } else { col }) {
             Some(img) => img.paint_at(ui, icon_rect),
             None => {
                 ui.painter().text(rect.center_top() + egui::vec2(0.0, 5.0), Align2::CENTER_TOP, icon, FontId::proportional(24.0), col);
@@ -77,6 +75,7 @@ pub fn tool_button(ui: &mut egui::Ui, id: &str, icon: &str, label: &str, enabled
         }
         p.text(rect.center_bottom() - egui::vec2(0.0, 5.0), Align2::CENTER_BOTTOM, label, font, col);
     }
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
     resp
 }
 
@@ -108,7 +107,7 @@ pub fn group(ui: &mut egui::Ui, title: &'static str, quick: &[&str], all: &'stat
                 let r = r.on_hover_text(tip(item));
                 let p = ui.painter();
                 if r.hovered() {
-                    p.rect_filled(rect.shrink2(egui::vec2(2.0, 1.0)), 5.0, ui.visuals().widgets.hovered.weak_bg_fill);
+                    p.rect_filled(rect.shrink2(egui::vec2(2.0, 1.0)), 10.0, ui.visuals().widgets.hovered.weak_bg_fill);
                 }
                 let col = ui.visuals().text_color();
                 match crate::icons::icon(item.id, 20.0, col) {
@@ -141,7 +140,7 @@ pub fn solid_toolbar(ui: &mut egui::Ui, enabled: bool, active: Option<&str>) -> 
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.add_space(2.0);
-            ui.label(RichText::new(tr("ДЕТАЛЬ")).small().strong().color(ACCENT));
+            ui.label(RichText::new(tr("ДЕТАЛЬ")).small().strong().color(accent()));
             ui.add_space(30.0);
         });
         ui.separator();

@@ -66,7 +66,7 @@ pub fn show(ui: &mut egui::Ui, view: Rect, cam: &Camera, dark: bool) -> CubeActi
         (Color32::from_rgb(238, 240, 244), Color32::from_rgb(60, 66, 76), Color32::from_rgb(150, 158, 170))
     };
     for (i, pts, d) in &polys {
-        let f = if Some(*i) == hovered { crate::theme::ACCENT.gamma_multiply(0.85) } else { fill };
+        let f = if Some(*i) == hovered { crate::theme::accent().gamma_multiply(0.85) } else { fill };
         // чуть темнее грани, отвёрнутые от света
         let k = (0.82 + 0.18 * d) as f32;
         let f = Color32::from_rgb((f.r() as f32 * k) as u8, (f.g() as f32 * k) as u8, (f.b() as f32 * k) as u8);
@@ -87,7 +87,7 @@ pub fn show(ui: &mut egui::Ui, view: Rect, cam: &Camera, dark: bool) -> CubeActi
     let home = Rect::from_min_size(Pos2::new(area.left() - 4.0, area.top() - 4.0), egui::vec2(20.0, 20.0));
     let hr = ui.interact(home, ui.id().with("home"), Sense::click()).on_hover_text(tr("Домой: изометрия и вписать модель"));
     let hp = ui.painter_at(home.expand(2.0));
-    hp.text(home.center(), Align2::CENTER_CENTER, "🏠", FontId::proportional(14.0), if hr.hovered() { crate::theme::ACCENT } else { text });
+    hp.text(home.center(), Align2::CENTER_CENTER, "🏠", FontId::proportional(14.0), if hr.hovered() { crate::theme::accent() } else { text });
     if hr.clicked() {
         return CubeAction::Home;
     }

@@ -89,12 +89,19 @@ pub fn import(sk: &mut Sketch, text: &str) -> Result<usize, String> {
             "LWPOLYLINE" => {
                 let mut xs = vec![];
                 let mut cur: Option<f64> = None;
+                let mut bulges = vec![];
                 for (c, v) in d {
                     match *c {
                         10 => cur = v.parse().ok(),
                         20 => {
                             if let (Some(x), Ok(y)) = (cur.take(), v.parse::<f64>()) {
                                 xs.push([x, y]);
+                                bulges.push(0.0_f64);
+                            }
+                        }
+                        42 => {
+                            if let Some(bulge) = bulges.last_mut() {
+                                *bulge = v.parse().unwrap_or(0.0);
                             }
                         }
                         _ => {}
@@ -105,7 +112,20 @@ pub fn import(sk: &mut Sketch, text: &str) -> Result<usize, String> {
                     let ids: Vec<usize> = xs.iter().map(|&p| sk.add_point(p)).collect();
                     let n = if closed { ids.len() } else { ids.len() - 1 };
                     for i in 0..n {
-                        sk.add(Entity::Line { a: ids[i], b: ids[(i + 1) % ids.len()], construction: cons });
+                        let (a, b) = (ids[i], ids[(i + 1) % ids.len()]);
+                        let bulge = bulges[i];
+                        if bulge == 0.0 || !bulge.is_finite() || sk.p(a) == sk.p(b) {
+                            sk.add(Entity::Line { a, b, construction: cons });
+                        } else {
+                            // DXF bulge = tan(sweep / 4), signed by traversal direction.
+                            let chord = sk.p(b) - sk.p(a);
+                            let center = (sk.p(a) + sk.p(b)) * 0.5
+                                + DVec2::new(-chord.y, chord.x) * ((1.0 / bulge - bulge) * 0.25);
+                            let c = sk.add_point(center.to_array());
+                            // Sketch arcs are always counterclockwise.
+                            let (a, b) = if bulge < 0.0 { (b, a) } else { (a, b) };
+                            sk.add(Entity::Arc { c, a, b, construction: cons });
+                        }
                         added += 1;
                     }
                 }
@@ -140,6 +160,45 @@ mod tests {
             assert!((s2.p(a) - s2.p(c)).length() - 10.0 < 1e-9);
             assert!((s2.p(b) - glam::DVec2::new(40.0, 10.0)).length() < 1e-6);
         }
+    }
+
+    fn polyline(vertices: &str, closed: bool) -> String {
+        format!("0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n8\nCONSTRUCTION\n70\n{}\n{vertices}0\nENDSEC\n0\nEOF\n", u8::from(closed))
+    }
+
+    #[test]
+    fn polyline_bulge_direction_and_sweep() {
+        for bulge in [1.0_f64, -1.0, 0.5, -0.5, 2.0, -2.0] {
+            let mut s = Sketch::default();
+            let text = polyline(&format!("10\n0\n20\n0\n42\n{bulge}\n10\n10\n20\n0\n"), false);
+            assert_eq!(import(&mut s, &text).unwrap(), 1);
+            let Entity::Arc { c, a, b, construction } = s.entities[0] else { panic!("expected arc") };
+            assert!(construction);
+            let radius = 2.5 * (bulge.abs() + 1.0 / bulge.abs());
+            assert!((s.p(a).distance(s.p(c)) - radius).abs() < 1e-9);
+            assert!((s.p(b).distance(s.p(c)) - radius).abs() < 1e-9);
+            let points = s.tessellate(0);
+            let middle = DVec2::from_array(points[points.len() / 2]);
+            assert!((middle.y + 5.0 * bulge).abs() < 0.1);
+            assert_eq!(s.p(a).x, if bulge > 0.0 { 0.0 } else { 10.0 });
+        }
+    }
+
+    #[test]
+    fn closing_bulge_and_shared_endpoints() {
+        let vertices = "10\n0\n20\n0\n10\n10\n20\n0\n42\n1\n";
+        let mut open = Sketch::default();
+        assert_eq!(import(&mut open, &polyline(vertices, false)).unwrap(), 1);
+        assert!(matches!(open.entities[0], Entity::Line { .. }));
+        let mut closed = Sketch::default();
+        assert_eq!(import(&mut closed, &polyline(vertices, true)).unwrap(), 2);
+        let Entity::Line { a: la, b: lb, .. } = closed.entities[0] else { panic!("expected line") };
+        let Entity::Arc { a, b, .. } = closed.entities[1] else { panic!("expected closing arc") };
+        assert_eq!((a, b), (lb, la));
+        // Exporting as individual DXF arcs preserves the curved geometry too.
+        let mut restored = Sketch::default();
+        assert_eq!(import(&mut restored, &export(&closed)).unwrap(), 2);
+        assert!(matches!(restored.entities[1], Entity::Arc { .. }));
     }
 
     #[test]

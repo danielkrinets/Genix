@@ -60,7 +60,7 @@ impl Command {
             PickTarget::CombineTarget => tr("Щёлкните целевое тело"),
             PickTarget::CombineTools => tr("Щёлкните тела-инструменты"),
             PickTarget::Face => tr("Щёлкните плоскую грань тела (для плоскости — ещё и плоскость начала координат)"),
-            PickTarget::Edges => tr("Щёлкните прямые рёбра тела; повторный щелчок снимает выбор"),
+            PickTarget::Edges => tr("Щёлкните прямые рёбра или дуги; повторный щелчок снимает выбор"),
             PickTarget::None => tr("Задайте размеры и положение"),
         }
     }
@@ -246,7 +246,7 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
             for (i, a) in [tr("Вокруг X"), tr("Вокруг Y"), tr("Вокруг Z")].iter().enumerate() {
                 changed |= row(ui, a, |ui| expr_field(ui, ("rot", uid, i), &mut rotate[i], p, "°"));
             }
-            changed |= ui.checkbox(copy, tr("Создать копию")).changed();
+            changed |= crate::widgets::checkbox(ui, copy, tr("Создать копию")).changed();
         }
         FeatureKind::Mirror { bodies, normal, join } => {
             bodies_ui(ui, bodies, body_name, &mut changed);
@@ -265,7 +265,7 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                 });
                 c
             });
-            changed |= ui.checkbox(join, tr("Объединить с исходным телом")).changed();
+            changed |= crate::widgets::checkbox(ui, join, tr("Объединить с исходным телом")).changed();
         }
         FeatureKind::Pattern { bodies, kind } => {
             bodies_ui(ui, bodies, body_name, &mut changed);
@@ -325,12 +325,12 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                 });
                 c
             });
-            changed |= ui.checkbox(keep_tools, tr("Сохранить инструменты")).changed();
+            changed |= crate::widgets::checkbox(ui, keep_tools, tr("Сохранить инструменты")).changed();
         }
         FeatureKind::Remove { bodies } => bodies_ui(ui, bodies, body_name, &mut changed),
         FeatureKind::Hole { plane, at, dia, depth, kind } => {
             section(ui, tr("ПОЛОЖЕНИЕ"));
-            ui.label(RichText::new(tr("Щёлкните другую грань, чтобы перенести отверстие")).weak());
+            ui.label(RichText::new(tr("Щёлкните грань: центр и оси привязываются автоматически")).weak());
             for (i, a) in ["X", "Y"].iter().enumerate() {
                 changed |= row(ui, a, |ui| expr_field(ui, ("hole_at", uid, i), &mut at[i], p, "мм"));
             }
@@ -339,19 +339,18 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                 let mut lo = [f64::MAX; 2];
                 let mut hi = [f64::MIN; 2];
                 for b in &ev.model_before(idx).bodies {
-                    if let Some((l, h)) = b.mesh().bounds() {
-                        for k in 0..8 {
-                            let corner = glam::DVec3::new(if k & 1 == 0 { l.x } else { h.x }, if k & 2 == 0 { l.y } else { h.y }, if k & 4 == 0 { l.z } else { h.z });
-                            let q = plane.to_local(corner);
-                            for a in 0..2 {
-                                lo[a] = lo[a].min(q[a]);
-                                hi[a] = hi[a].max(q[a]);
-                            }
-                        }
+                    for vertex in &b.mesh().vertices {
+                        let vertex=glam::DVec3::from(*vertex);
+                        if (vertex-glam::DVec3::from(plane.origin)).dot(plane.normal()).abs()>1e-4 {continue;}
+                        let q=plane.to_local(vertex);
+                        for a in 0..2 {lo[a]=lo[a].min(q[a]);hi[a]=hi[a].max(q[a]);}
                     }
                 }
                 if lo[0] < hi[0] {
                     let inset = dia.eval(p).unwrap_or(8.0) / 2.0 + 2.0;
+                    if ui.button(tr("В центр грани")).clicked() {
+                        at[0]=num((lo[0]+hi[0])*0.5);at[1]=num((lo[1]+hi[1])*0.5);changed=true;
+                    }
                     ui.label(RichText::new(tr("Привязка к детали")).small().weak());
                     egui::Grid::new(("hole_snap", uid)).spacing([3.0, 3.0]).show(ui, |ui| {
                         for ry in (0..3).rev() {
@@ -376,7 +375,7 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
             section(ui, tr("РАЗМЕРЫ"));
             changed |= row(ui, tr("Диаметр"), |ui| expr_field(ui, ("hole_d", uid), dia, p, "мм"));
             let mut through = depth.is_none();
-            if ui.checkbox(&mut through, tr("Насквозь")).changed() {
+            if crate::widgets::checkbox(ui, &mut through, tr("Насквозь")).changed() {
                 *depth = if through { None } else { Some(num(10.0)) };
                 changed = true;
             }
@@ -485,7 +484,7 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
         FeatureKind::Scale { bodies, factor, uniform } => {
             bodies_ui(ui, bodies, body_name, &mut changed);
             section(ui, tr("МАСШТАБ"));
-            changed |= ui.checkbox(uniform, tr("Одинаково по всем осям")).changed();
+            changed |= crate::widgets::checkbox(ui, uniform, tr("Одинаково по всем осям")).changed();
             if *uniform {
                 changed |= row(ui, tr("Коэффициент"), |ui| expr_field(ui, ("scale", uid, 0), &mut factor[0], p, "×"));
             } else {
@@ -525,7 +524,7 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
         }
         FeatureKind::Shell { thickness, open, .. } => {
             section(ui, tr("ОТКРЫТАЯ ГРАНЬ"));
-            changed |= ui.checkbox(open, tr("Оставить грань открытой")).changed();
+            changed |= crate::widgets::checkbox(ui, open, tr("Оставить грань открытой")).changed();
             if *open {
                 ui.label(RichText::new(tr("Щёлкните плоскую грань, которая останется без стенки")).weak());
             }
@@ -544,7 +543,7 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
     ui.separator();
     let mut result = if changed { CmdResult::Changed } else { CmdResult::None };
     ui.horizontal(|ui| {
-        let ok = egui::Button::new(RichText::new("  OK  ").strong().color(Color32::WHITE)).fill(crate::theme::ACCENT);
+        let ok = egui::Button::new(RichText::new("  OK  ").strong().color(crate::theme::on_accent())).fill(crate::theme::accent());
         if ui.add(ok).on_hover_text("Enter").clicked() {
             result = CmdResult::Ok;
         }

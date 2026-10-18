@@ -566,6 +566,11 @@ pub fn edge_tool_ext(mesh: &Mesh, a: DVec3, b: DVec3, op: EdgeOp, ext: f64) -> R
 
 /// То же для круглого ребра (окружность вокруг оси `axis` с центром `center`, `p` — точка на ней).
 pub fn circle_tool(mesh: &Mesh, center: DVec3, axis: DVec3, p: DVec3, op: EdgeOp) -> Result<(Mesh, bool), String> {
+    circle_tool_span(mesh, center, axis, p, op, 360.0)
+}
+
+pub fn circle_tool_span(mesh: &Mesh, center: DVec3, axis: DVec3, p: DVec3, op: EdgeOp, sweep: f64) -> Result<(Mesh, bool), String> {
+    if !sweep.is_finite() || sweep <= 0.0 || sweep > 360.0 { return Err("некорректный угол дуги".into()); }
     let axis = axis.normalize();
     let r = (p - center - axis * (p - center).dot(axis)).length();
     if r < 1e-6 {
@@ -578,7 +583,8 @@ pub fn circle_tool(mesh: &Mesh, center: DVec3, axis: DVec3, p: DVec3, op: EdgeOp
         .sharp_edges(30.0)
         .into_iter()
         .map(|(i, j)| (DVec3::from(mesh.vertices[i as usize]), DVec3::from(mesh.vertices[j as usize])))
-        .find(|(q0, q1)| on_circle(*q0) && on_circle(*q1))
+        .filter(|(q0, q1)| on_circle(*q0) && on_circle(*q1))
+        .min_by(|a,b| ((a.0+a.1)*0.5).distance_squared(p).total_cmp(&((b.0+b.1)*0.5).distance_squared(p)))
         .ok_or("круглое ребро не найдено в теле")?;
     let faces = edge_faces(mesh, seg.0, seg.1)?;
     let m = (seg.0 + seg.1) * 0.5;
@@ -591,8 +597,9 @@ pub fn circle_tool(mesh: &Mesh, center: DVec3, axis: DVec3, p: DVec3, op: EdgeOp
     if crate::sketch::signed_area(&pts) < 0.0 {
         pts.reverse();
     }
-    let plane = Plane { origin: center.to_array(), x: radial.to_array(), y: axis.to_array() };
-    revolve_region(&plane, &Region { outer: pts, holes: vec![], ids: vec![] }, [0.0, 0.0], [0.0, 1.0], 360.0).map(|m| (m, concave))
+    let start = (p-center-axis*(p-center).dot(axis)).normalize();
+    let plane = Plane { origin: center.to_array(), x: start.to_array(), y: axis.to_array() };
+    revolve_region(&plane, &Region { outer: pts, holes: vec![], ids: vec![] }, [0.0, 0.0], [0.0, 1.0], sweep).map(|m| (m, concave))
 }
 
 #[cfg(test)]

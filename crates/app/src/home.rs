@@ -3,131 +3,137 @@
 use crate::i18n::tr;
 use crate::settings::Settings;
 use crate::tf;
-use crate::theme::ACCENT;
+
 use eframe::egui::{self, Color32, RichText};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub const LOGO_SVG: &str = include_str!("../assets/logo.svg");
 
-// ------------------------------------------------------------------ лицензия
-
-fn checksum(body: &str) -> String {
-    let mut h: u32 = 0x811c9dc5;
-    for b in body.bytes() {
-        h ^= b as u32;
-        h = h.wrapping_mul(0x0100_0193);
-    }
-    format!("{:04X}", (h ^ (h >> 16)) & 0xFFFF)
-}
-
-/// Ключ вида `XXXX-XXXX-XXXX-CCCC`, где CCCC — контрольная сумма первых трёх групп.
-/// Это демо-проверка без сервера: она отличает опечатки, но не защищает от подделки.
-pub fn license_valid(key: &str) -> bool {
-    let key = key.trim().to_uppercase();
-    if key == "DEMO" {
-        return true;
-    }
-    let groups: Vec<&str> = key.split('-').collect();
-    groups.len() == 4 && groups.iter().all(|g| g.len() == 4 && g.chars().all(|c| c.is_ascii_alphanumeric())) && checksum(&groups[..3].join("-")) == groups[3]
-}
-
-/// Выпустить ключ для трёх групп (используется в тестах и при выдаче демо-ключей).
-#[allow(dead_code)]
-pub fn make_key(body: &str) -> String {
-    format!("{body}-{}", checksum(body))
-}
-
 pub fn unlocked(st: &Settings) -> bool {
-    st.license.is_some() && (st.account.is_some() || st.account_skipped)
+    st.account.is_some() || st.account_skipped
 }
 
 #[derive(Default)]
 pub struct Gate {
-    key: String,
+    name: String,
     email: String,
     pass: String,
+    repeat: String,
+    login: bool,
     msg: Option<String>,
 }
 
-/// Экран входа: сначала лицензия, потом аккаунт. Возвращает true, если настройки изменились.
+fn valid_email(email: &str) -> bool {
+    let email = email.trim();
+    let Some((local, host)) = email.split_once('@') else { return false };
+    !local.is_empty() && host.contains('.') && !host.starts_with('.') && !host.ends_with('.')
+        && !email.chars().any(char::is_whitespace) && !host.contains('@') && email.len() <= 254
+}
+
+impl Gate {
+    fn submit(&mut self, st: &mut Settings) -> bool {
+        let error = if !self.login && self.name.trim().is_empty() {
+            Some(tr("Введите имя"))
+        } else if !valid_email(&self.email) {
+            Some(tr("Введите корректную электронную почту"))
+        } else if self.pass.chars().count() < 8 {
+            Some(tr("Пароль должен содержать не менее 8 символов"))
+        } else if !self.login && self.pass != self.repeat {
+            Some(tr("Пароли не совпадают"))
+        } else { None };
+        self.msg = error.map(str::to_owned);
+        if self.msg.is_some() { return false }
+        st.account = Some(self.email.trim().to_lowercase());
+        st.account_skipped = false;
+        st.license.get_or_insert_with(|| "DEMO".into());
+        st.display_name = if self.name.trim().is_empty() {
+            self.email.split('@').next().unwrap_or_default().to_owned()
+        } else { self.name.trim().to_owned() };
+        self.pass.clear();
+        self.repeat.clear();
+        true
+    }
+}
+
+/// Локальная демонстрация регистрации: пароли не отправляются и не сохраняются.
 pub fn gate_ui(ctx: &egui::Context, st: &mut Settings, g: &mut Gate) -> bool {
     let mut changed = false;
     egui::CentralPanel::default().show(ctx, |ui| {
-        ui.vertical_centered(|ui| {
-            ui.add_space((ui.available_height() * 0.08).max(16.0));
-            ui.add(egui::Image::from_bytes("bytes://genix/logo.svg", LOGO_SVG.as_bytes().to_vec()).fit_to_exact_size(egui::vec2(96.0, 96.0)));
-            ui.add_space(6.0);
-            ui.label(RichText::new("Genix").size(34.0).strong());
-            ui.add_space(4.0);
-            let step = if st.license.is_none() { 1 } else { 2 };
-            ui.label(RichText::new(tf!("Шаг {} из 2", step)).weak());
-            ui.add_space(16.0);
-            ui.allocate_ui(egui::vec2(380.0, 0.0), |ui| {
-                egui::Frame::group(ui.style()).inner_margin(egui::Margin::same(18)).show(ui, |ui| {
-                    ui.set_width(344.0);
-                    if st.license.is_none() {
-                        ui.label(RichText::new(tr("Лицензия")).size(18.0).strong());
-                        ui.label(RichText::new(tr("Введите ключ лицензии, например XXXX-XXXX-XXXX-XXXX")).weak());
+        crate::backgrounds::paint(ui, ui.max_rect(), true);
+        let wide = ui.available_width() >= 900.0;
+        let offset = if wide { ui.available_width()*0.48 } else { 0.0 };
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.add_space((ui.available_height() * 0.07).clamp(12.0, 64.0));
+            ui.horizontal(|ui| {
+            ui.add_space(offset);
+            ui.vertical_centered(|ui| {
+                if !wide { ui.label(RichText::new("Genix").size(32.0).strong()); }
+                ui.label(tr("От идеи к вашей следующей модели"));
+                ui.add_space(24.0);
+                ui.allocate_ui_with_layout(egui::vec2(460.0_f32.min(ui.available_width()), 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(24).inner_margin(egui::Margin::same(24)).show(ui, |ui| {
+                    ui.set_width(380.0_f32.min(ui.available_width()));
+                    ui.spacing_mut().item_spacing.y = 10.0;
+                    ui.heading(if g.login { tr("С возвращением") } else { tr("Создать аккаунт") });
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(tr("Мок регистрации · данные остаются на этом устройстве")).color(muted(ui)));
+                    ui.add_space(16.0);
+                    if !g.login {
+                        ui.label(tr("Имя"));
+                        ui.add(egui::TextEdit::singleline(&mut g.name).font(egui::FontId::proportional(16.0)).margin(egui::Margin::symmetric(14,12)).char_limit(100).desired_width(f32::INFINITY));
                         ui.add_space(8.0);
-                        let r = ui.add(egui::TextEdit::singleline(&mut g.key).hint_text("XXXX-XXXX-XXXX-XXXX").desired_width(f32::INFINITY));
-                        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        ui.add_space(8.0);
-                        let go = egui::Button::new(RichText::new(tr("Активировать")).strong().color(Color32::WHITE)).fill(ACCENT).min_size(egui::vec2(344.0, 30.0));
-                        if ui.add(go).clicked() || enter {
-                            if license_valid(&g.key) {
-                                st.license = Some(g.key.trim().to_uppercase());
-                                g.msg = None;
-                                changed = true;
-                            } else {
-                                g.msg = Some(tr("Неверный ключ лицензии").into());
-                            }
-                        }
-                        if ui.add(egui::Button::new(tr("Демо-режим (без ключа)")).min_size(egui::vec2(344.0, 28.0))).clicked() {
-                            st.license = Some("DEMO".into());
-                            g.msg = None;
-                            changed = true;
-                        }
-                    } else {
-                        ui.label(RichText::new(tr("Вход в аккаунт")).size(18.0).strong());
-                        ui.label(RichText::new(tr("Демо: данные хранятся только на этом компьютере")).weak());
-                        ui.add_space(8.0);
-                        ui.add(egui::TextEdit::singleline(&mut g.email).hint_text(tr("Электронная почта")).desired_width(f32::INFINITY));
-                        let r = ui.add(egui::TextEdit::singleline(&mut g.pass).password(true).hint_text(tr("Пароль")).desired_width(f32::INFINITY));
-                        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        ui.add_space(8.0);
-                        let go = egui::Button::new(RichText::new(tr("Войти")).strong().color(Color32::WHITE)).fill(ACCENT).min_size(egui::vec2(344.0, 30.0));
-                        if ui.add(go).clicked() || enter {
-                            let email = g.email.trim();
-                            if email.contains('@') && email.contains('.') && g.pass.len() >= 4 {
-                                st.account = Some(email.to_string());
-                                g.pass.clear();
-                                g.msg = None;
-                                changed = true;
-                            } else {
-                                g.msg = Some(tr("Проверьте почту и пароль (не короче 4 символов)").into());
-                            }
-                        }
-                        if ui.add(egui::Button::new(tr("Продолжить без аккаунта")).min_size(egui::vec2(344.0, 28.0))).clicked() {
-                            st.account_skipped = true;
-                            changed = true;
-                        }
-                        if ui.small_button(tr("← Другой ключ лицензии")).clicked() {
-                            st.license = None;
-                            changed = true;
-                        }
                     }
-                    if let Some(m) = &g.msg {
-                        ui.add_space(6.0);
-                        ui.label(RichText::new(m).color(Color32::from_rgb(220, 70, 70)));
+                    ui.label(tr("Электронная почта"));
+                    ui.add(egui::TextEdit::singleline(&mut g.email).font(egui::FontId::proportional(16.0)).margin(egui::Margin::symmetric(14,12)).hint_text(RichText::new("you@example.com").color(muted(ui))).char_limit(254).desired_width(f32::INFINITY));
+                    ui.add_space(8.0);
+                    ui.label(tr("Пароль"));
+                    let password = ui.add(egui::TextEdit::singleline(&mut g.pass).font(egui::FontId::proportional(16.0)).margin(egui::Margin::symmetric(14,12)).password(true).char_limit(128).hint_text(RichText::new(tr("Не менее 8 символов")).color(muted(ui))).desired_width(f32::INFINITY));
+                    let mut enter = password.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if !g.login {
+                        ui.add_space(8.0);
+                        ui.label(tr("Повторите пароль"));
+                        let repeat = ui.add(egui::TextEdit::singleline(&mut g.repeat).font(egui::FontId::proportional(16.0)).margin(egui::Margin::symmetric(14,12)).password(true).char_limit(128).desired_width(f32::INFINITY));
+                        enter = repeat.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     }
+                    if let Some(msg) = &g.msg { ui.colored_label(ui.visuals().error_fg_color, msg); }
+                    ui.add_space(16.0);
+                    if primary(ui, if g.login { tr("Войти") } else { tr("Зарегистрироваться") }).clicked() || enter {
+                        changed = g.submit(st);
+                    }
+                    ui.add_space(8.0);
+                    if ui.button(if g.login { tr("Нет аккаунта? Зарегистрироваться") } else { tr("Уже есть аккаунт? Войти") }).clicked() {
+                        g.login = !g.login;
+                        g.msg = None;
+                        g.pass.clear();
+                        g.repeat.clear();
+                    }
+                    if ui.button(tr("Продолжить без аккаунта")).clicked() {
+                        st.account = None;
+                        st.account_skipped = true;
+                        st.license.get_or_insert_with(|| "DEMO".into());
+                        g.pass.clear();
+                        g.repeat.clear();
+                        changed = true;
+                    }
+                    ui.add_space(12.0);
+                    ui.label(RichText::new(tr("Это демонстрация: аккаунт не создаётся на сервере. Используйте тестовый пароль.")).color(muted(ui)).small());
+                    });
                 });
+            });
             });
         });
     });
     changed
+}
+
+/// Читаемый вторичный текст на светлых и тёмных поверхностях библиотеки.
+pub(crate) fn muted(ui: &egui::Ui) -> Color32 { crate::theme::secondary(ui) }
+
+fn primary(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    crate::widgets::primary_button(ui, text, ui.available_width().min(392.0))
 }
 
 // ------------------------------------------------------------------ главная
@@ -153,30 +159,68 @@ pub fn format_time(secs: u64) -> String {
 struct ProjInfo {
     name: String,
     time: String,
+    modified: Option<u64>,
     steps: Option<usize>,
     exists: bool,
+    preview_key: String,
+}
+
+#[derive(Default)]
+struct ProjectFilters {
+    in_path: bool,
+    available_only: bool,
+    readable_only: bool,
+    min_steps: usize,
+    modified_days: u64,
+    sort: u8,
+}
+
+impl ProjectFilters {
+    fn matches(&self, query: &str, path: &str, info: &ProjInfo, now: u64) -> bool {
+        let text = if self.in_path { format!("{} {}", info.name, path) } else { info.name.clone() }.to_lowercase();
+        query.split_whitespace().all(|word| text.contains(word))
+            && (!self.available_only || info.exists)
+            && (!self.readable_only || info.steps.is_some())
+            && (self.min_steps == 0 || info.steps.is_some_and(|n| n >= self.min_steps))
+            && (self.modified_days == 0 || info.modified.is_some_and(|t| now.saturating_sub(t) <= self.modified_days * 86400))
+    }
+
+    fn active(&self) -> bool {
+        self.in_path || self.available_only || self.readable_only || self.min_steps > 0 || self.modified_days > 0 || self.sort != 0
+    }
 }
 
 #[derive(Default)]
 pub struct HomeState {
+    page: HomePage,
+    transition_started: Option<f64>,
+    profile: Option<ProfileDraft>,
+    checkout: bool,
+    updates: crate::updates::Updates,
     search: String,
+    filters_open: bool,
+    filters: ProjectFilters,
     infos: HashMap<String, ProjInfo>,
     thumbs: HashMap<String, egui::TextureHandle>,
-    pending: Arc<Mutex<Vec<(String, crate::thumb::Rgba)>>>,
+    pending: Arc<Mutex<Vec<(String, Option<crate::thumb::Rgba>)>>>,
+    queued: VecDeque<(String, fusion_core::Document)>,
+    inflight: HashSet<String>,
+    completed: HashSet<String>,
     busy: Arc<AtomicUsize>,
 }
 
 /// Отрисовать превью документа на фоновом потоке (прозрачный фон, изометрия).
-fn spawn_thumb(key: String, doc: fusion_core::Document, pending: Arc<Mutex<Vec<(String, crate::thumb::Rgba)>>>, busy: Arc<AtomicUsize>) {
+fn spawn_thumb(key: String, doc: fusion_core::Document, pending: Arc<Mutex<Vec<(String, Option<crate::thumb::Rgba>)>>>, busy: Arc<AtomicUsize>) {
     busy.fetch_add(1, Ordering::SeqCst);
     std::thread::spawn(move || {
-        let mut ev = fusion_core::Evaluator::default();
-        ev.evaluate(&doc);
-        let model = ev.model();
-        let meshes: Vec<&fusion_core::Mesh> = model.bodies.iter().filter(|b| !doc.hidden_bodies.contains(&b.id)).map(|b| b.mesh()).collect();
-        if let Some(img) = crate::thumb::render(&meshes, crate::camera::Camera::ISO.0, crate::camera::Camera::ISO.1, 264, 176) {
-            pending.lock().unwrap().push((key, img));
-        }
+        let img = std::panic::catch_unwind(|| {
+            let mut ev = fusion_core::Evaluator::default();
+            ev.evaluate(&doc);
+            let model = ev.model();
+            let meshes: Vec<&fusion_core::Mesh> = model.bodies.iter().filter(|b| !doc.hidden_bodies.contains(&b.id)).map(|b| b.mesh()).collect();
+            crate::thumb::render(&meshes, crate::camera::Camera::ISO.0, crate::camera::Camera::ISO.1, 528, 352)
+        }).ok().flatten();
+        pending.lock().unwrap().push((key, img));
         busy.fetch_sub(1, Ordering::SeqCst);
     });
 }
@@ -188,43 +232,247 @@ pub enum HomeAction {
     OpenPath(PathBuf),
     Example(usize),
     Forget(String),
+    Settings,
+    SettingsChanged,
+    SignOut,
 }
 
 impl HomeState {
     /// Перечитать сведения о проектах (при заходе на главную).
     pub fn refresh(&mut self, recent: &[String]) {
         self.infos.clear();
+        self.queued.clear();
+        let mut current = HashSet::new();
         for p in recent {
             let path = PathBuf::from(p);
             let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| p.clone());
             let meta = std::fs::metadata(&path).ok();
-            let time = meta.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| format_time(d.as_secs())).unwrap_or_default();
-            let steps = std::fs::read_to_string(&path).ok().and_then(|s| fusion_core::Document::from_json(&s).ok()).map(|d| d.features.len());
-            self.infos.insert(p.clone(), ProjInfo { name, time, steps, exists: meta.is_some() });
-        }
-        for p in recent.iter().take(16) {
-            if self.thumbs.contains_key(p) {
-                continue;
+            let modified = meta.as_ref().and_then(|m| m.modified().ok());
+            let time = modified.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| format_time(d.as_secs())).unwrap_or_default();
+            let preview_key = format!("{p}:{modified:?}:{}", meta.as_ref().map_or(0, |m| m.len()));
+            let doc = std::fs::read_to_string(&path).ok().and_then(|s| fusion_core::Document::from_json(&s).ok());
+            let steps = doc.as_ref().map(|d| d.features.len());
+            current.insert(preview_key.clone());
+            if !self.thumbs.contains_key(&preview_key) && !self.inflight.contains(&preview_key) {
+                if let Some(doc) = doc { self.queued.push_back((preview_key.clone(), doc)); }
+                else { self.completed.insert(preview_key.clone()); }
             }
-            if let Some(doc) = std::fs::read_to_string(p).ok().and_then(|s| fusion_core::Document::from_json(&s).ok()) {
-                spawn_thumb(p.clone(), doc, self.pending.clone(), self.busy.clone());
-            }
+            self.infos.insert(p.clone(), ProjInfo { name, time, modified: modified.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()), steps, exists: meta.is_some(), preview_key });
         }
-        for (i, f) in [crate::examples::bracket as fn() -> fusion_core::Document, crate::examples::bushing].into_iter().enumerate() {
+        for (i, example) in [crate::examples::bracket as fn() -> fusion_core::Document, crate::examples::bushing].into_iter().enumerate() {
             let key = format!("ex:{i}");
-            if !self.thumbs.contains_key(&key) {
-                spawn_thumb(key, f(), self.pending.clone(), self.busy.clone());
+            current.insert(key.clone());
+            if !self.thumbs.contains_key(&key) && !self.inflight.contains(&key) {
+                self.queued.push_back((key, example()));
             }
+        }
+        self.thumbs.retain(|key, _| current.contains(key));
+        self.completed.retain(|key| current.contains(key));
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HomePage {
+    #[default]
+    Models,
+    Profile,
+    Updates,
+    Server,
+}
+
+impl HomePage {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Models => "Мои модели",
+            Self::Profile => "Профиль",
+            Self::Updates => "Обновления",
+            Self::Server => "Сервер",
         }
     }
 }
 
-pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &Settings, projects: &[String], viewer: bool) -> HomeAction {
+#[derive(Default)]
+struct ProfileDraft {
+    name: String,
+    email: String,
+    message: Option<String>,
+}
+
+impl HomeState {
+    pub fn navigate(&mut self, page: HomePage) {
+        if self.page != page {
+            self.profile = None;
+            self.checkout = false;
+        }
+        self.page = page;
+        self.transition_started = None;
+    }
+}
+
+fn nav(ui: &mut egui::Ui, h: &mut HomeState, action: &mut HomeAction) {
+    for (page, icon) in [(HomePage::Models, "home_models"), (HomePage::Profile, "profile"), (HomePage::Updates, "updates"), (HomePage::Server, "server")] {
+        let selected = h.page == page;
+        let response = crate::widgets::navigation_button(ui, tr(page.label()), icon, selected);
+        if response.clicked() && !selected {
+            h.navigate(page);
+            if ui.input(|i| i.pointer.any_released()) { h.transition_started = Some(ui.input(|i| i.time)); }
+        }
+    }
+    ui.add_space(12.0);
+    if crate::widgets::navigation_button(ui, tr("Настройки"), "settings", false).clicked() { *action = HomeAction::Settings; }
+}
+
+pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects: &[String], viewer: bool) -> HomeAction {
+    let mut action = HomeAction::None;
+    if ui.available_width() < 700.0 {
+        ui.horizontal_wrapped(|ui| nav(ui, h, &mut action));
+        ui.separator();
+        let content = hub_content(ui, h, st, projects, viewer);
+        if !matches!(content, HomeAction::None) { action = content; }
+    } else {
+        let height = ui.available_height();
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(egui::vec2(190.0, height), egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.add_space(20.0);
+                ui.horizontal(|ui| {
+                    ui.add(egui::Image::from_bytes("bytes://genix/logo.svg", LOGO_SVG.as_bytes().to_vec()).fit_to_exact_size(egui::vec2(28.0, 28.0)));
+                    ui.label(RichText::new("Genix").size(23.0).strong());
+                });
+                ui.add_space(28.0);
+                ui.spacing_mut().item_spacing.y = 6.0;
+                nav(ui, h, &mut action);
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    ui.add_space(16.0);
+                    ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).color(muted(ui)).small());
+                    ui.label(RichText::new(if st.account.is_some() { st.display_name.as_str() } else { tr("Локальное пространство") }).strong());
+                });
+            });
+            ui.separator();
+            ui.vertical(|ui| {
+                ui.set_width(ui.available_width());
+                let content = hub_content(ui, h, st, projects, viewer);
+                if !matches!(content, HomeAction::None) { action = content; }
+            });
+        });
+    }
+    action
+}
+
+fn hub_content(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects: &[String], viewer: bool) -> HomeAction {
+    let progress = if crate::theme::reduced_motion() { 1.0 } else {
+        h.transition_started.map(|start| ((ui.input(|i| i.time) - start) / 0.16).clamp(0.0, 1.0) as f32).unwrap_or(1.0)
+    };
+    if progress < 1.0 { ui.ctx().request_repaint(); }
+    ui.scope(|ui| {
+        ui.multiply_opacity(0.65 + 0.35 * crate::widgets::ease_out(progress));
+        hub_content_inner(ui, h, st, projects, viewer)
+    }).inner
+}
+
+fn hub_content_inner(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects: &[String], viewer: bool) -> HomeAction {
+    if h.page == HomePage::Models {
+        crate::backgrounds::paint(ui, ui.available_rect_before_wrap(), false);
+        return projects_ui(ui, h, st, projects, viewer)
+    }
+    let mut action = HomeAction::None;
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(crate::theme::SURFACE_RADIUS).inner_margin(egui::Margin::same(28)).show(ui, |ui| {
+            ui.set_max_width(640.0);
+            match h.page {
+                HomePage::Profile => {
+                    let draft = h.profile.get_or_insert_with(|| ProfileDraft {
+                        name: st.display_name.clone(), email: st.account.clone().unwrap_or_default(), message: None,
+                    });
+                    ui.heading(tr("Профиль"));
+                    ui.label(RichText::new(tr("Локальный аккаунт · мок")).color(muted(ui)));
+                    ui.add_space(24.0);
+                    if st.account.is_none() {
+                        ui.label(tr("Вы работаете без аккаунта. Модели доступны на этом устройстве."));
+                        if ui.button(tr("Зарегистрироваться / войти")).clicked() { action = HomeAction::SignOut; }
+                    } else {
+                        ui.label(tr("Имя"));
+                        ui.add(egui::TextEdit::singleline(&mut draft.name).char_limit(100).desired_width(360.0));
+                        ui.add_space(12.0);
+                        ui.label(tr("Электронная почта"));
+                        ui.add(egui::TextEdit::singleline(&mut draft.email).char_limit(254).desired_width(360.0));
+                        ui.add_space(16.0);
+                        if ui.button(tr("Сохранить профиль")).clicked() {
+                            if draft.name.trim().is_empty() || !valid_email(&draft.email) {
+                                draft.message = Some(tr("Введите имя и корректную почту").into());
+                            } else {
+                                let email = draft.email.trim().to_lowercase();
+                                if st.server_demo_account == st.account { st.server_demo_account = Some(email.clone()); }
+                                st.display_name = draft.name.trim().to_owned();
+                                st.account = Some(email);
+                                draft.message = Some(tr("Профиль сохранён на этом устройстве").into());
+                                action = HomeAction::SettingsChanged;
+                            }
+                        }
+                        if let Some(message) = &draft.message { ui.label(message); }
+                        ui.add_space(24.0);
+                        ui.separator();
+                        ui.label(tr("Пароль не хранится. Реальная авторизация будет подключена позже."));
+                        if ui.button(tr("Выйти из аккаунта")).clicked() { action = HomeAction::SignOut; }
+                    }
+                }
+                HomePage::Updates => h.updates.ui(ui),
+                HomePage::Server => {
+                    ui.heading(tr("Сервер Genix"));
+                    ui.label(RichText::new(tr("Демонстрационная подписка")).color(muted(ui)));
+                    ui.add_space(24.0);
+                    ui.label(RichText::new(tr("Ваше пространство для моделей")).size(20.0).strong());
+                    ui.label(tr("Будущий сервер для хранения проектов и работы с ними на разных устройствах."));
+                    ui.add_space(12.0);
+                    ui.label(tr("Сейчас сервер не подключён. Модели хранятся только на этом устройстве."));
+                    ui.label(tr("Цена и тарифы пока не определены. Оплата не производится."));
+                    ui.add_space(24.0);
+                    let active = st.account.is_some() && st.server_demo_account == st.account;
+                    if active {
+                        ui.label(RichText::new(tr("Демо-подписка активна")).strong());
+                        ui.label(tr("Это локальный статус для проверки интерфейса. Загрузка на сервер недоступна."));
+                        if ui.button(tr("Отключить демо-подписку")).clicked() {
+                            st.server_demo_account = None;
+                            action = HomeAction::SettingsChanged;
+                        }
+                    } else if st.account.is_none() {
+                        ui.label(tr("Для демо-подписки войдите в аккаунт."));
+                        if ui.button(tr("Перейти в профиль")).clicked() { h.navigate(HomePage::Profile); }
+                    } else if h.checkout {
+                        ui.separator();
+                        ui.label(RichText::new(tr("Подтверждение демо-покупки")).strong());
+                        ui.label(tr("Деньги не списываются. Банковские данные не требуются."));
+                        if ui.button(tr("Подтвердить демо-подписку")).clicked() {
+                            st.server_demo_account = st.account.clone();
+                            h.checkout = false;
+                            action = HomeAction::SettingsChanged;
+                        }
+                        if ui.button(tr("Отмена")).clicked() { h.checkout = false; }
+                    } else if primary(ui, tr("Купить подписку на сервер (мок)")).clicked() {
+                        h.checkout = true;
+                    }
+                }
+                HomePage::Models => {},
+            }
+        });
+    });
+    action
+}
+
+fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, _st: &Settings, projects: &[String], viewer: bool) -> HomeAction {
     let mut action = HomeAction::None;
     let ready: Vec<_> = std::mem::take(&mut *h.pending.lock().unwrap());
     for (k, img) in ready {
-        let ci = egui::ColorImage::from_rgba_unmultiplied([img.w, img.h], &img.data);
-        h.thumbs.insert(k.clone(), ui.ctx().load_texture(format!("thumb-{k}"), ci, egui::TextureOptions::LINEAR));
+        h.inflight.remove(&k);
+        h.completed.insert(k.clone());
+        if let Some(img) = img {
+            let ci = egui::ColorImage::from_rgba_unmultiplied([img.w, img.h], &img.data);
+            h.thumbs.insert(k.clone(), ui.ctx().load_texture(format!("thumb-{k}"), ci, egui::TextureOptions::LINEAR));
+        }
+    }
+    while h.busy.load(Ordering::SeqCst) < 2 {
+        let Some((key, doc)) = h.queued.pop_front() else { break };
+        h.inflight.insert(key.clone());
+        spawn_thumb(key, doc, h.pending.clone(), h.busy.clone());
     }
     if h.busy.load(Ordering::SeqCst) > 0 {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
@@ -234,64 +482,127 @@ pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &Settings, projects: &[
         ui.horizontal(|ui| {
             ui.add_space(24.0);
             ui.vertical(|ui| {
-                ui.label(RichText::new(tr("Главная")).size(26.0).strong());
-                let who = match (&st.account, st.license.as_deref()) {
-                    (Some(a), Some("DEMO")) => tf!("{} · демо-лицензия", a),
-                    (Some(a), _) => tf!("{} · лицензия активна", a),
-                    (None, Some("DEMO")) => tr("Без аккаунта · демо-лицензия").into(),
-                    _ => tr("Без аккаунта · лицензия активна").into(),
-                };
-                ui.label(RichText::new(who).weak());
+                ui.label(RichText::new(tr("Мои модели")).size(26.0).strong().background_color(ui.visuals().panel_fill));
+                let who = tr("Локальные проекты · выберите модель, чтобы открыть редактор");
+                ui.label(RichText::new(who).color(muted(ui)).background_color(ui.visuals().panel_fill));
             });
         });
         ui.add_space(12.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.add_space(24.0);
             // на iPhone только просмотр: создавать и открывать через диалоги нечего
             if !viewer {
-                let new = egui::Button::new(RichText::new(tr("+ Новый проект")).strong().color(Color32::WHITE)).fill(ACCENT).min_size(egui::vec2(150.0, 32.0));
-                if ui.add(new).clicked() {
+                if crate::widgets::primary_button(ui, tr("+ Новый проект"), 170.0).clicked() {
                     action = HomeAction::New;
                 }
-                if !cfg!(target_os = "ios") && ui.add(egui::Button::new(tr("Открыть файл…")).min_size(egui::vec2(130.0, 32.0))).clicked() {
+                if !cfg!(target_os = "ios") && ui.add(egui::Button::new(tr("Открыть файл…")).min_size(egui::vec2(130.0, 42.0))).clicked() {
                     action = HomeAction::Open;
                 }
             }
-            ui.add_space(12.0);
-            ui.add(egui::TextEdit::singleline(&mut h.search).hint_text(tr("Поиск проектов")).desired_width(240.0));
         });
+        ui.add_space(16.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(24.0);
+            let search_width = (ui.available_width()-230.0).clamp(180.0,680.0);
+            let search = ui.add(egui::TextEdit::singleline(&mut h.search).font(egui::FontId::proportional(16.0)).margin(egui::Margin { left: 44, right: 16, top: 13, bottom: 13 }).hint_text(RichText::new(tr("Поиск проектов")).color(muted(ui))).desired_width(search_width));
+            let center = search.rect.left_center() + egui::vec2(-22.0,-2.0);
+            let stroke = egui::Stroke::new(1.8_f32,muted(ui));
+            ui.painter().circle_stroke(center,7.0,stroke);
+            ui.painter().line_segment([center+egui::vec2(5.0,5.0),center+egui::vec2(10.0,10.0)],stroke);
+            if !h.search.is_empty() && ui.button(tr("Очистить")).clicked() { h.search.clear(); }
+            if ui.add(egui::Button::new(if h.filters.active() { format!("{} •", tr("Фильтры")) } else { tr("Фильтры").into() }).corner_radius(12).selected(h.filters_open || h.filters.active())).clicked() { h.filters_open = !h.filters_open; }
+        });
+        let openness = crate::widgets::feedback(ui, ui.id().with("project-filters"), h.filters_open);
+        if openness > 0.0 {
+            let height_id = ui.id().with("filters-height");
+            let height = ui.data(|d| d.get_temp::<f32>(height_id)).unwrap_or(200.0);
+            let mut filter_ui = ui.new_child(egui::UiBuilder::new().id_salt("filter-body").max_rect(ui.available_rect_before_wrap()));
+            {
+                let ui = &mut filter_ui;
+                let top = ui.next_widget_position().y;
+                let mut clip = ui.clip_rect();
+                clip.max.y = clip.max.y.min(top + height * openness);
+                ui.set_clip_rect(clip);
+                ui.set_opacity(openness);
+                ui.set_enabled(h.filters_open);
+                egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(20).inner_margin(16).show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        crate::widgets::checkbox(ui, &mut h.filters.in_path, tr("Искать в пути файла"));
+                        crate::widgets::checkbox(ui, &mut h.filters.available_only, tr("Только доступные файлы"));
+                        crate::widgets::checkbox(ui, &mut h.filters.readable_only, tr("Только читаемые проекты"));
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(tr("Минимум операций"));
+                        ui.add(egui::DragValue::new(&mut h.filters.min_steps).range(0..=100000));
+                        egui::ComboBox::from_id_salt("modified-filter").selected_text(tr(match h.filters.modified_days { 7 => "За неделю", 30 => "За месяц", _ => "За всё время" })).show_ui(ui, |ui| {
+                            for (days, label) in [(0,"За всё время"),(7,"За неделю"),(30,"За месяц")] { ui.selectable_value(&mut h.filters.modified_days, days, tr(label)); }
+                        });
+                        egui::ComboBox::from_id_salt("project-sort").selected_text(tr(match h.filters.sort { 1 => "Сначала новые", 2 => "По названию", 3 => "Больше операций", _ => "Недавно открытые" })).show_ui(ui, |ui| {
+                            for (sort,label) in [(0,"Недавно открытые"),(1,"Сначала новые"),(2,"По названию"),(3,"Больше операций")] { ui.selectable_value(&mut h.filters.sort, sort, tr(label)); }
+                        });
+                        if ui.add_enabled(h.filters.active(), egui::Button::new(tr("Сбросить фильтры"))).clicked() { h.filters = ProjectFilters::default(); }
+                    });
+                });
+                let rect = ui.min_rect();
+                ui.data_mut(|d| d.insert_temp(height_id, rect.height()));
+
+            }
+            let mut rect = filter_ui.min_rect();
+            rect.max.y = rect.min.y + rect.height() * openness;
+            ui.allocate_rect(rect, egui::Sense::hover());
+        }
         ui.add_space(14.0);
+        if h.busy.load(Ordering::SeqCst) > 0 || !h.queued.is_empty() {
+            ui.horizontal(|ui| { ui.add_space(24.0); crate::widgets::loading(ui, tr("Подготавливаем предпросмотр…")); });
+        }
         let thumbs = &h.thumbs;
         let card = |ui: &mut egui::Ui, key: &str, title: &str, sub: &str| -> egui::Response {
             let (rect, resp) = ui.allocate_exact_size(egui::vec2(240.0, 160.0), egui::Sense::click());
             let v = ui.visuals();
-            let fill = if resp.hovered() { v.widgets.hovered.weak_bg_fill } else { v.widgets.inactive.weak_bg_fill };
-            let stroke = if resp.hovered() { v.widgets.hovered.bg_stroke } else { v.widgets.inactive.bg_stroke };
+            let hover = resp.hovered() && !ui.input(|i| i.any_touches());
+            let press = crate::widgets::feedback(ui, resp.id.with("press"), resp.is_pointer_button_down_on());
+            let fill = crate::theme::surface(ui).lerp_to_gamma(v.widgets.hovered.weak_bg_fill, press * 0.35);
             let p = ui.painter_at(rect);
-            p.rect(rect, 8.0, fill, stroke, egui::StrokeKind::Inside);
+            p.rect_filled(rect, 20.0, fill);
+            if hover || resp.has_focus() { p.rect_stroke(rect, 20.0, egui::Stroke::new(1.5_f32, crate::theme::tint(150)), egui::StrokeKind::Inside); }
             let area = egui::Rect::from_min_size(rect.min + egui::vec2(8.0, 8.0), egui::vec2(rect.width() - 16.0, 94.0));
+            p.rect_filled(area, 14.0, ui.visuals().extreme_bg_color);
             if let Some(t) = thumbs.get(key) {
                 let s = t.size_vec2();
                 let k = (area.width() / s.x).min(area.height() / s.y);
                 let r = egui::Rect::from_center_size(area.center(), s * k);
                 p.image(t.id(), r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
             } else {
-                p.text(area.center(), egui::Align2::CENTER_CENTER, "…", egui::FontId::proportional(22.0), v.weak_text_color());
+                p.text(area.center(), egui::Align2::CENTER_CENTER, if h.completed.contains(key) { tr("Предпросмотр недоступен") } else { tr("Предпросмотр…") }, egui::FontId::proportional(12.0), muted(ui));
             }
-            p.text(rect.left_top() + egui::vec2(12.0, 112.0), egui::Align2::LEFT_TOP, title, egui::FontId::proportional(14.0), v.text_color());
-            p.text(rect.left_top() + egui::vec2(12.0, 134.0), egui::Align2::LEFT_TOP, sub, egui::FontId::proportional(11.5), v.weak_text_color());
+            let text = |text: &str, y: f32, size: f32, color: Color32| {
+                let mut job = egui::text::LayoutJob::simple(text.into(), egui::FontId::proportional(size), color, rect.width() - 24.0);
+                job.wrap.max_rows = 1;
+                job.wrap.break_anywhere = true;
+                let galley = p.layout_job(job);
+                p.galley(rect.left_top() + egui::vec2(12.0, y), galley, color);
+            };
+            text(title, 112.0, 14.0, v.text_color());
+            text(sub, 134.0, 11.5, muted(ui));
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
             resp
         };
         let q = h.search.trim().to_lowercase();
         ui.horizontal(|ui| {
             ui.add_space(24.0);
-            ui.label(RichText::new(tr("НЕДАВНИЕ ПРОЕКТЫ")).small().weak());
+            ui.label(RichText::new(tr("Недавние модели")).size(16.0).strong().color(muted(ui)).background_color(ui.visuals().panel_fill));
         });
-        let shown: Vec<&String> = projects.iter().filter(|p| h.infos.get(*p).map(|i| q.is_empty() || i.name.to_lowercase().contains(&q)).unwrap_or(true)).collect();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        let mut shown: Vec<&String> = projects.iter().filter(|p| h.infos.get(*p).is_some_and(|i| h.filters.matches(&q, p, i, now))).collect();
+        shown.sort_by(|a,b| {
+            let (a,b) = (&h.infos[*a], &h.infos[*b]);
+            match h.filters.sort { 1 => b.modified.cmp(&a.modified), 2 => a.name.to_lowercase().cmp(&b.name.to_lowercase()), 3 => b.steps.cmp(&a.steps), _ => std::cmp::Ordering::Equal }
+        });
+        ui.horizontal(|ui| { ui.add_space(24.0); ui.label(RichText::new(tf!("Найдено: {} из {}", shown.len(), projects.len())).size(14.0).color(muted(ui)).background_color(ui.visuals().panel_fill)); });
         if shown.is_empty() {
             ui.horizontal(|ui| {
                 ui.add_space(24.0);
-                ui.label(RichText::new(if projects.is_empty() { if viewer { tr("Положите файлы .genix в папку Genix в приложении «Файлы»") } else { tr("Пока нет проектов — создайте новый или откройте файл") } } else { tr("Ничего не найдено") }).weak());
+                ui.label(RichText::new(if projects.is_empty() { if viewer { tr("Положите файлы .genix в папку Genix в приложении «Файлы»") } else { tr("Пока нет проектов — создайте новый или откройте файл") } } else { tr("Ничего не найдено") }).color(muted(ui)));
             });
         }
         ui.horizontal_wrapped(|ui| {
@@ -299,11 +610,12 @@ pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &Settings, projects: &[
             for p in shown {
                 let Some(info) = h.infos.get(p).cloned() else { continue };
                 let sub = if info.exists { format!("{} · {}", info.time, info.steps.map(|n| tf!("шагов: {}", n)).unwrap_or_else(|| tr("не читается").into())) } else { tr("файл не найден").into() };
-                let r = card(ui, p.as_str(), &info.name, &sub).on_hover_text(p.as_str());
+                let r = card(ui, &info.preview_key, &info.name, &sub).on_hover_text(p.as_str());
                 if r.clicked() && info.exists {
                     action = HomeAction::OpenPath(PathBuf::from(p));
                 }
                 r.context_menu(|ui| {
+                    if cfg!(target_os="macos") && info.exists && ui.button(tr("Показать в Finder")).clicked() {crate::desktop::reveal(std::path::Path::new(p)); ui.close_menu();}
                     if ui.button(tr("Убрать из списка")).clicked() {
                         action = HomeAction::Forget(p.clone());
                         ui.close_menu();
@@ -314,7 +626,7 @@ pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &Settings, projects: &[
         ui.add_space(18.0);
         ui.horizontal(|ui| {
             ui.add_space(24.0);
-            ui.label(RichText::new(tr("ПРИМЕРЫ")).small().weak());
+            ui.label(RichText::new(tr("Начните с примера")).size(16.0).strong().color(muted(ui)).background_color(ui.visuals().panel_fill));
         });
         ui.horizontal_wrapped(|ui| {
             ui.add_space(24.0);
@@ -333,14 +645,71 @@ mod tests {
     use super::*;
 
     #[test]
-    fn license_keys() {
-        let k = make_key("OSTV-DEMO-2026");
-        assert!(license_valid(&k), "{k}");
-        assert!(license_valid(&k.to_lowercase()));
-        assert!(!license_valid("OSTV-DEMO-2026-0000"));
-        assert!(!license_valid("abc"));
-        assert!(license_valid("DEMO"));
-        println!("DEMO KEY: {k}");
+    fn project_search_combines_words_path_and_metadata_filters() {
+        let now = 40 * 86400;
+        let mut info = ProjInfo { name: "Кронштейн большой".into(), time: String::new(), modified: Some(now-86400), steps: Some(4), exists: true, preview_key: String::new() };
+        let mut f = ProjectFilters::default();
+        assert!(f.matches("большой крон", "/models/print.genix", &info, now));
+        assert!(!f.matches("print", "/models/print.genix", &info, now));
+        f.in_path = true;
+        assert!(f.matches("print крон", "/models/print.genix", &info, now));
+        f.available_only = true; f.readable_only = true; f.min_steps = 4; f.modified_days = 7;
+        assert!(f.matches("", "", &info, now));
+        info.exists = false; assert!(!f.matches("", "", &info, now)); info.exists = true;
+        info.steps = None; assert!(!f.matches("", "", &info, now)); info.steps = Some(3);
+        assert!(!f.matches("", "", &info, now)); info.steps = Some(4);
+        info.modified = Some(now-8*86400); assert!(!f.matches("", "", &info, now));
+        info.modified = None; assert!(!f.matches("", "", &info, now));
+        assert!(ProjectFilters::default().matches("", "", &info, now));
+    }
+
+    #[test]
+    fn mock_registration_validates_and_does_not_store_passwords() {
+        let mut st = Settings::default();
+        let mut gate = Gate { name: "Даниэль".into(), email: "daniel@example.com".into(), pass: "test1234".into(), repeat: "different".into(), ..Default::default() };
+        assert!(!gate.submit(&mut st));
+        assert!(st.account.is_none());
+        gate.repeat = gate.pass.clone();
+        assert!(gate.submit(&mut st));
+        assert!(unlocked(&st));
+        assert_eq!(st.display_name, "Даниэль");
+        assert!(gate.pass.is_empty() && gate.repeat.is_empty());
+        let saved = serde_json::to_string(&st).unwrap();
+        assert!(!saved.contains("test1234"));
+        assert!(!saved.contains("password"));
+        let restored: Settings = serde_json::from_str(&saved).unwrap();
+        assert!(unlocked(&restored));
+    }
+
+    #[test]
+    fn email_validation_and_navigation_reset_transient_forms() {
+        for bad in ["", "a@", "@example.com", "a@.com", "a@b.", "a b@example.com", "a@b@c.com"] { assert!(!valid_email(bad), "{bad}"); }
+        assert!(valid_email("daniel@example.com"));
+        let mut home = HomeState::default();
+        home.navigate(HomePage::Server);
+        home.checkout = true;
+        home.navigate(HomePage::Models);
+        assert!(!home.checkout);
+        assert_eq!(home.page, HomePage::Models);
+    }
+
+    #[test]
+    fn refresh_invalidates_preview_when_model_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("project.genix");
+        let mut doc = fusion_core::Document::default();
+        std::fs::write(&path, doc.to_json()).unwrap();
+        let recent = vec![path.to_string_lossy().into_owned()];
+        let mut home = HomeState::default();
+        home.refresh(&recent);
+        let first = home.infos[&recent[0]].preview_key.clone();
+        doc.params.set("width", "12345");
+        std::fs::write(&path, doc.to_json()).unwrap();
+        home.refresh(&recent);
+        assert_ne!(first, home.infos[&recent[0]].preview_key);
+        assert_eq!(home.queued.len(), 3); // модель и два примера
+        home.refresh(&recent);
+        assert_eq!(home.queued.len(), 3); // повторный вход не дублирует задания
     }
 
     #[test]

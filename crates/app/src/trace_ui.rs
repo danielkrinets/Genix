@@ -2,6 +2,7 @@
 
 use crate::i18n::tr;
 use crate::tf;
+use crate::theme::accent;
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Stroke};
 use fusion_core::sketch::P2;
 use fusion_core::trace::{to_sketch_units, trace, TraceOpts};
@@ -93,7 +94,7 @@ impl TraceDialog {
                 ui.label(tr("Порог яркости"));
                 ch |= ui.add(egui::Slider::new(&mut self.opts.threshold, 1..=254)).changed();
             });
-            ch |= ui.checkbox(&mut self.opts.invert, tr("Фигура — светлое на тёмном")).changed();
+            ch |= crate::widgets::checkbox(ui, &mut self.opts.invert, tr("Фигура — светлое на тёмном")).changed();
             ui.horizontal(|ui| {
                 ui.label(tr("Гладкость"));
                 ch |= ui.add(egui::Slider::new(&mut self.opts.tolerance, 0.3..=6.0).fixed_decimals(1)).changed();
@@ -121,7 +122,7 @@ impl TraceDialog {
             p.rect_filled(rect, 4.0, ui.visuals().extreme_bg_color);
             for l in &self.loops {
                 let pts: Vec<Pos2> = l.iter().map(|q| origin + egui::vec2(q[0] as f32, q[1] as f32) * k).collect();
-                p.add(egui::Shape::closed_line(pts, Stroke::new(1.2, Color32::from_rgb(88, 166, 255))));
+                p.add(egui::Shape::closed_line(pts, Stroke::new(1.2, accent())));
             }
             p.rect_stroke(Rect::from_min_size(origin, egui::vec2(self.w as f32, self.h as f32) * k), 0.0, Stroke::new(1.0, Color32::from_gray(110)), egui::StrokeKind::Inside);
             let pts: usize = self.loops.iter().map(|l| l.len()).sum();
@@ -130,7 +131,7 @@ impl TraceDialog {
                 ui.label(RichText::new(tr("Очень много отрезков — увеличьте гладкость")).color(Color32::from_rgb(200, 120, 0)).small());
             }
             ui.horizontal(|ui| {
-                let ok = egui::Button::new(RichText::new(tr("  Вставить в чертёж  ")).strong().color(Color32::WHITE)).fill(crate::theme::ACCENT);
+                let ok = egui::Button::new(RichText::new(tr("  Вставить в чертёж  ")).strong().color(crate::theme::on_accent())).fill(crate::theme::accent());
                 if ui.add_enabled(!self.loops.is_empty(), ok).clicked() {
                     result = TraceResult::Insert(to_sketch_units(&self.loops, self.w, self.h, self.size));
                 }

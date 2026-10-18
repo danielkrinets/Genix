@@ -1194,8 +1194,8 @@ impl SketchSession {
             });
         }
         ui.label(RichText::new(tr("ПАРАМЕТРЫ")).small().weak());
-        ui.checkbox(&mut self.snap_grid, tr("Привязка к сетке"));
-        ui.checkbox(&mut self.show_constraints, tr("Показывать значки ограничений"));
+        crate::widgets::checkbox(ui, &mut self.snap_grid, tr("Привязка к сетке"));
+        crate::widgets::checkbox(ui, &mut self.show_constraints, tr("Показывать значки ограничений"));
         if ui.button(tr("Вспомогательная линия (X)")).on_hover_text(tr("Выбранные кривые станут вспомогательными (не образуют профилей) и обратно")).clicked() {
             self.toggle_construction(params);
         }

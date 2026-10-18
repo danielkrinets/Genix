@@ -45,3 +45,46 @@ pub fn open(_label: &str, _exts: &[&str]) -> Option<PathBuf> {
 pub fn save(_label: &str, _exts: &[&str], name: &str) -> Option<PathBuf> {
     Some(documents_dir()?.join(name))
 }
+
+/// Записать рядом с назначением и заменить файл только после успешной записи.
+/// NamedTempFile обеспечивает замену существующего файла также на Windows.
+pub fn write_atomic(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| std::path::Path::new("."));
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    if let Ok(metadata) = std::fs::metadata(path) {
+        temp.as_file().set_permissions(metadata.permissions())?;
+    }
+    temp.write_all(data)?;
+    temp.as_file().sync_all()?;
+    temp.persist(path).map_err(|e| e.error)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn atomic_save_creates_and_replaces_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("деталь.genix");
+        write_atomic(&path, b"first project").unwrap();
+        write_atomic(&path, b"updated").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"updated");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn failed_replace_preserves_destination_and_cleans_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("existing");
+        std::fs::create_dir(&path).unwrap();
+        let original = path.join("project.genix");
+        std::fs::write(&original, b"original").unwrap();
+        assert!(write_atomic(&path, b"replacement").is_err());
+        assert_eq!(std::fs::read(&original).unwrap(), b"original");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert!(write_atomic(&dir.path().join("missing/project.genix"), b"data").is_err());
+    }
+}

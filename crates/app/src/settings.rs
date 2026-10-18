@@ -58,6 +58,8 @@ impl VisualStyle {
 pub struct Settings {
     pub lang: Lang,
     pub theme: ThemeChoice,
+    pub accent: crate::theme::Accent,
+    pub reduce_motion: bool,
     /// Масштаб интерфейса (1.0 = обычный).
     pub ui_scale: f32,
     pub show_grid: bool,
@@ -83,6 +85,9 @@ pub struct Settings {
     /// Почта вошедшего аккаунта (демо: проверка локальная).
     pub account: Option<String>,
     pub account_skipped: bool,
+    pub display_name: String,
+    /// Локальная демонстрационная подписка, привязанная к почте.
+    pub server_demo_account: Option<String>,
     /// Недавние проекты (полные пути), новые первыми.
     pub recent: Vec<String>,
     pub show_left_panel: bool,
@@ -94,6 +99,8 @@ impl Default for Settings {
         Settings {
             lang: Lang::detect(),
             theme: ThemeChoice::Auto,
+            accent: crate::theme::Accent::default(),
+            reduce_motion: false,
             ui_scale: 1.0,
             show_grid: true,
             visual_style: VisualStyle::Shaded,
@@ -110,6 +117,8 @@ impl Default for Settings {
             license: None,
             account: None,
             account_skipped: false,
+            display_name: String::new(),
+            server_demo_account: None,
             recent: Vec::new(),
             show_left_panel: true,
             show_right_panel: true,
@@ -119,6 +128,7 @@ impl Default for Settings {
 
 impl Settings {
     pub fn path() -> Option<PathBuf> {
+        if let Some(path) = std::env::var_os("GENIX_SETTINGS_PATH") { return Some(PathBuf::from(path)); }
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let dir = if cfg!(any(target_os = "macos", target_os = "ios")) {
             home?.join("Library/Application Support/Genix")
@@ -140,7 +150,7 @@ impl Settings {
                 let _ = std::fs::create_dir_all(dir);
             }
             if let Ok(s) = serde_json::to_string_pretty(self) {
-                let _ = std::fs::write(p, s);
+                let _ = crate::files::write_atomic(&p, s.as_bytes());
             }
         }
     }
@@ -155,11 +165,15 @@ mod tests {
         let mut s = Settings::default();
         s.lang = Lang::En;
         s.ui_scale = 1.25;
+        s.accent = crate::theme::Accent::Indigo;
+        s.reduce_motion = true;
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(s, back);
         // файл от старой версии без новых полей читается, недостающее — по умолчанию
         let old: Settings = serde_json::from_str(r#"{"lang":"En"}"#).unwrap();
         assert_eq!(old.lang, Lang::En);
+        assert_eq!(old.accent, crate::theme::Accent::Blue);
+        assert!(!old.reduce_motion);
         assert!(old.show_grid);
         // мусор не роняет программу
         assert!(serde_json::from_str::<Settings>("{oops").is_err());

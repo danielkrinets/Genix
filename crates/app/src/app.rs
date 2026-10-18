@@ -5,7 +5,7 @@ use crate::commands::{self, CmdResult, Command, PickTarget};
 use crate::gpu::{FrameUniform, GpuScene, LineInst, Overlay, FaceVertex};
 use crate::render::{self, fill_quad, fill_region, fill_tris, nice_step, polyline, RenderCache};
 use crate::sketcher::{SketchAction, SketchSession};
-use crate::theme::{linear, Theme, ACCENT};
+use crate::theme::{linear, Theme, accent};
 use crate::viewcube::{self, CubeAction};
 use crate::widgets::expr_field;
 use crate::i18n::{self, tr, tr_dyn, tr_name, Lang};
@@ -84,7 +84,13 @@ enum Confirm {
     Open,
     OpenExample(fn() -> Document),
     CloseTab,
-    Quit,
+    Quit(Vec<usize>),
+}
+
+enum SaveChoice {
+    Save,
+    Discard,
+    Cancel,
 }
 
 /// Тип устройства: компьютер, планшет (iPad — крупнее и под палец) или телефон (iPhone — только просмотр).
@@ -196,12 +202,18 @@ pub struct App {
 
 /// Кнопка со значком из набора (нет значка — текстовый символ).
 fn icon_button(ui: &mut egui::Ui, id: &str, fallback: &str, selected: bool, tip: &str, min: egui::Vec2) -> bool {
-    let main = if selected { Color32::WHITE } else { ui.visuals().text_color() };
+    let main = if selected { crate::theme::on_accent() } else { ui.visuals().text_color() };
     let btn = match crate::icons::icon(id, 22.0, main) {
         Some(img) => egui::Button::image(img),
         None => egui::Button::new(RichText::new(fallback).size(16.0)),
     };
-    ui.add(btn.selected(selected).frame(selected).min_size(min)).on_hover_text(tip).clicked()
+    let background = ui.painter().add(egui::Shape::Noop);
+    let response = ui.add(btn.corner_radius(12).selected(selected).frame(selected).min_size(min)).on_hover_text(tip);
+    let hover = response.hovered() && !ui.input(|i| i.any_touches());
+    if !selected && hover {
+        ui.painter().set(background, egui::Shape::rect_filled(response.rect, 12.0, crate::theme::tint(20)));
+    }
+    response.clicked()
 }
 
 /// Группа дерева в стиле Fusion: стрелка, значок папки, название; вся строка подсвечивается при наведении.
@@ -212,7 +224,7 @@ fn tree_group(ui: &mut egui::Ui, id: &str, icon: &str, title: String, default_op
     let open = st.is_open();
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::click());
     if resp.hovered() {
-        ui.painter().rect_filled(rect.shrink2(egui::vec2(0.0, 1.0)), 5.0, ui.visuals().widgets.hovered.weak_bg_fill);
+        ui.painter().rect_filled(rect.shrink2(egui::vec2(0.0, 1.0)), 12.0, ui.visuals().widgets.hovered.weak_bg_fill);
     }
     let col = ui.visuals().text_color();
     let mut x = rect.left() + 4.0;
@@ -265,9 +277,26 @@ impl App {
         let theme = resolve_theme(&settings, &cc.egui_ctx);
         egui_extras::install_image_loaders(&cc.egui_ctx);
         Theme::install_fonts(&cc.egui_ctx);
+        crate::theme::configure(settings.accent, theme == Theme::Dark, settings.reduce_motion);
         theme.apply(&cc.egui_ctx);
         cc.egui_ctx.set_zoom_factor(settings.ui_scale);
-        let mut app = App {
+        let mut app = Self::from_settings(settings, theme);
+        if let Some(p) = open {
+            app.open_path(p);
+        } else if std::env::var("GENIX_DEMO").is_ok() {
+            app.load_doc(crate::examples::bracket(), None);
+        }
+        if std::env::var("GENIX_SKIP_LOGIN").is_ok() {
+            app.settings.license.get_or_insert_with(|| "DEMO".into());
+            app.settings.account_skipped = true;
+        }
+        let list = app.project_list();
+        app.home.refresh(&list);
+        app
+    }
+
+    fn from_settings(settings: Settings, theme: Theme) -> Self {
+        Self {
             doc: Document::default(),
             ev: Evaluator::default(),
             path: None,
@@ -319,19 +348,7 @@ impl App {
             face_groups: Default::default(),
             pre_sketch_view: None,
             now: 0.0,
-        };
-        if let Some(p) = open {
-            app.open_path(p);
-        } else if std::env::var("GENIX_DEMO").is_ok() {
-            app.load_doc(crate::examples::bracket(), None);
         }
-        if std::env::var("GENIX_SKIP_LOGIN").is_ok() {
-            app.settings.license.get_or_insert_with(|| "DEMO".into());
-            app.settings.account_skipped = true;
-        }
-        let list = app.project_list();
-        app.home.refresh(&list);
-        app
     }
 
     // ------------------------------------------------------------ документ и история
@@ -415,7 +432,41 @@ impl App {
         self.settings.save();
     }
 
+    fn handle_home_action(&mut self, action: crate::home::HomeAction) {
+        use crate::home::HomeAction;
+        match action {
+            HomeAction::None => {},
+            HomeAction::New => self.new_blank_tab(),
+            HomeAction::Open => self.open_dialog(),
+            HomeAction::OpenPath(path) => self.open_path(path),
+            HomeAction::Example(i) => {
+                let example: fn() -> Document = if i == 0 { crate::examples::bracket } else { crate::examples::bushing };
+                self.open_in_tab(example(), None);
+            }
+            HomeAction::Forget(path) => {
+                self.settings.recent.retain(|p| *p != path);
+                self.settings.save();
+                let list = self.project_list();
+                self.home.refresh(&list);
+            }
+            HomeAction::Settings => self.settings_open = true,
+            HomeAction::SettingsChanged => self.settings.save(),
+            HomeAction::SignOut => {
+                self.settings.account = None;
+                self.settings.account_skipped = false;
+                self.settings.save();
+                self.gate = Default::default();
+                self.home_active = true;
+                self.home.navigate(crate::home::HomePage::Models);
+            }
+        }
+    }
+
     fn open_path(&mut self, p: PathBuf) {
+        let canonical=std::fs::canonicalize(&p).ok();
+        if let Some(index)=self.tabs.iter().position(|tab| tab.path.as_ref().is_some_and(|other| other==&p || canonical.as_ref().is_some_and(|p|std::fs::canonicalize(other).ok().as_ref()==Some(p)))) {
+            self.switch_tab(index); self.home_active=false; return;
+        }
         match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| Document::from_json(&s)) {
             Ok(d) => {
                 self.note_recent(&p);
@@ -432,6 +483,7 @@ impl App {
     }
 
     fn save(&mut self, as_new: bool, now: f64) -> bool {
+        self.commit_pending_edits();
         let path = match (&self.path, as_new) {
             (Some(p), false) => Some(p.clone()),
             _ => crate::files::save("Genix", &["genix"], tr("деталь.genix")),
@@ -440,9 +492,10 @@ impl App {
         if p.extension().is_none() {
             p.set_extension("genix");
         }
-        match std::fs::write(&p, self.doc.to_json()) {
+        match crate::files::write_atomic(&p, self.doc.to_json().as_bytes()) {
             Ok(()) => {
                 self.saved = self.doc.clone();
+                self.last_autosave = now;
                 self.note_recent(&p);
                 self.path = Some(p);
                 self.toast(tr("Сохранено"), false, now);
@@ -452,6 +505,33 @@ impl App {
                 self.toast(tf!("Ошибка сохранения: {}", e), true, now);
                 false
             }
+        }
+    }
+
+    /// Автосохранение всех именованных вкладок без переключения текущей.
+    fn autosave(&mut self, now: f64) {
+        let mut error = None;
+        if self.dirty() {
+            if let Some(path) = &self.path {
+                match crate::files::write_atomic(path, self.doc.to_json().as_bytes()) {
+                    Ok(()) => self.saved = self.doc.clone(),
+                    Err(e) => error = Some(format!("{}: {e}", path.display())),
+                }
+            }
+        }
+        for (i, tab) in self.tabs.iter_mut().enumerate() {
+            if i == self.active || tab.doc == tab.saved {
+                continue;
+            }
+            if let Some(path) = &tab.path {
+                match crate::files::write_atomic(path, tab.doc.to_json().as_bytes()) {
+                    Ok(()) => tab.saved = tab.doc.clone(),
+                    Err(e) => error = Some(format!("{}: {e}", path.display())),
+                }
+            }
+        }
+        if let Some(error) = error {
+            self.toast(tf!("Ошибка сохранения: {}", error), true, now);
         }
     }
 
@@ -503,13 +583,33 @@ impl App {
         }
     }
 
+    fn commit_pending_edits(&mut self) {
+        match &self.mode {
+            Mode::Sketch(_) => self.finish_sketch(true),
+            Mode::Command(_) => self.finish_command(true),
+            _ => self.mode = Mode::Idle,
+        }
+    }
+
+    fn dirty_tabs(&self) -> Vec<usize> {
+        (0..self.tabs.len()).filter(|&i| {
+            if i == self.active { self.dirty() } else { self.tabs[i].doc != self.tabs[i].saved }
+        }).collect()
+    }
+
     fn request(&mut self, c: Confirm) {
-        let ask = match c {
-            Confirm::Quit => self.dirty() || self.tabs.iter().enumerate().any(|(i, t)| i != self.active && t.doc != t.saved),
-            Confirm::CloseTab => self.dirty(),
-            _ => false, // новый документ и открытие идут во вкладку — ничего не теряется
-        };
-        if ask {
+        if self.confirm.is_some() {
+            return;
+        }
+        if matches!(c, Confirm::Quit(_) | Confirm::CloseTab) {
+            self.commit_pending_edits();
+        }
+        if matches!(c, Confirm::Quit(_)) {
+            // Каждая изменённая вкладка получает собственное решение.
+            let mut pending = self.dirty_tabs();
+            pending.reverse();
+            self.run_confirmed(Confirm::Quit(pending));
+        } else if matches!(c, Confirm::CloseTab) && self.dirty() {
             self.confirm = Some(c);
         } else {
             self.run_confirmed(c);
@@ -624,8 +724,9 @@ impl App {
             egui::ScrollArea::horizontal().auto_shrink([false, true]).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
-                    if ui.add(egui::Button::new(RichText::new(format!("⌂ {}", tr("Главная"))).strong().size(12.5)).selected(self.home_active).frame(self.home_active).min_size(egui::vec2(90.0, 24.0))).clicked() {
+                    if ui.add(egui::Button::new(RichText::new(format!("⌂ {}", tr("Главная"))).strong().size(12.5).color(if self.home_active { crate::theme::on_accent() } else { ui.visuals().text_color() })).corner_radius(12).selected(self.home_active).frame(self.home_active).min_size(egui::vec2(90.0, 24.0))).clicked() {
                         self.home_active = true;
+                        self.home.navigate(crate::home::HomePage::Models);
                         let list = self.project_list();
                         self.home.refresh(&list);
                     }
@@ -633,7 +734,7 @@ impl App {
                     for (i, (name, dirty)) in titles.iter().enumerate() {
                         let sel = i == self.active && !self.home_active;
                         let label = format!("{}{}", name, if *dirty { " •" } else { "" });
-                        let r = ui.add(egui::Button::new(RichText::new(label).strong().size(12.5)).selected(sel).frame(sel).min_size(egui::vec2(90.0, 24.0)));
+                        let r = ui.add(egui::Button::new(RichText::new(label).strong().size(12.5).color(if sel { crate::theme::on_accent() } else { ui.visuals().text_color() })).corner_radius(12).selected(sel).frame(sel).min_size(egui::vec2(90.0, 24.0)));
                         if r.clicked() {
                             go = Some(i);
                         }
@@ -673,7 +774,15 @@ impl App {
             Confirm::Open => self.open_dialog(),
             Confirm::OpenExample(f) => self.open_in_tab(f(), None),
             Confirm::CloseTab => self.close_tab_now(),
-            Confirm::Quit => self.allow_close = true,
+            Confirm::Quit(mut pending) => {
+                if let Some(i) = pending.pop() {
+                    self.switch_tab(i);
+                    self.home_active = false;
+                    self.confirm = Some(Confirm::Quit(pending));
+                } else {
+                    self.allow_close = true;
+                }
+            }
         }
     }
 
@@ -993,6 +1102,17 @@ impl App {
         Some((Plane::from_point_normal(p0, n), tris))
     }
 
+    fn hole_target(&self, model: &Model, slot: usize, tri: usize, point: DVec3, rect: Rect) -> Option<(Plane,[f64;2],[f64;2],[f64;2],[bool;2])> {
+        let (plane,tris)=self.face_plane(model,slot,tri)?;
+        let mesh=model.bodies.get(slot)?.mesh();
+        let mut lo=[f64::INFINITY;2]; let mut hi=[f64::NEG_INFINITY;2];
+        for t in tris {for v in mesh.triangles[t] {let q=plane.to_local(DVec3::from(mesh.vertices[v as usize])); for a in 0..2 {lo[a]=lo[a].min(q[a]);hi[a]=hi[a].max(q[a]);}}}
+        let mut at=plane.to_local(point); let mut snapped=[false;2];
+        let tolerance=self.cam.world_per_pixel(rect)*9.0;
+        for a in 0..2 {let center=(lo[a]+hi[a])*0.5; if (at[a]-center).abs()<=tolerance {at[a]=center;snapped[a]=true;}}
+        Some((plane,at,lo,hi,snapped))
+    }
+
     /// Плоские грани тела (кэш по телу: считаются один раз).
     fn face_groups(&self, b: &fusion_core::doc::Body) -> Arc<Vec<u32>> {
         let key = Arc::as_ptr(&b.solid) as usize;
@@ -1066,10 +1186,12 @@ impl App {
                 let pick = cmd.pick;
                 // грань для отверстия и ребро для фаски определяем до заимствования документа
                 let face = match (pick, hit) {
-                    (PickTarget::Face, Some(Hit::Body { slot, tri, t })) => self.face_plane(&model, slot, tri).map(|(pl, _)| {
-                        let (o, d) = self.last_ray;
-                        (pl, pl.to_local(o + d * t))
-                    }),
+                    (PickTarget::Face, Some(Hit::Body { slot, tri, t })) => {
+                        let (o,d)=self.last_ray;
+                        let is_hole=self.doc.feature(uid).is_some_and(|f|matches!(f.kind,FeatureKind::Hole{..}));
+                        if is_hole {self.hole_target(&model,slot,tri,o+d*t,self.viewport).map(|(p,a,_,_,_)|(p,a))}
+                        else {self.face_plane(&model,slot,tri).map(|(p,_)|(p,p.to_local(o+d*t)))}
+                    },
                     _ => None,
                 };
                 let edge = self.hover_edge;
@@ -1100,8 +1222,8 @@ impl App {
                     (FeatureKind::Hole { plane, at, .. }, _, PickTarget::Face) => {
                         if let Some((pl, loc)) = face {
                             *plane = pl;
-                            at[0] = Expr::num((loc[0] * 10.0).round() / 10.0);
-                            at[1] = Expr::num((loc[1] * 10.0).round() / 10.0);
+                            at[0] = Expr::num(loc[0]);
+                            at[1] = Expr::num(loc[1]);
                             changed = true;
                         }
                     }
@@ -1179,6 +1301,12 @@ impl App {
     // ------------------------------------------------------------ интерфейс
 
     fn menu_bar(&mut self, ui: &mut egui::Ui, now: f64) {
+        // Compact menu highlights; rounded pills are reserved for larger controls.
+        let visuals = &mut ui.style_mut().visuals;
+        visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(6);
+        visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(6);
+        visuals.widgets.active.corner_radius = egui::CornerRadius::same(6);
+        visuals.widgets.open.corner_radius = egui::CornerRadius::same(6);
         egui::menu::bar(ui, |ui| {
             ui.add(egui::Image::from_bytes("bytes://genix/logo.svg", crate::home::LOGO_SVG.as_bytes().to_vec()).fit_to_exact_size(egui::vec2(18.0, 18.0)));
             ui.menu_button(tr("Файл"), |ui| {
@@ -1251,11 +1379,11 @@ impl App {
                     }
                 }
                 ui.separator();
-                ui.checkbox(&mut self.settings.show_left_panel, tr("Левая панель"));
-                ui.checkbox(&mut self.settings.show_right_panel, tr("Правая панель"));
+                crate::widgets::checkbox(ui, &mut self.settings.show_left_panel, tr("Левая панель"));
+                crate::widgets::checkbox(ui, &mut self.settings.show_right_panel, tr("Правая панель"));
                 ui.separator();
-                ui.checkbox(&mut self.settings.show_grid, tr("Сетка"));
-                ui.checkbox(&mut self.show_planes, tr("Плоскости начала координат"));
+                crate::widgets::checkbox(ui, &mut self.settings.show_grid, tr("Сетка"));
+                crate::widgets::checkbox(ui, &mut self.show_planes, tr("Плоскости начала координат"));
                 if ui.button(tr("Вписать модель           F")).clicked() {
                     ui.close_menu();
                     self.need_fit = true;
@@ -1275,6 +1403,13 @@ impl App {
                 self.do_redo();
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(tr("Мои модели")).clicked() {
+                    self.commit_pending_edits();
+                    self.home_active = true;
+                    self.home.navigate(crate::home::HomePage::Models);
+                    let list = self.project_list();
+                    self.home.refresh(&list);
+                }
                 ui.label(RichText::new(self.title()).strong());
             });
         });
@@ -1351,8 +1486,8 @@ impl App {
                 }
             });
             tree_group(ui, "t_origin", "tree_origin", tr("Начало координат").to_string(), false, |ui| {
-                ui.checkbox(&mut self.show_planes, tr("Показывать плоскости"));
-                ui.checkbox(&mut self.settings.show_grid, tr("Показывать сетку"));
+                crate::widgets::checkbox(ui, &mut self.show_planes, tr("Показывать плоскости"));
+                crate::widgets::checkbox(ui, &mut self.settings.show_grid, tr("Показывать сетку"));
             });
             let model = self.shown();
             tree_group(ui, "t_bodies", "tree_bodies", tf!("Тела ({})", model.bodies.len()), true, |ui| {
@@ -1545,7 +1680,7 @@ impl App {
                         if !active {
                             text = text.weak();
                         }
-                        let mut btn = egui::Button::new(text).selected(editing);
+                        let mut btn = egui::Button::new(text).corner_radius(12).selected(editing);
                         if err.is_some() && active && !editing {
                             btn = btn.fill(Color32::from_rgb(250, 205, 205));
                         }
@@ -2083,6 +2218,25 @@ impl App {
                 fill_tris(&mut ov.tris, model.bodies[slot].mesh(), tris.into_iter(), c.plane_hover);
             }
         }
+        if matches!(&self.mode,Mode::Command(cm) if self.doc.feature(cm.uid).is_some_and(|f|matches!(f.kind,FeatureKind::Hole{..}))) {
+            if let Some(Hit::Body{slot,tri,t})=self.hover {
+                let (o,d)=self.last_ray;
+                if let Some((plane,at,lo,hi,snapped))=self.hole_target(model,slot,tri,o+d*t,rect) {
+                    let center=[(lo[0]+hi[0])*0.5,(lo[1]+hi[1])*0.5];
+                    let color=crate::theme::accent();
+                    let size=self.cam.world_per_pixel(rect)*7.0;
+                    for a in 0..2 {
+                        let mut start=center; let mut end=center;
+                        start[a]-=size;end[a]+=size;
+                        ov.lines_top.push(render::line(plane.to_world(start),plane.to_world(end),color,2.0));
+                        if snapped[a] {
+                            let other=1-a;let mut start=at;let mut end=at;start[other]=lo[other];end[other]=hi[other];
+                            ov.lines_top.push(render::line(plane.to_world(start),plane.to_world(end),color.gamma_multiply(0.7),1.5));
+                        }
+                    }
+                }
+            }
+        }
         // выбранные и подсвеченные рёбра (фаска, скругление)
         if let Mode::Command(cm) = &self.mode {
             if let Some(FeatureKind::Chamfer { edges, .. } | FeatureKind::Fillet { edges, .. }) = self.doc.feature(cm.uid).map(|f| &f.kind) {
@@ -2132,7 +2286,7 @@ impl App {
             let tip = base + dir * dist;
             let wpp = self.cam.world_per_pixel(rect);
             let hot = self.manip.is_some();
-            let col = if hot { Color32::from_rgb(255, 150, 30) } else { crate::theme::ACCENT };
+            let col = if hot { Color32::from_rgb(255, 150, 30) } else { crate::theme::accent() };
             ov.lines_top.push(render::line(base, tip, col, 3.0));
             let (x, y) = fusion_core::geom::perp_frame(dir);
             let head = wpp * 16.0 * dist.signum();
@@ -2207,13 +2361,15 @@ impl App {
         if let Some((msg, t, err)) = &self.toast {
             let age = ui.input(|i| i.time) - t;
             if age < 4.0 {
-                let a = (1.0 - ((age - 3.0).max(0.0))) as f32;
-                let col = if *err { Color32::from_rgb(190, 40, 40) } else { Color32::from_rgb(30, 130, 60) };
-                let g = painter.layout_no_wrap(msg.clone(), egui::FontId::proportional(13.5), Color32::WHITE);
-                let r = Rect::from_center_size(Pos2::new(rect.center().x, rect.top() + 30.0), g.size() + egui::vec2(20.0, 12.0));
-                painter.rect_filled(r, 6.0, col.gamma_multiply(a));
-                painter.galley(r.min + egui::vec2(10.0, 6.0), g, Color32::WHITE.gamma_multiply(a));
-                ui.ctx().request_repaint();
+                let enter = if crate::theme::reduced_motion() { 1.0 } else { crate::widgets::ease_out((age / 0.2).clamp(0.0, 1.0) as f32) };
+                let alpha = enter * (1.0 - ((age - 3.6).max(0.0) / 0.4).min(1.0) as f32);
+                let color = if *err { ui.visuals().error_fg_color } else { accent() };
+                let fg = crate::theme::foreground_on(color);
+                let galley = painter.layout_no_wrap(msg.clone(), egui::FontId::proportional(14.0), fg.gamma_multiply(alpha));
+                let pill = Rect::from_center_size(Pos2::new(rect.center().x, rect.top() + 32.0), galley.size() + egui::vec2(32.0, 20.0));
+                painter.rect_filled(pill, 18.0, color.gamma_multiply(alpha));
+                painter.galley(pill.min + egui::vec2(16.0, 10.0), galley, fg.gamma_multiply(alpha));
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
             }
         }
         // числа вдоль осей сетки, как линейка
@@ -2260,7 +2416,7 @@ impl App {
 
 fn marker(ui: &mut egui::Ui) {
     let (r, _) = ui.allocate_exact_size(egui::vec2(6.0, 22.0), egui::Sense::hover());
-    ui.painter().rect_filled(Rect::from_center_size(r.center(), egui::vec2(3.0, 22.0)), 1.0, ACCENT);
+    ui.painter().rect_filled(Rect::from_center_size(r.center(), egui::vec2(3.0, 22.0)), 1.0, accent());
 }
 
 fn draw_sketch(ov: &mut Overlay, sk: &SketchResult, c: &crate::theme::ViewColors) {
@@ -2336,9 +2492,9 @@ impl eframe::App for App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
 
         // закрытие окна с несохранёнными изменениями
-        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close && self.dirty() {
+        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.confirm = Some(Confirm::Quit);
+            self.request(Confirm::Quit(Vec::new()));
         }
         if self.allow_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -2346,7 +2502,8 @@ impl eframe::App for App {
 
         // тема «как в системе», масштаб интерфейса, автосохранение
         let want = resolve_theme(&self.settings, ctx);
-        if want != self.theme {
+        let appearance_changed = crate::theme::configure(self.settings.accent, want == Theme::Dark, self.settings.reduce_motion);
+        if want != self.theme || appearance_changed {
             self.theme = want;
             want.apply(ctx);
         }
@@ -2356,14 +2513,15 @@ impl eframe::App for App {
         if (ctx.zoom_factor() - scale).abs() > 1e-3 {
             ctx.set_zoom_factor(scale);
         }
-        if self.settings.autosave_minutes > 0 && self.path.is_some() && self.dirty() && matches!(self.mode, Mode::Idle) {
+        if self.settings.autosave_minutes > 0 && self.confirm.is_none() && matches!(self.mode, Mode::Idle) {
             if self.last_autosave == 0.0 {
                 self.last_autosave = now;
             }
-            if now - self.last_autosave > self.settings.autosave_minutes as f64 * 60.0 {
+            if now - self.last_autosave >= self.settings.autosave_minutes as f64 * 60.0 {
                 self.last_autosave = now;
-                self.save(false, now);
+                self.autosave(now);
             }
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
         }
         if self.playing {
             if !matches!(self.mode, Mode::Idle) {
@@ -2381,44 +2539,45 @@ impl eframe::App for App {
                 }
             }
         }
+        for file in ctx.input(|i| i.raw.dropped_files.clone()) {
+            if let Some(path)=file.path {crate::desktop::enqueue(path);}
+        }
         // сначала лицензия, затем аккаунт (демо)
         if !crate::home::unlocked(&self.settings) {
             if crate::home::gate_ui(ctx, &mut self.settings, &mut self.gate) {
                 self.settings.save();
+                self.home_active = true;
+                let list = self.project_list();
+                self.home.refresh(&list);
             }
+            self.confirm_window(ctx, now);
             return;
+        }
+        if self.confirm.is_none() && matches!(self.mode,Mode::Idle) {
+            for path in crate::desktop::take() {
+                if crate::desktop::project_path(&path) {self.open_path(path);}
+                else {self.toast(tr("Перетащите файл проекта .genix или .ostov"),true,now);}
+            }
         }
         if self.device == Device::Phone {
             self.phone_ui(ctx, now);
+            self.show_dialogs(ctx);
             return;
         }
-        if !self.home_active {
+        if !self.home_active && self.confirm.is_none() {
             self.shortcuts(ctx, now);
         }
 
-        egui::TopBottomPanel::top("menu").show(ctx, |ui| self.menu_bar(ui, now));
+        if !self.home_active {
+            egui::TopBottomPanel::top("menu").show(ctx, |ui| self.menu_bar(ui, now));
+        }
         egui::TopBottomPanel::top("tabs").frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(8, 3))).show(ctx, |ui| self.tab_bar(ui));
         if self.home_active {
             let mut act = crate::home::HomeAction::None;
             let list = self.project_list();
             let viewer = self.device == Device::Phone;
-            egui::CentralPanel::default().show(ctx, |ui| act = crate::home::home_ui(ui, &mut self.home, &self.settings, &list, viewer));
-            match act {
-                crate::home::HomeAction::None => {}
-                crate::home::HomeAction::New => self.new_blank_tab(),
-                crate::home::HomeAction::Open => self.open_dialog(),
-                crate::home::HomeAction::OpenPath(p) => self.open_path(p),
-                crate::home::HomeAction::Example(i) => {
-                    let f: fn() -> Document = if i == 0 { crate::examples::bracket } else { crate::examples::bushing };
-                    self.open_in_tab(f(), None);
-                }
-                crate::home::HomeAction::Forget(p) => {
-                    self.settings.recent.retain(|x| *x != p);
-                    self.settings.save();
-                    let list = self.project_list();
-                    self.home.refresh(&list);
-                }
-            }
+            egui::CentralPanel::default().show(ctx, |ui| act = crate::home::home_ui(ui, &mut self.home, &mut self.settings, &list, viewer));
+            self.handle_home_action(act);
             self.show_dialogs(ctx);
             return;
         }
@@ -2440,7 +2599,7 @@ impl eframe::App for App {
         if let (Some(title), true) = (right_title, self.settings.show_right_panel) {
             egui::SidePanel::right("props").default_width(250.0).width_range(180.0..=480.0).resizable(true).show(ctx, |ui| {
                 ui.add_space(4.0);
-                ui.label(RichText::new(title).strong().color(ACCENT));
+                ui.label(RichText::new(title).strong().color(accent()));
                 ui.separator();
                 self.right_panel(ui, now);
             });
@@ -2488,15 +2647,8 @@ impl App {
         if self.home_active {
             let mut act = crate::home::HomeAction::None;
             let list = self.project_list();
-            egui::CentralPanel::default().show(ctx, |ui| act = crate::home::home_ui(ui, &mut self.home, &self.settings, &list, true));
-            match act {
-                crate::home::HomeAction::OpenPath(p) => self.open_path(p),
-                crate::home::HomeAction::Example(i) => {
-                    let f: fn() -> Document = if i == 0 { crate::examples::bracket } else { crate::examples::bushing };
-                    self.open_in_tab(f(), None);
-                }
-                _ => {}
-            }
+            egui::CentralPanel::default().show(ctx, |ui| act = crate::home::home_ui(ui, &mut self.home, &mut self.settings, &list, true));
+            self.handle_home_action(act);
         } else {
             egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| self.viewport(ui, now));
         }
@@ -2584,30 +2736,40 @@ impl App {
 
     fn confirm_window(&mut self, ctx: &egui::Context, now: f64) {
         let Some(c) = self.confirm.take() else { return };
-        let mut keep = true;
-        let mut run = false;
-        egui::Window::new(tr("Несохранённые изменения")).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+        let mut choice = None;
+        egui::Modal::new(egui::Id::new("unsaved_changes")).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            ui.heading(tr("Несохранённые изменения"));
             ui.label(tr("Сохранить изменения в документе?"));
+            let name = self.tab_title(self.active).0;
+            ui.label(RichText::new(name).strong());
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.button(RichText::new(tr("Сохранить")).strong()).clicked() {
-                    keep = false;
-                    run = self.save(false, now);
+                    choice = Some(SaveChoice::Save);
                 }
                 if ui.button(tr("Не сохранять")).clicked() {
-                    keep = false;
-                    run = true;
+                    choice = Some(SaveChoice::Discard);
                 }
                 if ui.button(tr("Отмена")).clicked() {
-                    keep = false;
+                    choice = Some(SaveChoice::Cancel);
                 }
             });
         });
-        if run {
-            self.saved = self.doc.clone();
-            self.run_confirmed(c);
-        } else if keep {
-            self.confirm = Some(c);
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            choice = Some(SaveChoice::Cancel);
+        }
+        match choice {
+            Some(choice) => self.resolve_confirmation(c, choice, now),
+            None => self.confirm = Some(c),
+        }
+    }
+
+    fn resolve_confirmation(&mut self, c: Confirm, choice: SaveChoice, now: f64) {
+        match choice {
+            SaveChoice::Save if !self.save(false, now) => self.confirm = Some(c),
+            SaveChoice::Save | SaveChoice::Discard => self.run_confirmed(c),
+            SaveChoice::Cancel => {},
         }
     }
 
@@ -2791,102 +2953,7 @@ fn tool_id(kind: &FeatureKind) -> &'static str {
 
 /// Рёбра тела для выбора: прямые (коллинеарные куски склеены) и круглые (замкнутые окружности).
 pub(crate) fn compute_straight_edges(mesh: &Mesh) -> Vec<EdgeRef> {
-    use std::collections::HashMap;
-    let segs = mesh.sharp_edges(30.0);
-    let pos = |i: u32| DVec3::from(mesh.vertices[i as usize]);
-    let mut at: HashMap<u32, Vec<usize>> = HashMap::new();
-    for (k, (a, b)) in segs.iter().enumerate() {
-        at.entry(*a).or_default().push(k);
-        at.entry(*b).or_default().push(k);
-    }
-    let mut parent: Vec<usize> = (0..segs.len()).collect();
-    fn find(p: &mut [usize], mut i: usize) -> usize {
-        while p[i] != i {
-            p[i] = p[p[i]];
-            i = p[i];
-        }
-        i
-    }
-    let mut curved = vec![false; segs.len()];
-    let mut cparent: Vec<usize> = (0..segs.len()).collect();
-    for (v, list) in &at {
-        if list.len() != 2 {
-            continue;
-        }
-        let other = |k: usize| if segs[k].0 == *v { segs[k].1 } else { segs[k].0 };
-        let (d1, d2) = ((pos(other(list[0])) - pos(*v)).normalize_or_zero(), (pos(other(list[1])) - pos(*v)).normalize_or_zero());
-        if d1.dot(d2) < -1.0 + 1e-7 {
-            let (a, b) = (find(&mut parent, list[0]), find(&mut parent, list[1]));
-            parent[a] = b;
-        } else if (-d1).dot(d2) > 0.7 {
-            curved[list[0]] = true;
-            curved[list[1]] = true;
-            let (a, b) = (find(&mut cparent, list[0]), find(&mut cparent, list[1]));
-            cparent[a] = b;
-        }
-    }
-    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
-    for k in 0..segs.len() {
-        let r = find(&mut parent, k);
-        groups.entry(r).or_default().push(k);
-    }
-    let mut out = Vec::new();
-    for g in groups.values() {
-        if g.iter().any(|k| curved[*k]) {
-            continue;
-        }
-        let dir = (pos(segs[g[0]].1) - pos(segs[g[0]].0)).normalize_or_zero();
-        let mut lo = (f64::MAX, DVec3::ZERO);
-        let mut hi = (f64::MIN, DVec3::ZERO);
-        for k in g {
-            for v in [segs[*k].0, segs[*k].1] {
-                let t = pos(v).dot(dir);
-                if t < lo.0 {
-                    lo = (t, pos(v));
-                }
-                if t > hi.0 {
-                    hi = (t, pos(v));
-                }
-            }
-        }
-        out.push(EdgeRef::line(lo.1.to_array(), hi.1.to_array()));
-    }
-    // замкнутые плавные цепочки, лежащие на окружности
-    let mut circles: HashMap<usize, Vec<usize>> = HashMap::new();
-    for k in 0..segs.len() {
-        if curved[k] {
-            let r = find(&mut cparent, k);
-            circles.entry(r).or_default().push(k);
-        }
-    }
-    for g in circles.values() {
-        let mut verts: Vec<u32> = g.iter().flat_map(|k| [segs[*k].0, segs[*k].1]).collect();
-        verts.sort_unstable();
-        verts.dedup();
-        // цепочка замкнута, если у каждой вершины ровно два отрезка группы
-        let closed = verts.iter().all(|v| g.iter().filter(|k| segs[**k].0 == *v || segs[**k].1 == *v).count() == 2);
-        if !closed || verts.len() < 8 {
-            continue;
-        }
-        let pts: Vec<DVec3> = verts.iter().map(|v| pos(*v)).collect();
-        let c = pts.iter().fold(DVec3::ZERO, |a, p| a + *p) / pts.len() as f64;
-        // порядок вершин в `verts` произвольный, поэтому нормаль берём по трём далёким точкам
-        let p0 = pts[0];
-        let p1 = pts.iter().copied().max_by(|a, b| a.distance(p0).total_cmp(&b.distance(p0))).unwrap();
-        let p2 = pts.iter().copied().max_by(|a, b| (a.distance(p0) + a.distance(p1)).total_cmp(&(b.distance(p0) + b.distance(p1)))).unwrap();
-        let axis = (p1 - p0).cross(p2 - p0).normalize_or_zero();
-        if axis == DVec3::ZERO {
-            continue;
-        }
-        let r = pts.iter().map(|p| ((*p - c) - axis * (*p - c).dot(axis)).length()).collect::<Vec<_>>();
-        let rm = r.iter().sum::<f64>() / r.len() as f64;
-        let flat = pts.iter().all(|p| (*p - c).dot(axis).abs() < 1e-4 * (1.0 + rm));
-        if flat && r.iter().all(|x| (x - rm).abs() < 1e-3 * (1.0 + rm)) {
-            out.push(EdgeRef::round(pts[0].to_array(), c.to_array(), axis.to_array()));
-        }
-    }
-    out.sort_by(|x, y| x.a.partial_cmp(&y.a).unwrap().then(x.b.partial_cmp(&y.b).unwrap()));
-    out
+    crate::edges::selectable(mesh)
 }
 
 impl App {
@@ -3178,10 +3245,10 @@ impl App {
     fn nav_bar(&mut self, ui: &mut egui::Ui, rect: Rect, now: f64) {
         let pos = Pos2::new(rect.center().x, rect.bottom() - 12.0);
         egui::Area::new(egui::Id::new("navbar")).fixed_pos(pos).pivot(egui::Align2::CENTER_BOTTOM).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
-            egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(6, 3)).show(ui, |ui| {
+            egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(24).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 3.0;
-                    let sz = egui::vec2(30.0, 28.0);
+                    let sz = egui::vec2(36.0, 34.0);
                     let b = |ui: &mut egui::Ui, id: &str, icon: &str, tip: &str| icon_button(ui, id, icon, false, tip, sz);
                     for (m, id, icon, tip) in [(NavMode::Orbit, "nav_orbit", "↻", "Вращение левой кнопкой"), (NavMode::Pan, "nav_pan", "↔", "Сдвиг левой кнопкой"), (NavMode::Zoom, "nav_zoom", "🔍", "Масштаб левой кнопкой")] {
                         let on = self.nav == m;
@@ -3189,13 +3256,13 @@ impl App {
                             self.nav = if on { NavMode::Default } else { m };
                         }
                     }
-                    ui.separator();
+                    ui.add_space(4.0);
                     for (id, icon, tip, on) in [("nav_panel_left", "◧", "Левая панель", &mut self.settings.show_left_panel), ("nav_panel_right", "◨", "Правая панель", &mut self.settings.show_right_panel)] {
                         if icon_button(ui, id, icon, *on, tr(tip), sz) {
                             *on = !*on;
                         }
                     }
-                    ui.separator();
+                    ui.add_space(4.0);
                     if b(ui, "nav_fit", "⌖", tr("Вписать модель (F)")) {
                         self.fit_view(now, false);
                     }
@@ -3205,7 +3272,7 @@ impl App {
                     if b(ui, "nav_zoom_out", "−", tr("Отдалить")) {
                         self.cam.zoom_at(1.25, rect, None);
                     }
-                    ui.separator();
+                    ui.add_space(4.0);
                     ui.menu_button(RichText::new(format!("◧ {} ▾", tr(self.settings.visual_style.label()))).size(13.0), |ui| {
                         for st in VisualStyle::ALL {
                             if ui.radio_value(&mut self.settings.visual_style, st, tr(st.label())).clicked() {
@@ -3214,9 +3281,9 @@ impl App {
                             }
                         }
                     });
-                    ui.separator();
+                    ui.add_space(4.0);
                     let mut g = self.settings.show_grid;
-                    if ui.add(egui::Button::new(RichText::new("▦").size(16.0)).selected(g).frame(false).min_size(egui::vec2(28.0, 26.0))).on_hover_text(tr("Сетка")).clicked() {
+                    if ui.add(egui::Button::new(RichText::new("▦").size(16.0).color(if g { crate::theme::on_accent() } else { ui.visuals().text_color() })).corner_radius(12).selected(g).frame(false).min_size(egui::vec2(28.0, 26.0))).on_hover_text(tr("Сетка")).clicked() {
                         g = !g;
                         self.settings.show_grid = g;
                         self.settings.save();
@@ -3224,7 +3291,7 @@ impl App {
                     if icon_button(ui, "tree_plane", "⊞", self.show_planes, tr("Плоскости начала координат"), sz) {
                         self.show_planes = !self.show_planes;
                     }
-                    ui.separator();
+                    ui.add_space(4.0);
                     if b(ui, "sk_photo", "📷", tr("Снимок модели PNG без фона (⇧⌘P)")) {
                         self.export_png(now);
                     }
@@ -3239,10 +3306,11 @@ impl App {
     fn settings_window(&mut self, ctx: &egui::Context) {
         let mut open = self.settings_open;
         let before = self.settings.clone();
-        egui::Window::new(tr("Настройки")).open(&mut open).collapsible(false).default_width(440.0).show(ctx, |ui| {
+        let mut navigate = None;
+        egui::Window::new(tr("Настройки")).open(&mut open).collapsible(false).default_width(520.0).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 for (i, name) in [tr("Основные"), tr("Просмотр"), tr("О программе")].iter().enumerate() {
-                    if ui.selectable_label(self.settings_tab == i as u8, RichText::new(*name).strong()).clicked() {
+                    if ui.selectable_label(self.settings_tab == i as u8, RichText::new(*name).strong().color(if self.settings_tab == i as u8 { crate::theme::on_accent() } else { ui.visuals().text_color() })).clicked() {
                         self.settings_tab = i as u8;
                     }
                 }
@@ -3276,6 +3344,12 @@ impl App {
                             ui.selectable_value(&mut st.theme, t, tr(n));
                         }
                     });
+                    row(ui, tr("Акцентный цвет"), &mut |ui| {
+                        for color in crate::theme::Accent::ALL {
+                            if crate::widgets::accent_swatch(ui, color, st.accent == color).clicked() { st.accent = color; }
+                        }
+                    });
+                    crate::widgets::toggle(ui, &mut st.reduce_motion, tr("Уменьшить движение"));
                     row(ui, tr("Масштаб интерфейса"), &mut |ui| {
                         ui.add(egui::Slider::new(&mut st.ui_scale, 0.8..=1.6).step_by(0.05).fixed_decimals(2));
                     });
@@ -3288,7 +3362,7 @@ impl App {
                     });
                     row(ui, tr("Автосохранение"), &mut |ui| {
                         let mut on = st.autosave_minutes > 0;
-                        if ui.checkbox(&mut on, tr("каждые")).changed() {
+                        if crate::widgets::toggle(ui, &mut on, tr("каждые")).changed() {
                             st.autosave_minutes = if on { 5 } else { 0 };
                         }
                         if st.autosave_minutes > 0 {
@@ -3306,13 +3380,13 @@ impl App {
                         });
                     });
                     row(ui, tr("Сетка"), &mut |ui| {
-                        ui.checkbox(&mut st.show_grid, tr("показывать"));
+                        crate::widgets::toggle(ui, &mut st.show_grid, tr("показывать"));
                     });
                     row(ui, tr("Привязка к сетке в чертеже"), &mut |ui| {
-                        ui.checkbox(&mut st.snap_grid, tr("включена по умолчанию"));
+                        crate::widgets::toggle(ui, &mut st.snap_grid, tr("включена по умолчанию"));
                     });
                     row(ui, tr("Числа вдоль осей"), &mut |ui| {
-                        ui.checkbox(&mut st.grid_numbers, tr("показывать"));
+                        crate::widgets::toggle(ui, &mut st.grid_numbers, tr("показывать"));
                     });
                     row(ui, tr("Толщина линий рёбер"), &mut |ui| {
                         ui.add(egui::Slider::new(&mut st.edge_width, 0.8..=3.0).fixed_decimals(1));
@@ -3327,11 +3401,14 @@ impl App {
                         ui.add(egui::Slider::new(&mut st.zoom_speed, 0.3..=3.0).fixed_decimals(1));
                     });
                     row(ui, tr("Направление масштаба"), &mut |ui| {
-                        ui.checkbox(&mut st.invert_zoom, tr("обратное"));
+                        crate::widgets::toggle(ui, &mut st.invert_zoom, tr("обратное"));
                     });
                 }
                 _ => {
                     ui.heading("Genix");
+                    ui.collapsing("React Bits · License", |ui| {
+                        egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| { ui.label(include_str!("../../../docs/REACT_BITS_LICENSE.md")); });
+                    });
                     ui.label(format!("{} {}", tr("Версия"), env!("CARGO_PKG_VERSION")));
                     ui.label(tr("Параметрический 3D-CAD: чертежи, твердотельное моделирование, история построения."));
                     ui.add_space(6.0);
@@ -3339,34 +3416,25 @@ impl App {
                         ui.label(RichText::new(format!("{}: {}", tr("Файл настроек"), p.display())).weak().small());
                     }
                     ui.add_space(6.0);
-                    ui.label(RichText::new(tr("ЛИЦЕНЗИЯ И АККАУНТ")).small().weak());
-                    let lic = match st.license.as_deref() {
-                        Some("DEMO") => tr("Демо-лицензия").to_string(),
-                        Some(k) => format!("{} {}…{}", tr("Ключ"), &k[..4.min(k.len())], &k[k.len().saturating_sub(4)..]),
-                        None => tr("Нет лицензии").to_string(),
-                    };
-                    ui.label(lic);
-                    ui.label(match &st.account {
-                        Some(a) => tf!("Аккаунт: {}", a),
-                        None => tr("Аккаунт: не выполнен вход").to_string(),
-                    });
+                    ui.label(RichText::new(tr("Локальный аккаунт · мок")).weak());
+                    ui.label(st.account.as_deref().unwrap_or(tr("Локальное пространство")));
                     ui.horizontal(|ui| {
-                        if ui.button(tr("Выйти из аккаунта")).clicked() {
-                            st.account = None;
-                            st.account_skipped = false;
-                        }
-                        if ui.button(tr("Сменить лицензию")).clicked() {
-                            st.license = None;
-                        }
+                        if ui.button(tr("Профиль")).clicked() { navigate = Some(crate::home::HomePage::Profile); }
+                        if ui.button(tr("Обновления")).clicked() { navigate = Some(crate::home::HomePage::Updates); }
                     });
                     ui.add_space(6.0);
                     if ui.button(tr("Сбросить все настройки")).clicked() {
-                        *st = Settings { lang: st.lang, license: st.license.take(), account: st.account.take(), account_skipped: st.account_skipped, recent: std::mem::take(&mut st.recent), ..Settings::default() };
+                        *st = Settings { lang: st.lang, license: st.license.take(), account: st.account.take(), account_skipped: st.account_skipped, display_name: std::mem::take(&mut st.display_name), server_demo_account: st.server_demo_account.take(), recent: std::mem::take(&mut st.recent), ..Settings::default() };
                     }
                 }
             }
         });
-        self.settings_open = open;
+        self.settings_open = open && navigate.is_none();
+        if let Some(page) = navigate {
+            self.commit_pending_edits();
+            self.home_active = true;
+            self.home.navigate(page);
+        }
         if self.settings != before {
             i18n::set_lang(self.settings.lang);
             self.settings.save();
@@ -3382,3 +3450,135 @@ fn line_param(base: DVec3, dir: DVec3, o: DVec3, d: DVec3) -> f64 {
     if den.abs() < 1e-9 { 0.0 } else { (b * e - dd) / den }
 }
 
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    fn app() -> App {
+        App::from_settings(Settings::default(), Theme::Light)
+    }
+
+    #[test]
+    fn quit_checks_inactive_tabs_and_cancel_keeps_changes() {
+        let mut app = app();
+        app.doc.params.set("width", "10");
+        app.new_blank_tab();
+        assert!(!app.dirty());
+        app.request(Confirm::Quit(Vec::new()));
+        assert_eq!(app.active, 0);
+        assert!(!app.allow_close);
+        let confirm = app.confirm.take().unwrap();
+        app.resolve_confirmation(confirm, SaveChoice::Cancel, 1.0);
+        assert!(app.confirm.is_none());
+        assert!(app.dirty());
+        assert!(!app.allow_close);
+    }
+
+    #[test]
+    fn quit_asks_for_every_dirty_tab_without_marking_discarded_as_saved() {
+        let mut app = app();
+        app.doc.params.set("first", "10");
+        app.new_blank_tab();
+        app.doc.params.set("second", "20");
+        app.request(Confirm::Quit(Vec::new()));
+        assert_eq!(app.active, 0);
+        let confirm = app.confirm.take().unwrap();
+        app.resolve_confirmation(confirm, SaveChoice::Discard, 1.0);
+        assert_eq!(app.active, 1);
+        assert!(!app.allow_close);
+        let confirm = app.confirm.take().unwrap();
+        app.resolve_confirmation(confirm, SaveChoice::Cancel, 1.0);
+        assert_eq!(app.dirty_tabs(), vec![0, 1]);
+        app.request(Confirm::Quit(Vec::new()));
+        for _ in 0..2 {
+            let confirm = app.confirm.take().unwrap();
+            app.resolve_confirmation(confirm, SaveChoice::Discard, 1.0);
+        }
+        assert!(app.allow_close);
+    }
+
+    #[test]
+    fn failed_save_keeps_confirmation_and_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app();
+        app.path = Some(dir.path().join("missing/project.genix"));
+        app.doc.params.set("width", "10");
+        app.request(Confirm::CloseTab);
+        let before = app.doc.clone();
+        let confirm = app.confirm.take().unwrap();
+        app.resolve_confirmation(confirm, SaveChoice::Save, 1.0);
+        assert_eq!(app.doc, before);
+        assert!(app.dirty());
+        assert!(matches!(app.confirm, Some(Confirm::CloseTab)));
+        assert!(!app.allow_close);
+    }
+
+    #[test]
+    fn hole_placement_snaps_to_actual_face_center_and_axes() {
+        let app=app();
+        let mesh=fusion_core::geom::box_mesh(DVec3::ZERO,DVec3::new(40.0,20.0,10.0));
+        let solid=Arc::new(fusion_core::csg::Solid::from_mesh(&mesh).unwrap());
+        let model=Model {bodies:vec![fusion_core::doc::Body{id:1,name:String::new(),solid}],..Default::default()};
+        let tri=model.bodies[0].mesh().triangles.iter().position(|t| model.bodies[0].mesh().tri(t).iter().all(|p|(p.z-10.0).abs()<1e-6)).unwrap();
+        let rect=Rect::from_min_size(Pos2::ZERO,egui::vec2(1000.0,800.0));
+        let (plane,at,lo,hi,snapped)=app.hole_target(&model,0,tri,DVec3::new(20.01,10.01,10.0),rect).unwrap();
+        assert_eq!(snapped,[true,true]);
+        assert!((plane.to_world(at)-DVec3::new(20.0,10.0,10.0)).length()<1e-6);
+        assert_eq!(at,[(lo[0]+hi[0])*0.5,(lo[1]+hi[1])*0.5]);
+        let (_,_,_,_,snapped)=app.hole_target(&model,0,tri,DVec3::new(2.0,2.0,10.0),rect).unwrap();
+        assert_eq!(snapped,[false,false]);
+    }
+
+    #[test]
+    fn reopening_same_project_selects_existing_tab() {
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("finder.genix");
+        std::fs::write(&path,Document::default().to_json()).unwrap();
+        let mut app=app();app.open_path(path.clone());let count=app.tabs.len();
+        app.open_path(path);assert_eq!(app.tabs.len(),count);assert!(!app.home_active);
+    }
+
+    #[test]
+    fn closing_commits_pending_sketch_and_can_be_cancelled() {
+        let mut app = app();
+        app.begin_sketch_on(Plane::XY, 0.0);
+        let Mode::Sketch(session) = &mut app.mode else { panic!("sketch") };
+        session.sketch.add_rect([0.0, 0.0], [10.0, 20.0]);
+        assert!(!app.dirty()); // чертёж ещё не перенесён в документ
+        app.request(Confirm::Quit(Vec::new()));
+        assert!(app.dirty());
+        assert_eq!(app.doc.features.len(), 1);
+        assert!(!app.allow_close);
+        let confirm = app.confirm.take().unwrap();
+        app.resolve_confirmation(confirm, SaveChoice::Cancel, 1.0);
+        assert_eq!(app.doc.features.len(), 1);
+        app.do_undo();
+        assert!(app.doc.features.is_empty());
+    }
+
+    #[test]
+    fn autosave_writes_parked_tabs_and_keeps_unnamed_documents_dirty() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app();
+        let path = dir.path().join("first.genix");
+        app.path = Some(path.clone());
+        app.doc.params.set("width", "42");
+        let expected = app.doc.clone();
+        app.new_blank_tab();
+        app.doc.params.set("height", "7");
+        app.autosave(10.0);
+        assert_eq!(app.active, 1);
+        assert!(app.dirty());
+        assert_eq!(app.tabs[0].doc, app.tabs[0].saved);
+        let restored = Document::from_json(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(restored, expected);
+    }
+
+    #[test]
+    fn clean_session_quits_immediately() {
+        let mut app = app();
+        app.request(Confirm::Quit(Vec::new()));
+        assert!(app.allow_close);
+        assert!(app.confirm.is_none());
+    }
+}

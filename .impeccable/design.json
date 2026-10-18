@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-18T12:30:48.888896+00:00",
+  "title": "Design System: Genix",
+  "extensions": {
+    "shadows": [
+      {
+        "name": "window-light",
+        "value": "0 8px 24px 0 rgba(0,0,0,0.071)",
+        "purpose": "CSS approximation of floating window/popup shadow."
+      },
+      {
+        "name": "window-dark",
+        "value": "0 8px 24px 0 rgba(0,0,0,0.251)",
+        "purpose": "CSS approximation of dark floating window/popup shadow."
+      }
+    ],
+    "motion": [
+      {
+        "name": "shared-feedback",
+        "value": "160ms cubic-bezier(0.23,1,0.32,1)",
+        "purpose": "Retargeted pointer feedback; immediate for keyboard events and app reduced-motion preference."
+      },
+      {
+        "name": "page-opacity",
+        "value": "160ms cubic-bezier(0.23,1,0.32,1)",
+        "purpose": "Pointer navigation opacity 0.65 to 1; visible by default and immediate with app reduced motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "home-wrapped-nav",
+        "value": "700px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary action",
+      "kind": "button",
+      "description": "Light-mode HTML documentation approximation; native egui source is authoritative.",
+      "html": "<button class=\"ds-primary\">Create project</button>",
+      "css": ".ds-primary{font:14px -apple-system,BlinkMacSystemFont,sans-serif;color:rgb(28,28,30);transition:background-color 160ms cubic-bezier(.23,1,.32,1);background:rgb(0,101,212);color:white;border:0;border-radius:14px;min-height:42px;padding:7px 12px;font-weight:bold}.ds-primary:hover{filter:brightness(.98)}.ds-primary:active{filter:brightness(.89)}.ds-primary:focus-visible{outline:2px solid rgb(0,101,212);outline-offset:3px}@media(prefers-reduced-motion:reduce){[class^=\"ds-\"]{transition:none;animation:none}}",
+      "refersTo": "button-primary"
+    },
+    {
+      "name": "Search",
+      "kind": "input",
+      "description": "Light-mode HTML documentation approximation; native egui source is authoritative.",
+      "html": "<input class=\"ds-search\" aria-label=\"Search projects\" placeholder=\"Search projects\">",
+      "css": ".ds-search{font:14px -apple-system,BlinkMacSystemFont,sans-serif;color:rgb(28,28,30);background:rgb(235,235,240);border:0;border-radius:12px;padding:7px 12px;width:240px}.ds-search:hover{background:rgb(223,223,230)}.ds-search:focus-visible{outline:1.5px solid rgb(0,101,212)}@media(prefers-reduced-motion:reduce){[class^=\"ds-\"]{transition:none;animation:none}}"
+    },
+    {
+      "name": "Navigation",
+      "kind": "nav",
+      "description": "Light-mode HTML documentation approximation; native egui source is authoritative.",
+      "html": "<nav class=\"ds-nav\"><button aria-current=\"page\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 20 20\" aria-hidden=\"true\"><path d=\"M3 4h14v12H3z M3 8h14\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"/></svg>Models</button><button>Profile</button></nav>",
+      "css": ".ds-nav{display:flex;gap:8px;flex-wrap:wrap}.ds-nav button{font:14px -apple-system,BlinkMacSystemFont,sans-serif;color:rgb(28,28,30);transition:background-color 160ms cubic-bezier(.23,1,.32,1);height:42px;border:0;border-radius:14px;background:transparent;display:flex;align-items:center;gap:10px;padding:7px 12px}.ds-nav button[aria-current]{color:rgb(0,101,212);background:rgba(0,101,212,.118)}.ds-nav button:hover{background:rgba(0,101,212,.047)}.ds-nav button:focus-visible{outline:1.5px solid rgb(0,101,212)}@media(prefers-reduced-motion:reduce){[class^=\"ds-\"]{transition:none;animation:none}}",
+      "refersTo": "navigation"
+    },
+    {
+      "name": "Model card",
+      "kind": "card",
+      "description": "Light-mode HTML documentation approximation; native egui source is authoritative.",
+      "html": "<button class=\"ds-card\"><span class=\"ds-preview\">Preview unavailable</span><span>Model</span><small>Local project</small></button>",
+      "css": ".ds-card{font:14px -apple-system,BlinkMacSystemFont,sans-serif;color:rgb(28,28,30);transition:background-color 160ms cubic-bezier(.23,1,.32,1);width:240px;height:160px;padding:8px 12px;border:0;border-radius:20px;background:white;text-align:left;display:flex;flex-direction:column;gap:6px}.ds-preview{height:94px;align-self:stretch;display:grid;place-items:center;background:rgb(235,235,240);border-radius:14px;font-size:12px;color:rgb(99,99,109)}.ds-card small{font-size:11.5px;color:rgb(99,99,109)}.ds-card:hover,.ds-card:focus-visible{outline:1.5px solid rgba(0,101,212,.59);outline-offset:-1.5px}.ds-card:active{background:rgb(244,244,246)}@media(prefers-reduced-motion:reduce){[class^=\"ds-\"]{transition:none;animation:none}}",
+      "refersTo": "model-card"
+    },
+    {
+      "name": "Switch",
+      "kind": "input",
+      "description": "Light-mode HTML documentation approximation; native egui source is authoritative.",
+      "html": "<label class=\"ds-switch\"><input type=\"checkbox\" checked><span>Reduce motion</span></label>",
+      "css": ".ds-switch{font:14px -apple-system,BlinkMacSystemFont,sans-serif;color:rgb(28,28,30);display:flex;align-items:center;gap:10px;min-height:32px}.ds-switch input{appearance:none;width:42px;height:26px;border-radius:13px;background:rgb(138,138,143);position:relative;transition:background-color 160ms cubic-bezier(.23,1,.32,1);}.ds-switch input:before{content:\"\";position:absolute;width:20px;height:20px;top:3px;left:3px;background:white;border-radius:50%;transition:transform 160ms cubic-bezier(.23,1,.32,1)}.ds-switch input:checked{background:rgb(0,101,212)}.ds-switch input:checked:before{transform:translateX(16px)}.ds-switch input:focus-visible{outline:1.5px solid rgb(0,101,212);outline-offset:3px}.ds-switch input:hover{filter:brightness(.98)}@media(prefers-reduced-motion:reduce){[class^=\"ds-\"]{transition:none;animation:none}}"
+    }
+  ],
+  "narrative": {
+    "overview": "Genix uses flat rounded egui surfaces inspired by iOS 18, as explicitly requested by the user. Soft neutral containers, the existing Genix SVG logo and one configurable accent connect account pages, model cards and the CAD editor. This is an egui implementation, not native iOS components.",
+    "keyCharacteristics": [
+      "Flat neutral surfaces with rounded controls and containers.",
+      "One configurable accent propagated through navigation, tools and feedback.",
+      "Real geometry previews and immediate keyboard actions."
+    ],
+    "rules": [],
+    "dos": [
+      "Do use theme helpers for the configured accent and contrasting foreground.",
+      "Do preserve real geometry previews, the Genix logo and existing CAD workflows.",
+      "Do provide immediate keyboard actions and honor the app reduced-motion preference.",
+      "Do keep local mock account and subscription status visible."
+    ],
+    "donts": [
+      "Don't hard-code the old blue accent into new UI.",
+      "Don't claim native iOS controls or automatic OS reduced-motion detection.",
+      "Don't invent subscription pricing, storage promises or update availability."
+    ]
+  }
+}

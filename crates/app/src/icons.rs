@@ -4,6 +4,10 @@ use eframe::egui::{self, Color32, Image};
 
 fn raw(id: &str) -> Option<&'static str> {
     Some(match id {
+        "home_models" => include_str!("../assets/icons/home_models.svg"),
+        "profile" => include_str!("../assets/icons/profile.svg"),
+        "updates" => include_str!("../assets/icons/updates.svg"),
+        "server" => include_str!("../assets/icons/server.svg"),
         "add" => include_str!("../assets/icons/add.svg"),
         "align" => include_str!("../assets/icons/align.svg"),
         "axis_2pts" => include_str!("../assets/icons/axis_2pts.svg"),
@@ -214,15 +218,13 @@ fn hex(c: Color32) -> String {
 
 /// Значок из Figma: основной цвет линий (#D5D9DF) заменяется цветом темы, акцент (#48C7FF) подбирается под фон.
 fn svg(id: &str, main: Color32) -> Option<String> {
-    let dark_bg = (main.r() as u32 + main.g() as u32 + main.b() as u32) > 380;
-    let accent = if dark_bg { "#48C7FF" } else { "#0B84C9" };
-    raw(id).map(|s| s.replace("#D5D9DF", &hex(main)).replace("#48C7FF", accent))
+    raw(id).map(|s| s.replace("#D5D9DF", &hex(main)).replace("#48C7FF", &hex(crate::theme::accent())))
 }
 
 /// Значок инструмента нужного размера и цвета (None — для такого id значка нет).
 pub fn icon(id: &str, size: f32, main: Color32) -> Option<Image<'static>> {
     let s = svg(id, main)?;
-    Some(Image::from_bytes(format!("bytes://genix/{id}-{}.svg", hex(main)), s.into_bytes()).fit_to_exact_size(egui::vec2(size, size)))
+    Some(Image::from_bytes(format!("bytes://genix/{id}-{}-{}.svg", hex(main), hex(crate::theme::accent())), s.into_bytes()).fit_to_exact_size(egui::vec2(size, size)))
 }
 
 #[cfg(test)]

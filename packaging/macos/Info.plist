@@ -20,6 +20,23 @@
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
     <string>11.0</string>
+    <key>CFBundleDocumentTypes</key>
+    <array><dict>
+        <key>CFBundleTypeName</key><string>Genix Project</string>
+        <key>CFBundleTypeRole</key><string>Editor</string>
+        <key>LSHandlerRank</key><string>Owner</string>
+        <key>LSItemContentTypes</key><array><string>com.danielkrinets.genix.project</string></array>
+        <key>CFBundleTypeExtensions</key><array><string>genix</string><string>ostov</string></array>
+    </dict></array>
+    <key>UTExportedTypeDeclarations</key>
+    <array><dict>
+        <key>UTTypeIdentifier</key><string>com.danielkrinets.genix.project</string>
+        <key>UTTypeDescription</key><string>Genix Project</string>
+        <key>UTTypeConformsTo</key><array><string>public.json</string><string>public.data</string></array>
+        <key>UTTypeTagSpecification</key><dict>
+            <key>public.filename-extension</key><array><string>genix</string><string>ostov</string></array>
+        </dict>
+    </dict></array>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>LSApplicationCategoryType</key>

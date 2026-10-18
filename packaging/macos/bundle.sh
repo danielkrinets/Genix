@@ -11,6 +11,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/genix"
 chmod +x "$APP/Contents/MacOS/genix"
 cp "$ROOT/packaging/macos/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/docs/REACT_BITS_LICENSE.md" "$APP/Contents/Resources/REACT_BITS_LICENSE.md"
 iconutil -c icns "$ROOT/packaging/macos/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
 # подпись «ad-hoc»: без неё macOS на Apple Silicon не запустит программу
 codesign --force --deep --sign - "$APP"

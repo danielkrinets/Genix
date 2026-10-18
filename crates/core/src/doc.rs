@@ -100,15 +100,18 @@ pub struct EdgeRef {
     pub circle: bool,
     #[serde(default)]
     pub axis: [f64; 3],
+    /// Optional sweep in degrees for an open circular edge; old files mean a full circle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sweep: Option<f64>,
 }
 
 impl EdgeRef {
     pub fn line(a: [f64; 3], b: [f64; 3]) -> Self {
-        EdgeRef { a, b, circle: false, axis: [0.0; 3] }
+        EdgeRef { a, b, circle: false, axis: [0.0; 3], sweep: None }
     }
 
     pub fn round(point: [f64; 3], center: [f64; 3], axis: [f64; 3]) -> Self {
-        EdgeRef { a: point, b: center, circle: true, axis }
+        EdgeRef { a: point, b: center, circle: true, axis, sweep: None }
     }
 
     /// Ломаная для показа и выбора мышью (окружность — 72 отрезка).
@@ -120,8 +123,10 @@ impl EdgeRef {
         let rv = DVec3::from(self.a) - c;
         let rv = rv - ax * rv.dot(ax);
         let (x, y) = (rv, ax.cross(rv));
-        (0..=72).map(|i| {
-            let t = std::f64::consts::TAU * i as f64 / 72.0;
+        let sweep = self.sweep.unwrap_or(360.0).to_radians();
+        let steps = (sweep.abs().to_degrees()/5.0).ceil().max(2.0) as usize;
+        (0..=steps).map(|i| {
+            let t = sweep * i as f64 / steps as f64;
             c + x * t.cos() + y * t.sin()
         }).collect()
     }
@@ -875,7 +880,7 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             let (mut cuts, mut adds) = (Vec::new(), Vec::new());
             for e in edges {
                 let (t, concave) = if e.circle {
-                    geom::circle_tool(b.mesh(), DVec3::from(e.b), DVec3::from(e.axis), DVec3::from(e.a), op)?
+                    geom::circle_tool_span(b.mesh(), DVec3::from(e.b), DVec3::from(e.axis), DVec3::from(e.a), op, e.sweep.unwrap_or(360.0))?
                 } else {
                     geom::edge_tool(b.mesh(), DVec3::from(e.a), DVec3::from(e.b), op)?
                 };

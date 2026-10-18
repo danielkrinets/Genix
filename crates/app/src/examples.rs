@@ -111,6 +111,42 @@ mod tests {
     }
 
     #[test]
+    fn project_save_reopen_edit_and_export_for_printing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("кронштейн.genix");
+        let original = bracket();
+        crate::files::write_atomic(&path, original.to_json().as_bytes()).unwrap();
+        let mut restored = Document::from_json(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(original, restored);
+        let mut ev = Evaluator::default();
+        ev.evaluate(&restored);
+        let volume_before = ev.model().bodies[0].mesh().volume();
+        restored.params.set("ширина", "120");
+        ev.evaluate(&restored);
+        assert!(ev.steps().iter().all(|step| step.error.is_none()));
+        let model = ev.model();
+        assert_eq!(model.bodies.len(), 1);
+        let mesh = model.bodies[0].mesh();
+        assert!(mesh.volume() > volume_before);
+        let mut stl = Vec::new();
+        fusion_core::Mesh::write_stl_binary(&[mesh], &mut stl);
+        let count = u32::from_le_bytes(stl[80..84].try_into().unwrap()) as usize;
+        assert_eq!(count, mesh.triangles.len());
+        assert_eq!(stl.len(), 84 + 50 * count);
+        assert!(count > 0);
+        // Every geometric float in the file must be finite for a slicer.
+        for triangle in stl[84..].chunks_exact(50) {
+            for value in triangle[..48].chunks_exact(4) {
+                assert!(f32::from_le_bytes(value.try_into().unwrap()).is_finite());
+            }
+        }
+        crate::files::write_atomic(&dir.path().join("кронштейн.stl"), &stl).unwrap();
+        crate::files::write_atomic(&path, restored.to_json().as_bytes()).unwrap();
+        let reopened = Document::from_json(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(reopened, restored);
+    }
+
+    #[test]
     fn examples_build_without_errors() {
         for d in [bracket(), bushing()] {
             let mut ev = Evaluator::default();

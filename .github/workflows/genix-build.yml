@@ -28,6 +28,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: .
+      - name: Проверка проектов и моделирования
+        run: cargo test --release --workspace --locked --target aarch64-apple-darwin
       - name: Сборка для Apple Silicon
         run: cargo build --release -p fusion-app --target aarch64-apple-darwin
       - name: Сборка для Intel
