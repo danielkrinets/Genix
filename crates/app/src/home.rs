@@ -380,7 +380,7 @@ fn hub_content(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
 
 fn hub_content_inner(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects: &[String], viewer: bool) -> HomeAction {
     if h.page == HomePage::Models {
-        crate::backgrounds::paint(ui, ui.available_rect_before_wrap(), false);
+        // фон из бегущих букв убран: мешал читать список моделей
         return projects_ui(ui, h, st, projects, viewer)
     }
     let mut action = HomeAction::None;

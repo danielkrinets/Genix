@@ -26,7 +26,7 @@ impl Accent {
     }
     pub fn color(self, dark: bool) -> Color32 {
         let rgb = match (self, dark) {
-            (Self::Blue, false) => [0, 101, 212], (Self::Blue, true) => [92, 166, 255],
+            (Self::Blue, false) => [24, 150, 224], (Self::Blue, true) => [24, 150, 224],
             (Self::Indigo, false) => [88, 70, 203], (Self::Indigo, true) => [164, 149, 255],
             (Self::Teal, false) => [0, 117, 119], (Self::Teal, true) => [92, 212, 205],
             (Self::Orange, false) => [168, 73, 0], (Self::Orange, true) => [255, 173, 92],
@@ -36,7 +36,7 @@ impl Accent {
     }
 }
 
-static ACCENT_RGB: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x0065D4);
+static ACCENT_RGB: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x1896E0);
 static REDUCED_MOTION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn configure(color: Accent, dark: bool, reduced_motion: bool) -> bool {
@@ -67,19 +67,19 @@ pub fn foreground_on(color: Color32) -> Color32 {
 pub fn on_accent() -> Color32 { foreground_on(accent()) }
 
 pub fn surface(ui: &egui::Ui) -> Color32 {
-    if ui.visuals().dark_mode { Color32::from_rgb(28, 28, 30) } else { Color32::WHITE }
+    if ui.visuals().dark_mode { Color32::from_rgb(55, 67, 81) } else { Color32::WHITE }
 }
 
 pub fn secondary(ui: &egui::Ui) -> Color32 {
-    if ui.visuals().dark_mode { Color32::from_rgb(174, 174, 184) } else { Color32::from_rgb(99, 99, 109) }
+    if ui.visuals().dark_mode { Color32::from_rgb(160, 172, 186) } else { Color32::from_rgb(101, 109, 118) }
 }
 
 pub fn tint(alpha: u8) -> Color32 {
     let c = accent(); Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha)
 }
 
-pub const CONTROL_RADIUS: u8 = 12;
-pub const SURFACE_RADIUS: u8 = 22;
+pub const CONTROL_RADIUS: u8 = 6;
+pub const SURFACE_RADIUS: u8 = 8;
 
 /// Цвета 3D-вида для текущей темы (в sRGB).
 pub struct ViewColors {
@@ -109,9 +109,9 @@ impl Theme {
         let common = |bg_top, bg_bottom, edge, grid_minor, grid_major, sketch, dim_text| ViewColors {
             bg_top,
             bg_bottom,
-            body: if self == Theme::Light { Color32::from_rgb(174, 174, 181) } else { Color32::from_rgb(142, 142, 147) },
+            body: if self == Theme::Light { Color32::from_rgb(160, 168, 180) } else { Color32::from_rgb(176, 184, 198) },
             body_selected: accent(),
-            body_hover: Color32::from_rgb(174, 174, 181).lerp_to_gamma(accent(), 0.25),
+            body_hover: Color32::from_rgb(178, 196, 218),
             edge,
             grid_minor,
             grid_major,
@@ -129,8 +129,8 @@ impl Theme {
         };
         match self {
             Theme::Light => common(
-                Color32::from_rgb(245, 245, 247),
-                Color32::from_rgb(245, 245, 247),
+                Color32::from_rgb(255, 255, 255),
+                Color32::from_rgb(222, 228, 235),
                 Color32::from_rgb(30, 32, 36),
                 Color32::from_rgba_unmultiplied(80, 90, 105, 40),
                 Color32::from_rgba_unmultiplied(70, 80, 95, 90),
@@ -138,8 +138,8 @@ impl Theme {
                 Color32::from_rgb(20, 20, 30),
             ),
             Theme::Dark => common(
-                Color32::from_rgb(20, 20, 22),
-                Color32::from_rgb(20, 20, 22),
+                Color32::from_rgb(70, 84, 102),
+                Color32::from_rgb(40, 48, 60),
                 Color32::from_rgb(12, 13, 16),
                 Color32::from_rgba_unmultiplied(220, 230, 245, 34),
                 Color32::from_rgba_unmultiplied(220, 230, 245, 80),
@@ -174,54 +174,55 @@ impl Theme {
         ctx.set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
         let c = Color32::from_rgb;
         let (canvas, panel, inset, border, fg, muted) = if dark {
-            (c(0, 0, 0), c(28, 28, 30), c(44, 44, 46), c(64, 64, 68), c(245, 245, 247), c(174, 174, 184))
+            (c(47, 56, 68), c(55, 67, 81), c(36, 43, 53), c(78, 91, 108), c(240, 244, 248), c(160, 172, 186))
         } else {
-            (c(242, 242, 247), c(255, 255, 255), c(235, 235, 240), c(220, 220, 225), c(28, 28, 30), c(99, 99, 109))
+            (c(255, 255, 255), c(246, 248, 250), c(255, 255, 255), c(208, 215, 222), c(31, 35, 40), c(101, 109, 118))
         };
+        let (btn, btn_hover, btn_active) = if dark { (c(66, 79, 95), c(84, 99, 118), c(98, 114, 134)) } else { (c(246, 248, 250), c(234, 238, 242), c(221, 227, 234)) };
         let mut v = if dark { Visuals::dark() } else { Visuals::light() };
         let radius = CornerRadius::same(CONTROL_RADIUS);
-        v.panel_fill = canvas;
-        v.window_fill = panel;
+        v.panel_fill = panel;
+        v.window_fill = if dark { c(60, 73, 89) } else { canvas };
         v.extreme_bg_color = inset;
-        v.faint_bg_color = inset;
-        v.window_stroke = Stroke::NONE;
+        v.faint_bg_color = if dark { c(50, 61, 74) } else { panel };
+        v.window_stroke = Stroke::new(1.0_f32, border);
         v.override_text_color = None;
         v.widgets.noninteractive.bg_fill = panel;
-        v.widgets.noninteractive.weak_bg_fill = inset;
-        v.widgets.noninteractive.bg_stroke = Stroke::new(0.5_f32, border);
+        v.widgets.noninteractive.weak_bg_fill = panel;
+        v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, border);
         v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, fg);
         v.widgets.noninteractive.corner_radius = radius;
-        for (w, fill) in [(&mut v.widgets.inactive, inset), (&mut v.widgets.hovered, if dark { c(58, 58, 62) } else { c(223, 223, 230) }), (&mut v.widgets.active, if dark { c(68, 68, 74) } else { c(212, 212, 222) }), (&mut v.widgets.open, inset)] {
+        for (w, fill) in [(&mut v.widgets.inactive, btn), (&mut v.widgets.hovered, btn_hover), (&mut v.widgets.active, btn_active), (&mut v.widgets.open, btn_hover)] {
             w.corner_radius = radius;
             w.bg_fill = fill;
             w.weak_bg_fill = fill;
-            w.bg_stroke = Stroke::NONE;
+            w.bg_stroke = Stroke::new(1.0_f32, border);
             w.fg_stroke = Stroke::new(1.0_f32, fg);
             w.expansion = 0.0;
         }
-        v.widgets.active.bg_stroke = Stroke::new(1.5_f32, accent());
+        v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, if dark { c(139, 148, 158) } else { c(175, 184, 193) });
+        v.widgets.active.bg_stroke = Stroke::new(1.0_f32, accent());
         v.selection.bg_fill = accent();
         v.selection.stroke = Stroke::new(1.0_f32, on_accent());
         v.hyperlink_color = accent();
         v.window_corner_radius = CornerRadius::same(SURFACE_RADIUS);
-        v.menu_corner_radius = CornerRadius::same(16);
-        v.window_shadow = egui::epaint::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(if dark { 64 } else { 18 }) };
+        v.menu_corner_radius = CornerRadius::same(6);
+        v.window_shadow = egui::epaint::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(if dark { 120 } else { 40 }) };
         v.popup_shadow = v.window_shadow;
         v.slider_trailing_fill = true;
-        v.handle_shape = egui::style::HandleShape::Circle;
         v.indent_has_left_vline = false;
         ctx.set_visuals(v);
         ctx.style_mut(|s| {
             s.animation_time = if reduced_motion() { 0.0 } else { 0.16 };
-            s.spacing.item_spacing = egui::vec2(8.0, 7.0);
-            s.spacing.button_padding = egui::vec2(12.0, 7.0);
-            s.spacing.interact_size.y = 30.0;
+            s.spacing.item_spacing = egui::vec2(6.0, 5.0);
+            s.spacing.button_padding = egui::vec2(8.0, 4.0);
+            s.spacing.interact_size.y = 24.0;
             s.spacing.slider_rail_height = 6.0;
             s.spacing.slider_width = 140.0;
-            s.spacing.window_margin = egui::Margin::same(20);
-            s.text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
-            s.text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
-            s.text_styles.insert(egui::TextStyle::Heading, egui::FontId::proportional(24.0));
+            s.spacing.window_margin = egui::Margin::same(10);
+            s.text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(13.0));
+            s.text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(13.0));
+            s.text_styles.insert(egui::TextStyle::Heading, egui::FontId::proportional(20.0));
             // Weak text remains readable across panels; local semantic labels use secondary().
 
         });
