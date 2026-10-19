@@ -395,3 +395,28 @@ mod warm_tip_tests {
         assert_eq!(split_shortcut("Сетка"), ("Сетка", None));
     }
 }
+
+#[cfg(test)]
+mod header_width_tests {
+    use super::*;
+
+    #[test]
+    fn menu_bar_fills_the_row_but_its_real_content_width_is_measurable() {
+        let ctx = egui::Context::default();
+        let mut used = 0.0;
+        let mut row = 0.0;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let start = ui.cursor().left();
+                let bar = egui::menu::bar(ui, |ui| {
+                    ui.label("a");
+                    ui.label("b");
+                    used = ui.cursor().left() - start;
+                });
+                row = bar.response.rect.width();
+            });
+        });
+        assert!(used > 0.0 && used < 100.0, "{used}");
+        assert!(row > 500.0, "the bar was expected to take the whole row, got {row}");
+    }
+}

@@ -1395,6 +1395,7 @@ impl App {
         visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(6);
         visuals.widgets.active.corner_radius = egui::CornerRadius::same(6);
         visuals.widgets.open.corner_radius = egui::CornerRadius::same(6);
+        let start = ui.cursor().left();
         egui::menu::bar(ui, |ui| {
             crate::home::logo(ui, 18.0);
             ui.menu_button(tr("Файл"), |ui| {
@@ -1498,12 +1499,16 @@ impl App {
             if ui.add_enabled_ui(editing && !self.redo.is_empty(), |ui| icon_button(ui, "redo", "↷", false, tr("Повторить (⇧⌘Z)"), small)).inner {
                 self.do_redo();
             }
+            // egui's menu bar fills the row; remember how much the menus really use so the tabs keep the rest
+            let used = ui.cursor().left() - start;
+            ui.data_mut(|d| d.insert_temp(egui::Id::new("menu-width"), used));
         });
     }
 
     fn header_bar(&mut self, ui: &mut egui::Ui, now: f64) {
         ui.horizontal_centered(|ui| {
-            self.menu_bar(ui, now);
+            let width = ui.data(|d| d.get_temp::<f32>(egui::Id::new("menu-width"))).unwrap_or(330.0) + 6.0;
+            ui.allocate_ui_with_layout(egui::vec2(width, 28.0), egui::Layout::left_to_right(egui::Align::Center), |ui| self.menu_bar(ui, now));
             ui.separator();
             ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 28.0), egui::Layout::left_to_right(egui::Align::Center), |ui| self.tab_bar(ui));
         });
