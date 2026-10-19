@@ -364,6 +364,8 @@ pub const EN: &[(&str, &str)] = &[
     ("По траектории", "Follow path"),
     ("Переход", "Blend"),
     ("Отверстие", "Drill"),
+    ("Экспорт", "Export"),
+    ("Импорт", "Import"),
     ("Поделиться…", "Share…"),
     ("Доступ к проекту: {}", "Access to project: {}"),
     ("Демо: приглашения не отправляются, список людей хранится только на этом устройстве.", "Demo: no invitations are sent, the list of people is kept only on this device."),

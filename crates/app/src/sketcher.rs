@@ -1065,7 +1065,7 @@ impl SketchSession {
                 tool_btn(ui, self, Tool::Slot, tr("▬ Паз"), "O");
                 tool_btn(ui, self, Tool::CenterRect, tr("▣ Из центра"), "");
             });
-            ui.separator();
+            vsep(ui);
             group(ui, tr("ИМПОРТ"), |ui| {
                 if crate::toolbar::tool_button(ui, "sk_photo", "📷", tr("Фото → скетч"), true, false).on_hover_ui(|ui| crate::toolbar::visual_tip(ui, tr("Фото → скетч"), tr("PNG или JPG превращается в редактируемые контуры с реальным размером"), "sketch")).clicked() {
                     if let Some(path) = crate::files::open(tr("Изображения"), &["png", "jpg", "jpeg", "bmp", "gif", "webp"]) {
@@ -1076,7 +1076,7 @@ impl SketchSession {
                     }
                 }
                 {
-                if crate::toolbar::tool_button(ui, "sk_dxf_import", "📐", tr("Импорт DXF"), true, false).on_hover_text(tr("Добавить в чертёж линии, окружности и дуги из файла DXF")).clicked() {
+                if crate::toolbar::tool_button(ui, "sk_dxf_import", "📐", tr("Импорт"), true, false).on_hover_text(tr("Добавить в чертёж линии, окружности и дуги из файла DXF")).clicked() {
                     if let Some(path) = crate::files::open("DXF", &["dxf"]) {
                         match std::fs::read_to_string(&path) {
                             Ok(text) => {
@@ -1096,7 +1096,7 @@ impl SketchSession {
                         }
                     }
                 }
-                if crate::toolbar::tool_button(ui, "sk_dxf_export", "📤", tr("Экспорт DXF"), true, false).on_hover_text(tr("Сохранить чертёж в файл DXF")).clicked() {
+                if crate::toolbar::tool_button(ui, "sk_dxf_export", "📤", tr("Экспорт"), true, false).on_hover_text(tr("Сохранить чертёж в файл DXF")).clicked() {
                     if let Some(path) = crate::files::save("DXF", &["dxf"], "blueprint.dxf") {
                         self.message = Some(match std::fs::write(&path, fusion_core::dxf::export(&self.sketch)) {
                             Ok(()) => tr("Чертёж сохранён в DXF").into(),
@@ -1106,13 +1106,13 @@ impl SketchSession {
                 }
                 }
             });
-            ui.separator();
+            vsep(ui);
             group(ui, tr("ПРАВИТЬ"), |ui| {
                 tool_btn(ui, self, Tool::Trim, tr("✂ Обрезать"), "T");
                 tool_btn(ui, self, Tool::Offset, tr("⧉ Смещение"), "");
                 tool_btn(ui, self, Tool::Corner, tr("◜ Скругл. угол"), "");
             });
-            ui.separator();
+            vsep(ui);
             group(ui, tr("РАЗМЕРЫ"), |ui| {
                 tool_btn(ui, self, Tool::Dimension, tr("↔ Размер"), "D");
                 tool_btn(ui, self, Tool::Angle, tr("∠ Угол"), "");
@@ -1646,12 +1646,21 @@ impl SketchSession {
     }
 }
 
+/// Vertical divider of a fixed height: `ui.separator()` stretches to the whole available height inside a toolbar row.
+fn vsep(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 80.0), egui::Sense::hover());
+    ui.painter().line_segment([rect.center_top(), rect.center_bottom()], ui.visuals().widgets.noninteractive.bg_stroke);
+}
+
 fn group(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
     ui.vertical(|ui| {
         if !title.is_empty() {
             ui.label(RichText::new(title).small().weak());
         }
-        ui.horizontal(|ui| add(ui));
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            add(ui);
+        });
     });
 }
 

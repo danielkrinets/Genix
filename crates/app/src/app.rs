@@ -1517,13 +1517,11 @@ impl App {
     fn toolbar(&mut self, ui: &mut egui::Ui, now: f64) {
         if let Mode::Sketch(s) = &mut self.mode {
             let full = ui.available_rect_before_wrap();
-            let split = full.max.x - 300.0_f32.min(full.width() * 0.45);
-            // fixed row height: separators stretch to the available height, so an open-ended rect makes the bar grow
+            let split = full.max.x - 270.0_f32.min(full.width() * 0.45);
+            // fixed row: the scroll area would otherwise report the whole panel height and the bar would grow
             let mut tools = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(full.min, egui::pos2(split, full.min.y + 92.0))));
-            let row = egui::ScrollArea::horizontal().auto_shrink([false, true]).show(&mut tools, |ui| {
-                s.toolbar(ui);
-                ui.min_rect().height() + 6.0
-            }).inner;
+            let row = 92.0;
+            egui::ScrollArea::horizontal().auto_shrink([false, true]).max_height(row).show(&mut tools, |ui| s.toolbar(ui));
             let mut done = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(egui::pos2(split, full.min.y), egui::pos2(full.max.x, full.min.y + row))).layout(egui::Layout::right_to_left(egui::Align::Center)));
             let act = s.actions(&mut done);
             ui.allocate_rect(Rect::from_min_max(full.min, egui::pos2(full.max.x, full.min.y + row)), egui::Sense::hover());
