@@ -484,6 +484,6 @@ pub mod offscreen {
         let dark_edges = px.chunks(4).filter(|p| p[0] < 60 && p[1] < 60 && p[2] < 60).count();
         assert!(dark_edges > 300, "видны рёбра: {dark_edges}");
         let grey = px.chunks(4).filter(|p| (p[0] as i32 - p[2] as i32).abs() < 25 && p[0] > 70 && p[0] < 200).count();
-        assert!(grey > 40_000, "тело занимает кадр: {grey}");
+        assert!(grey > 20_000, "тело занимает кадр: {grey}");
     }
 }

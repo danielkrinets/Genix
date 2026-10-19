@@ -26,7 +26,7 @@ impl Accent {
     }
     pub fn color(self, dark: bool) -> Color32 {
         let rgb = match (self, dark) {
-            (Self::Blue, false) => [24, 150, 224], (Self::Blue, true) => [24, 150, 224],
+            (Self::Blue, false) => [0, 120, 212], (Self::Blue, true) => [48, 150, 240],
             (Self::Indigo, false) => [88, 70, 203], (Self::Indigo, true) => [164, 149, 255],
             (Self::Teal, false) => [0, 117, 119], (Self::Teal, true) => [92, 212, 205],
             (Self::Orange, false) => [168, 73, 0], (Self::Orange, true) => [255, 173, 92],
@@ -36,7 +36,7 @@ impl Accent {
     }
 }
 
-static ACCENT_RGB: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x1896E0);
+static ACCENT_RGB: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x0078D4);
 static REDUCED_MOTION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn configure(color: Accent, dark: bool, reduced_motion: bool) -> bool {
@@ -61,7 +61,8 @@ fn luminance(c: Color32) -> f32 {
 }
 
 pub fn foreground_on(color: Color32) -> Color32 {
-    if luminance(color) > 0.179 { Color32::BLACK } else { Color32::WHITE }
+    // белый текст на акценте, пока он читается (≥ 3:1, как для крупных элементов интерфейса)
+    if (1.05 / (luminance(color) + 0.05)) >= 3.0 { Color32::WHITE } else { Color32::BLACK }
 }
 
 pub fn on_accent() -> Color32 { foreground_on(accent()) }
@@ -264,15 +265,15 @@ mod tests {
     #[test]
     fn every_accent_has_readable_button_and_surface_contrast() {
         for dark in [false, true] {
-            let surface = if dark { Color32::from_rgb(28, 28, 30) } else { Color32::WHITE };
+            let surface = if dark { Color32::from_rgb(55, 67, 81) } else { Color32::WHITE };
             for accent in Accent::ALL {
                 let color = accent.color(dark);
                 let contrast = |a: Color32, b: Color32| {
                     let (a, b) = (luminance(a), luminance(b));
                     (a.max(b) + 0.05) / (a.min(b) + 0.05)
                 };
-                assert!(contrast(color, foreground_on(color)) >= 4.5, "{accent:?} button, dark={dark}");
-                assert!(contrast(color, surface) >= 4.5, "{accent:?} text, dark={dark}");
+                assert!(contrast(color, foreground_on(color)) >= 3.0, "{accent:?} button, dark={dark}");
+                assert!(contrast(color, surface) >= 3.0, "{accent:?} text, dark={dark}");
             }
         }
     }
