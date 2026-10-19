@@ -214,7 +214,8 @@ fn icon_button(ui: &mut egui::Ui, id: &str, fallback: &str, selected: bool, tip:
         None => egui::Button::new(RichText::new(fallback).size(16.0)),
     };
     let background = ui.painter().add(egui::Shape::Noop);
-    let response = ui.add(btn.corner_radius(12).selected(selected).frame(selected).min_size(min)).on_hover_text(tip);
+    let response = ui.add(btn.corner_radius(12).selected(selected).frame(selected).min_size(min));
+    crate::widgets::warm_tooltip(&response, tip);
     let hover = response.hovered() && !ui.input(|i| i.any_touches());
     if !selected && hover {
         ui.painter().set(background, egui::Shape::rect_filled(response.rect, 12.0, crate::theme::tint(20)));
@@ -732,7 +733,7 @@ impl App {
             egui::ScrollArea::horizontal().auto_shrink([false, true]).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
-                    if ui.add(egui::Button::new(RichText::new(format!("⌂ {}", tr("Главная"))).strong().size(12.5).color(if self.home_active { crate::theme::on_accent() } else { ui.visuals().text_color() })).corner_radius(12).selected(self.home_active).frame(self.home_active).min_size(egui::vec2(90.0, 24.0))).clicked() {
+                    if ui.add(egui::Button::opt_image_and_text(crate::icons::icon("nav_home", 16.0, if self.home_active { crate::theme::on_accent() } else { ui.visuals().text_color() }), Some(RichText::new(tr("Главная")).strong().size(12.5).color(if self.home_active { crate::theme::on_accent() } else { ui.visuals().text_color() }).into())).corner_radius(12).selected(self.home_active).frame(self.home_active).min_size(egui::vec2(90.0, 24.0))).clicked() {
                         self.home_active = true;
                         self.home.navigate(crate::home::HomePage::Models);
                         let list = self.project_list();
@@ -1422,10 +1423,12 @@ impl App {
                 }
             });
             ui.separator();
-            if ui.add_enabled(!self.undo.is_empty() && !matches!(self.mode, Mode::Sketch(_)), egui::Button::new("↶")).on_hover_text(tr("Отменить (⌘Z)")).clicked() {
+            let editing = !self.home_active && !matches!(self.mode, Mode::Sketch(_));
+            let small = egui::vec2(28.0, 26.0);
+            if ui.add_enabled_ui(editing && !self.undo.is_empty(), |ui| icon_button(ui, "undo", "↶", false, tr("Отменить (⌘Z)"), small)).inner {
                 self.do_undo();
             }
-            if ui.add_enabled(!self.redo.is_empty() && !matches!(self.mode, Mode::Sketch(_)), egui::Button::new("↷")).on_hover_text(tr("Повторить (⇧⌘Z)")).clicked() {
+            if ui.add_enabled_ui(editing && !self.redo.is_empty(), |ui| icon_button(ui, "redo", "↷", false, tr("Повторить (⇧⌘Z)"), small)).inner {
                 self.do_redo();
             }
         });
@@ -1433,10 +1436,8 @@ impl App {
 
     fn header_bar(&mut self, ui: &mut egui::Ui, now: f64) {
         ui.horizontal_centered(|ui| {
-            if !self.home_active {
-                ui.allocate_ui_with_layout(egui::vec2(430.0, 28.0), egui::Layout::left_to_right(egui::Align::Center), |ui| self.menu_bar(ui, now));
-                ui.separator();
-            }
+            ui.allocate_ui_with_layout(egui::vec2(430.0, 28.0), egui::Layout::left_to_right(egui::Align::Center), |ui| self.menu_bar(ui, now));
+            ui.separator();
             ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 28.0), egui::Layout::left_to_right(egui::Align::Center), |ui| self.tab_bar(ui));
         });
     }
@@ -3366,7 +3367,9 @@ impl App {
                         self.cam.zoom_at(1.25, rect, None);
                     }
                     ui.add_space(4.0);
-                    ui.menu_button(RichText::new(format!("◧ {} ▾", tr(self.settings.visual_style.label()))).size(13.0), |ui| {
+                    let style_icon = crate::icons::icon("nav_style", 22.0, ui.visuals().text_color());
+                    let style_button = match style_icon { Some(img) => egui::Button::image(img), None => egui::Button::new("◧") };
+                    let style_menu = egui::menu::menu_custom_button(ui, style_button.corner_radius(12).frame(false).min_size(sz), |ui| {
                         for st in VisualStyle::ALL {
                             if ui.radio_value(&mut self.settings.visual_style, st, tr(st.label())).clicked() {
                                 self.settings.save();
@@ -3374,11 +3377,10 @@ impl App {
                             }
                         }
                     });
+                    crate::widgets::warm_tooltip(&style_menu.response, &format!("{}: {}", tr("Стиль отображения"), tr(self.settings.visual_style.label())));
                     ui.add_space(4.0);
-                    let mut g = self.settings.show_grid;
-                    if ui.add(egui::Button::new(RichText::new("▦").size(16.0).color(if g { crate::theme::on_accent() } else { ui.visuals().text_color() })).corner_radius(12).selected(g).frame(false).min_size(egui::vec2(28.0, 26.0))).on_hover_text(tr("Сетка")).clicked() {
-                        g = !g;
-                        self.settings.show_grid = g;
+                    if icon_button(ui, "nav_grid", "▦", self.settings.show_grid, tr("Сетка"), sz) {
+                        self.settings.show_grid = !self.settings.show_grid;
                         self.settings.save();
                     }
                     if icon_button(ui, "tree_plane", "⊞", self.show_planes, tr("Плоскости начала координат"), sz) {

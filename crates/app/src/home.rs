@@ -61,6 +61,7 @@ impl Gate {
 /// Локальная демонстрация регистрации: пароли не отправляются и не сохраняются.
 pub fn gate_ui(ctx: &egui::Context, st: &mut Settings, g: &mut Gate) -> bool {
     let mut changed = false;
+    let mut shy = false;
     egui::CentralPanel::default().show(ctx, |ui| {
         crate::backgrounds::paint(ui, ui.max_rect(), true);
         let available_width = ui.available_width();
@@ -91,11 +92,13 @@ pub fn gate_ui(ctx: &egui::Context, st: &mut Settings, g: &mut Gate) -> bool {
                     ui.label(tr("Пароль"));
                     let password = ui.add(egui::TextEdit::singleline(&mut g.pass).font(egui::FontId::proportional(16.0)).margin(egui::Margin::symmetric(14,12)).password(true).char_limit(128).hint_text(RichText::new(tr("Не менее 8 символов")).color(muted(ui))).desired_width(f32::INFINITY));
                     let mut enter = password.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    shy |= password.has_focus();
                     if !g.login {
                         ui.add_space(3.0);
                         ui.label(tr("Повторите пароль"));
                         let repeat = ui.add(egui::TextEdit::singleline(&mut g.repeat).font(egui::FontId::proportional(16.0)).margin(egui::Margin::symmetric(14,12)).password(true).char_limit(128).desired_width(f32::INFINITY));
                         enter = repeat.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        shy |= repeat.has_focus();
                     }
                     if let Some(msg) = &g.msg { ui.colored_label(ui.visuals().error_fg_color, msg); }
                     ui.add_space(8.0);
@@ -125,6 +128,15 @@ pub fn gate_ui(ctx: &egui::Context, st: &mut Settings, g: &mut Gate) -> bool {
             });
             });
         });
+        if wide {
+            let rect = ui.max_rect();
+            let size = 170.0;
+            let text_height = (rect.width() * 0.12).min(180.0);
+            let card_left = rect.left() + (rect.width() - card_width) * 0.5;
+            let x = (rect.left() + rect.width() * 0.255).min(card_left - size * 0.6 - 20.0);
+            let y = (rect.center().y + text_height * 0.5 + size * 0.6 + 10.0).min(rect.bottom() - size * 0.6 - 12.0);
+            crate::mascot::paint(ui, egui::pos2(x, y), size, shy);
+        }
     });
     changed
 }

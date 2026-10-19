@@ -11,6 +11,7 @@ mod desktop;
 mod gpu;
 mod home;
 mod backgrounds;
+mod mascot;
 mod updates;
 mod icons;
 mod trace_ui;

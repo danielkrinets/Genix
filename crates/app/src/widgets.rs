@@ -133,6 +133,78 @@ pub fn primary_button(ui: &mut egui::Ui, text: &str, width: f32) -> egui::Respon
     response
 }
 
+#[derive(Clone, Default)]
+struct WarmTip {
+    open: Option<egui::Id>,
+    warm_until: f64,
+    hover: Option<(egui::Id, f64)>,
+    session: u64,
+}
+
+const TIP_DELAY: f64 = 0.4;
+const TIP_WARM_WINDOW: f64 = 0.3;
+const TIP_GLIDE: f32 = 0.32;
+
+/// "Bold (⌘B)" -> ("Bold", Some("⌘B")).
+pub fn split_shortcut(tip: &str) -> (&str, Option<&str>) {
+    match tip.rfind(" (") {
+        Some(i) if tip.ends_with(')') => (&tip[..i], Some(&tip[i + 2..tip.len() - 1])),
+        _ => (tip, None),
+    }
+}
+
+/// Native port of the React Bits WarmTooltip: 400 ms cold delay, no delay for 300 ms after
+/// another label closed, and one label that glides from button to button.
+/// shortcut: no pop-in blur/scale and no touch long-press, add them if the tooltip is used on touch.
+pub fn warm_tooltip(response: &egui::Response, tip: &str) {
+    let (label, shortcut) = split_shortcut(tip);
+    let ctx = &response.ctx;
+    let now = ctx.input(|i| i.time);
+    let key = egui::Id::new("warm-tooltip-state");
+    let mut st: WarmTip = ctx.data(|d| d.get_temp(key)).unwrap_or_default();
+    let id = response.id;
+    let hovered = response.hovered() && !response.is_pointer_button_down_on() && !ctx.input(|i| i.any_touches());
+    let mut show = false;
+    if hovered {
+        if st.hover.map(|h| h.0) != Some(id) { st.hover = Some((id, now)); }
+        let since = now - st.hover.map_or(now, |h| h.1);
+        let warm = st.open.is_some() || now < st.warm_until;
+        let delay = if warm { 0.0 } else { TIP_DELAY };
+        if since >= delay {
+            if !warm { st.session += 1; }
+            st.open = Some(id);
+            show = true;
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(delay - since));
+        }
+    } else {
+        if st.hover.map(|h| h.0) == Some(id) { st.hover = None; }
+        if st.open == Some(id) { st.open = None; st.warm_until = now + TIP_WARM_WINDOW; }
+    }
+    let session = st.session;
+    ctx.data_mut(|d| d.insert_temp(key, st));
+    if !show { return; }
+    let glide = if crate::theme::reduced_motion() { 0.0 } else { TIP_GLIDE };
+    let sid = egui::Id::new(("warm-tip", session));
+    let anchor = response.rect.center_top() - egui::vec2(0.0, 5.0);
+    let x = ctx.animate_value_with_time(sid.with("x"), anchor.x, glide);
+    let y = ctx.animate_value_with_time(sid.with("y"), anchor.y, glide);
+    let (surface, ink) = (crate::theme::accent(), crate::theme::on_accent());
+    egui::Area::new(sid.with("area")).order(egui::Order::Tooltip).fixed_pos(egui::pos2(x, y)).pivot(egui::Align2::CENTER_BOTTOM).interactable(false).show(ctx, |ui| {
+        egui::Frame::new().fill(surface).corner_radius(16).inner_margin(egui::Margin::symmetric(8, 5)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 7.0;
+                ui.label(RichText::new(label).size(11.5).color(ink));
+                if let Some(keys) = shortcut {
+                    egui::Frame::new().fill(ink.gamma_multiply(0.15)).corner_radius(5).inner_margin(egui::Margin::symmetric(5, 1)).show(ui, |ui| {
+                        ui.label(RichText::new(keys).size(10.0).color(ink.gamma_multiply(0.85)));
+                    });
+                }
+            });
+        });
+    });
+}
+
 /// Animated checkmark with native checkbox semantics and an unchanged hit target.
 pub fn checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::Response {
     let galley = ui.painter().layout_no_wrap(label.into(), egui::FontId::proportional(14.0), ui.visuals().text_color());
@@ -294,5 +366,17 @@ mod rounded_tests {
         input.events.push(egui::Event::Key { key: egui::Key::Space, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
         let _ = ctx.run(input, |ctx| { egui::CentralPanel::default().show(ctx, |ui| { widget(ui, &mut value, "Test"); }); });
         assert!(!value);
+    }
+}
+
+#[cfg(test)]
+mod warm_tip_tests {
+    use super::split_shortcut;
+
+    #[test]
+    fn shortcut_is_split_from_the_label() {
+        assert_eq!(split_shortcut("Вписать модель (F)"), ("Вписать модель", Some("F")));
+        assert_eq!(split_shortcut("Снимок (⇧⌘P)"), ("Снимок", Some("⇧⌘P")));
+        assert_eq!(split_shortcut("Сетка"), ("Сетка", None));
     }
 }
