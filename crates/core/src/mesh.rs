@@ -261,6 +261,34 @@ impl Mesh {
         }
     }
 
+    /// 3MF — формат для 3D-печати (Cura, PrusaSlicer, Bambu Studio): тела с названиями, единицы — миллиметры.
+    pub fn write_3mf(meshes: &[(&str, &Mesh)]) -> Vec<u8> {
+        use std::fmt::Write;
+        fn esc(s: &str) -> String {
+            s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+        }
+        let mut model = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\n<metadata name=\"Application\">Genix</metadata>\n<resources>\n");
+        for (i, (name, m)) in meshes.iter().enumerate() {
+            let _ = writeln!(model, "<object id=\"{}\" name=\"{}\" type=\"model\"><mesh><vertices>", i + 1, esc(name));
+            for v in &m.vertices {
+                let _ = writeln!(model, "<vertex x=\"{}\" y=\"{}\" z=\"{}\"/>", v[0], v[1], v[2]);
+            }
+            model.push_str("</vertices><triangles>\n");
+            for t in &m.triangles {
+                let _ = writeln!(model, "<triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"/>", t[0], t[1], t[2]);
+            }
+            model.push_str("</triangles></mesh></object>\n");
+        }
+        model.push_str("</resources>\n<build>\n");
+        for i in 0..meshes.len() {
+            let _ = writeln!(model, "<item objectid=\"{}\"/>", i + 1);
+        }
+        model.push_str("</build>\n</model>\n");
+        let types = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"model\" ContentType=\"application/vnd.ms-package.3dmanufacturing-3dmodel+xml\"/></Types>";
+        let rels = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Target=\"/3D/3dmodel.model\" Id=\"rel0\" Type=\"http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel\"/></Relationships>";
+        zip_stored(&[("[Content_Types].xml", types.as_bytes()), ("_rels/.rels", rels.as_bytes()), ("3D/3dmodel.model", model.as_bytes())])
+    }
+
     /// Текстовый OBJ: каждое тело — отдельный объект.
     pub fn write_obj(meshes: &[(&str, &Mesh)]) -> String {
         use std::fmt::Write;
@@ -278,6 +306,63 @@ impl Mesh {
         }
         s
     }
+}
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in data {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+        }
+    }
+    !crc
+}
+
+/// Минимальный zip без сжатия (достаточно для 3MF).
+fn zip_stored(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut central = Vec::new();
+    for (name, data) in files {
+        let offset = out.len() as u32;
+        let crc = crc32(data);
+        let (n, len) = (name.as_bytes(), data.len() as u32);
+        for (buf, local) in [(&mut out, true), (&mut central, false)] {
+            buf.extend_from_slice(&(if local { 0x0403_4b50u32 } else { 0x0201_4b50u32 }).to_le_bytes());
+            if !local {
+                buf.extend_from_slice(&20u16.to_le_bytes()); // создано версией
+            }
+            buf.extend_from_slice(&20u16.to_le_bytes()); // нужна версия
+            buf.extend_from_slice(&0x0800u16.to_le_bytes()); // имена в UTF-8
+            buf.extend_from_slice(&0u16.to_le_bytes()); // без сжатия
+            buf.extend_from_slice(&0u16.to_le_bytes()); // время
+            buf.extend_from_slice(&0x21u16.to_le_bytes()); // дата 1980-01-01
+            buf.extend_from_slice(&crc.to_le_bytes());
+            buf.extend_from_slice(&len.to_le_bytes());
+            buf.extend_from_slice(&len.to_le_bytes());
+            buf.extend_from_slice(&(n.len() as u16).to_le_bytes());
+            buf.extend_from_slice(&0u16.to_le_bytes()); // extra
+            if !local {
+                buf.extend_from_slice(&[0u8; 6]); // комментарий, диск, внутренние атрибуты
+                buf.extend_from_slice(&0u32.to_le_bytes()); // внешние атрибуты
+                buf.extend_from_slice(&offset.to_le_bytes());
+            }
+            buf.extend_from_slice(n);
+            if local {
+                buf.extend_from_slice(data);
+            }
+        }
+    }
+    let cd_offset = out.len() as u32;
+    out.extend_from_slice(&central);
+    out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+    out.extend_from_slice(&[0u8; 4]);
+    out.extend_from_slice(&(files.len() as u16).to_le_bytes());
+    out.extend_from_slice(&(files.len() as u16).to_le_bytes());
+    out.extend_from_slice(&(central.len() as u32).to_le_bytes());
+    out.extend_from_slice(&cd_offset.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out
 }
 
 #[cfg(test)]
@@ -332,5 +417,27 @@ mod tests {
                 assert!((*n - n0).length() < 1e-9);
             }
         }
+    }
+
+    #[test]
+    fn threemf_is_a_valid_zip_with_the_model() {
+        let m = cube();
+        let bytes = Mesh::write_3mf(&[("Тело <1>", &m)]);
+        if let Ok(out) = std::env::var("GENIX_3MF_OUT") {
+            std::fs::write(out, &bytes).unwrap();
+        }
+        assert_eq!(&bytes[..4], b"PK\x03\x04");
+        // конец архива: подпись, 3 файла, каталог лежит ровно перед концом
+        let e = bytes.len() - 22;
+        assert_eq!(&bytes[e..e + 4], b"PK\x05\x06");
+        assert_eq!(u16::from_le_bytes([bytes[e + 10], bytes[e + 11]]), 3);
+        let size = u32::from_le_bytes(bytes[e + 12..e + 16].try_into().unwrap()) as usize;
+        let off = u32::from_le_bytes(bytes[e + 16..e + 20].try_into().unwrap()) as usize;
+        assert_eq!(off + size, e);
+        assert_eq!(&bytes[off..off + 4], b"PK\x01\x02");
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("Тело &lt;1&gt;") && text.contains("unit=\"millimeter\""));
+        assert_eq!(text.matches("<triangle ").count(), m.triangles.len());
     }
 }

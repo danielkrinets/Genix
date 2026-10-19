@@ -561,7 +561,7 @@ impl App {
         }
     }
 
-    fn export(&mut self, obj: bool, now: f64) {
+    fn export(&mut self, fmt: &str, now: f64) {
         let model = self.ev.model();
         let mut bodies: Vec<&fusion_core::doc::Body> = model.bodies.iter().filter(|b| self.selection.contains(&b.id)).collect();
         if bodies.is_empty() {
@@ -571,12 +571,15 @@ impl App {
             self.toast(tr("Нет тел для экспорта"), true, now);
             return;
         }
-        let (ext, label) = if obj { ("obj", "OBJ") } else { ("stl", tr("STL (3D-печать)")) };
+        let (ext, label) = match fmt { "obj" => ("obj", "OBJ"), "3mf" => ("3mf", "3MF"), _ => ("stl", tr("STL (3D-печать)")) };
         let name = format!("{}.{ext}", self.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| tr("модель").into()));
         let Some(p) = crate::files::save(label, &[ext], &name) else { return };
-        let res = if obj {
+        let res = if fmt == "obj" {
             let named: Vec<(&str, &Mesh)> = bodies.iter().map(|b| (self.doc.body_name(b), b.mesh())).collect();
             std::fs::write(&p, Mesh::write_obj(&named))
+        } else if fmt == "3mf" {
+            let named: Vec<(&str, &Mesh)> = bodies.iter().map(|b| (self.doc.body_name(b), b.mesh())).collect();
+            std::fs::write(&p, Mesh::write_3mf(&named))
         } else {
             let mut out = Vec::new();
             Mesh::write_stl_binary(&bodies.iter().map(|b| b.mesh()).collect::<Vec<_>>(), &mut out);
@@ -1357,15 +1360,19 @@ impl App {
                 ui.separator();
                 if menu_item(ui, "file_export_stl", tr("Экспорт STL (3D-печать)…")) {
                     ui.close_menu();
-                    self.export(false, now);
+                    self.export("stl", now);
                 }
                 if menu_item(ui, "sk_photo", tr("Снимок модели PNG без фона…")) {
                     ui.close_menu();
                     self.export_png(now);
                 }
+                if menu_item(ui, "file_export_3mf", tr("Экспорт 3MF (3D-печать)…")) {
+                    ui.close_menu();
+                    self.export("3mf", now);
+                }
                 if menu_item(ui, "file_export_obj", tr("Экспорт OBJ…")) {
                     ui.close_menu();
-                    self.export(true, now);
+                    self.export("obj", now);
                 }
             });
             ui.menu_button(tr("Правка"), |ui| {

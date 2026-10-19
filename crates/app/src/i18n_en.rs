@@ -330,6 +330,7 @@ pub const EN: &[(&str, &str)] = &[
     ("Щёлкните целевое тело", "Click the target body"),
     ("ЧЕРТЁЖ", "BLUEPRINT"),
     ("Экспорт OBJ…", "Export OBJ…"),
+    ("Экспорт 3MF (3D-печать)…", "Export 3MF (3D printing)…"),
     ("Экспорт STL (3D-печать)…", "Export STL (3D printing)…"),
     ("Экспортировано тел: {}", "Bodies exported: {}"),
     ("Язык", "Language"),
