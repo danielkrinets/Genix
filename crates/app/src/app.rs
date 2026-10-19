@@ -1329,7 +1329,7 @@ impl App {
         visuals.widgets.active.corner_radius = egui::CornerRadius::same(6);
         visuals.widgets.open.corner_radius = egui::CornerRadius::same(6);
         egui::menu::bar(ui, |ui| {
-            ui.add(egui::Image::from_bytes("bytes://genix/logo.svg", crate::home::LOGO_SVG.as_bytes().to_vec()).fit_to_exact_size(egui::vec2(18.0, 18.0)));
+            crate::home::logo(ui, 18.0);
             ui.menu_button(tr("Файл"), |ui| {
                 if menu_item(ui, "file_new", tr("Новый                ⌘N")) {
                     ui.close_menu();
@@ -1436,7 +1436,7 @@ impl App {
 
     fn header_bar(&mut self, ui: &mut egui::Ui, now: f64) {
         ui.horizontal_centered(|ui| {
-            ui.allocate_ui_with_layout(egui::vec2(430.0, 28.0), egui::Layout::left_to_right(egui::Align::Center), |ui| self.menu_bar(ui, now));
+            self.menu_bar(ui, now);
             ui.separator();
             ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 28.0), egui::Layout::left_to_right(egui::Align::Center), |ui| self.tab_bar(ui));
         });
@@ -2711,7 +2711,7 @@ impl App {
         self.mode = Mode::Idle;
         egui::TopBottomPanel::top("phone_bar").frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(10, 8))).show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.add(egui::Image::from_bytes("bytes://genix/logo.svg", crate::home::LOGO_SVG.as_bytes().to_vec()).fit_to_exact_size(egui::vec2(22.0, 22.0)));
+                crate::home::logo(ui, 22.0);
                 if !self.home_active && ui.add(egui::Button::new(RichText::new(format!("‹ {}", tr("Главная"))).strong()).min_size(egui::vec2(0.0, 34.0))).clicked() {
                     self.home_active = true;
                     let list = self.project_list();

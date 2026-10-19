@@ -10,7 +10,24 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-pub const LOGO_SVG: &str = include_str!("../assets/logo.svg");
+const LOGO_PNG: &[u8] = include_bytes!("../assets/logo-small.png");
+
+/// Genix app mark; the decoded texture is created once and kept in egui memory.
+pub fn logo(ui: &mut egui::Ui, size: f32) {
+    let key = egui::Id::new("genix-logo-texture");
+    let texture = match ui.ctx().data(|d| d.get_temp::<egui::TextureHandle>(key)) {
+        Some(texture) => texture,
+        None => {
+            let Ok(img) = image::load_from_memory(LOGO_PNG) else { return };
+            let img = img.to_rgba8();
+            let color = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
+            let texture = ui.ctx().load_texture("genix-logo", color, egui::TextureOptions::LINEAR);
+            ui.ctx().data_mut(|d| d.insert_temp(key, texture.clone()));
+            texture
+        }
+    };
+    ui.add(egui::Image::new(&texture).fit_to_exact_size(egui::vec2(size, size)));
+}
 
 pub fn unlocked(st: &Settings) -> bool {
     st.account.is_some() || st.account_skipped
@@ -67,12 +84,12 @@ pub fn gate_ui(ctx: &egui::Context, st: &mut Settings, g: &mut Gate) -> bool {
         let available_width = ui.available_width();
         let wide = available_width >= 980.0;
         let card_width = if wide { 500.0 } else { (available_width - 32.0).max(300.0) };
-        let content_width = card_width;
+        let card_left = if wide { available_width * 0.75 - card_width * 0.5 } else { (available_width - card_width) * 0.5 };
         egui::ScrollArea::vertical().show(ui, |ui| {
             let top_space = if wide { ((ui.available_height() - 700.0) * 0.5).max(24.0) } else { 20.0 };
             ui.add_space(top_space);
             ui.horizontal(|ui| {
-            ui.add_space(((ui.available_width() - content_width) * 0.5).max(0.0));
+            ui.add_space(card_left.max(0.0));
             ui.allocate_ui_with_layout(egui::vec2(card_width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                     egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(26).inner_margin(egui::Margin::same(28)).show(ui, |ui| {
                     ui.set_width((card_width - 56.0).max(240.0));
@@ -130,12 +147,8 @@ pub fn gate_ui(ctx: &egui::Context, st: &mut Settings, g: &mut Gate) -> bool {
         });
         if wide {
             let rect = ui.max_rect();
-            let size = 170.0;
-            let text_height = (rect.width() * 0.12).min(180.0);
-            let card_left = rect.left() + (rect.width() - card_width) * 0.5;
-            let x = (rect.left() + rect.width() * 0.255).min(card_left - size * 0.6 - 20.0);
-            let y = (rect.center().y + text_height * 0.5 + size * 0.6 + 10.0).min(rect.bottom() - size * 0.6 - 12.0);
-            crate::mascot::paint(ui, egui::pos2(x, y), size, shy);
+            let width = (rect.width() * 0.4).min(rect.height() * 0.7).clamp(220.0, 560.0);
+            crate::mascot::paint(ui, egui::pos2(rect.left() + rect.width() * 0.255, rect.bottom() - 28.0), width, shy);
         }
     });
     changed
@@ -353,7 +366,7 @@ pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
             ui.allocate_ui_with_layout(egui::vec2(nav_width, height), egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.add_space(20.0);
                 ui.horizontal(|ui| {
-                    ui.add(egui::Image::from_bytes("bytes://genix/logo.svg", LOGO_SVG.as_bytes().to_vec()).fit_to_exact_size(egui::vec2(28.0, 28.0)));
+                    logo(ui, 28.0);
                     if open > 0.72 { ui.label(RichText::new("Genix").size(23.0).strong()); }
                 });
                 ui.add_space(28.0);
@@ -756,8 +769,7 @@ fn new_project_button(ui: &mut egui::Ui, loading: bool) -> egui::Response {
     let hover = crate::widgets::feedback(ui, response.id.with("hover"), response.hovered() && !loading);
     let press = crate::widgets::feedback(ui, response.id.with("press"), response.is_pointer_button_down_on());
     let paint = rect.shrink(press * 1.5);
-    ui.painter().rect_filled(paint, 14.0, crate::theme::accent());
-    if hover > 0.0 { ui.painter().rect_filled(paint, 14.0, Color32::from_white_alpha((hover * 20.0) as u8)); }
+    crate::widgets::pill_fill(ui, paint, 24.0, hover, press);
     let color = crate::theme::on_accent();
     if loading {
         let center = paint.left_center() + egui::vec2(25.0, 0.0);
