@@ -63,53 +63,55 @@ pub fn gate_ui(ctx: &egui::Context, st: &mut Settings, g: &mut Gate) -> bool {
     let mut changed = false;
     egui::CentralPanel::default().show(ctx, |ui| {
         crate::backgrounds::paint(ui, ui.max_rect(), true);
-        let wide = ui.available_width() >= 900.0;
-        let offset = if wide { ui.available_width()*0.48 } else { 0.0 };
+        let available_width = ui.available_width();
+        let wide = available_width >= 980.0;
+        let card_width = if wide { 500.0 } else { (available_width - 32.0).max(300.0) };
+        let content_width = card_width;
         egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.add_space((ui.available_height() * 0.07).clamp(12.0, 64.0));
+            let top_space = if wide { ((ui.available_height() - 700.0) * 0.5).max(24.0) } else { 20.0 };
+            ui.add_space(top_space);
             ui.horizontal(|ui| {
-            ui.add_space(offset);
-            ui.vertical_centered(|ui| {
-                ui.label(tr("От идеи к вашей следующей модели"));
-                ui.add_space(24.0);
-                ui.allocate_ui_with_layout(egui::vec2(460.0_f32.min(ui.available_width()), 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-                    egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(24).inner_margin(egui::Margin::same(24)).show(ui, |ui| {
-                    ui.set_width(380.0_f32.min(ui.available_width()));
-                    ui.spacing_mut().item_spacing.y = 10.0;
+            ui.add_space(((ui.available_width() - content_width) * 0.5).max(0.0));
+            ui.allocate_ui_with_layout(egui::vec2(card_width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(26).inner_margin(egui::Margin::same(28)).show(ui, |ui| {
+                    ui.set_width((card_width - 56.0).max(240.0));
+                    ui.spacing_mut().item_spacing.y = 8.0;
                     ui.heading(if g.login { tr("С возвращением") } else { tr("Создать аккаунт") });
-                    ui.add_space(6.0);
+                    ui.add_space(2.0);
                     ui.label(RichText::new(tr("Мок регистрации · данные остаются на этом устройстве")).color(muted(ui)));
-                    ui.add_space(16.0);
+                    ui.add_space(14.0);
                     if !g.login {
                         ui.label(tr("Имя"));
                         ui.add(egui::TextEdit::singleline(&mut g.name).font(egui::FontId::proportional(16.0)).margin(egui::Margin::symmetric(14,12)).char_limit(100).desired_width(f32::INFINITY));
-                        ui.add_space(8.0);
+                        ui.add_space(3.0);
                     }
                     ui.label(tr("Электронная почта"));
                     ui.add(egui::TextEdit::singleline(&mut g.email).font(egui::FontId::proportional(16.0)).margin(egui::Margin::symmetric(14,12)).hint_text(RichText::new("you@example.com").color(muted(ui))).char_limit(254).desired_width(f32::INFINITY));
-                    ui.add_space(8.0);
+                    ui.add_space(3.0);
                     ui.label(tr("Пароль"));
                     let password = ui.add(egui::TextEdit::singleline(&mut g.pass).font(egui::FontId::proportional(16.0)).margin(egui::Margin::symmetric(14,12)).password(true).char_limit(128).hint_text(RichText::new(tr("Не менее 8 символов")).color(muted(ui))).desired_width(f32::INFINITY));
                     let mut enter = password.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if !g.login {
-                        ui.add_space(8.0);
+                        ui.add_space(3.0);
                         ui.label(tr("Повторите пароль"));
                         let repeat = ui.add(egui::TextEdit::singleline(&mut g.repeat).font(egui::FontId::proportional(16.0)).margin(egui::Margin::symmetric(14,12)).password(true).char_limit(128).desired_width(f32::INFINITY));
                         enter = repeat.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     }
                     if let Some(msg) = &g.msg { ui.colored_label(ui.visuals().error_fg_color, msg); }
-                    ui.add_space(16.0);
+                    ui.add_space(8.0);
                     if primary(ui, if g.login { tr("Войти") } else { tr("Зарегистрироваться") }).clicked() || enter {
                         changed = g.submit(st);
                     }
-                    ui.add_space(8.0);
-                    if ui.button(if g.login { tr("Нет аккаунта? Зарегистрироваться") } else { tr("Уже есть аккаунт? Войти") }).clicked() {
+                    ui.add_space(2.0);
+                    let login = egui::Button::new(RichText::new(if g.login { tr("Нет аккаунта? Зарегистрироваться") } else { tr("Уже есть аккаунт? Войти") }).color(crate::theme::accent())).frame(false);
+                    if ui.add_sized(egui::vec2(ui.available_width(), 34.0), login).clicked() {
                         g.login = !g.login;
                         g.msg = None;
                         g.pass.clear();
                         g.repeat.clear();
                     }
-                    if ui.button(tr("Продолжить без аккаунта")).clicked() {
+                    let skip = egui::Button::new(RichText::new(tr("Продолжить без аккаунта")).color(muted(ui))).frame(false);
+                    if ui.add_sized(egui::vec2(ui.available_width(), 34.0), skip).clicked() {
                         st.account = None;
                         st.account_skipped = true;
                         st.license.get_or_insert_with(|| "DEMO".into());
@@ -117,10 +119,9 @@ pub fn gate_ui(ctx: &egui::Context, st: &mut Settings, g: &mut Gate) -> bool {
                         g.repeat.clear();
                         changed = true;
                     }
-                    ui.add_space(12.0);
-                    ui.label(RichText::new(tr("Это демонстрация: аккаунт не создаётся на сервере. Используйте тестовый пароль.")).color(muted(ui)).small());
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(tr("Это демонстрация: аккаунт не создаётся на сервере. Используйте тестовый пароль.")).color(muted(ui)).size(12.0));
                     });
-                });
             });
             });
         });
