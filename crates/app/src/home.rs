@@ -907,16 +907,27 @@ fn folders_section(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, acti
     ui.horizontal_wrapped(|ui| {
         ui.add_space(24.0);
         let field = ui.add(egui::TextEdit::singleline(&mut h.folder_draft).font(egui::FontId::proportional(15.0)).margin(egui::Margin::symmetric(12, 10)).hint_text(RichText::new(tr("Название новой папки")).color(muted(ui))).desired_width(220.0).char_limit(60));
-        let name = h.folder_draft.trim().to_string();
-        let free = !name.is_empty() && !st.folders.iter().any(|f| f.name == name);
-        let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        if (ui.add_enabled_ui(free, |ui| crate::ui_kit::b02(ui, tr("Создать папку"))).inner.clicked() || enter) && free {
-            st.folders.push(crate::settings::ProjectFolder { name, ..Default::default() });
+        let typed = h.folder_draft.trim().to_string();
+        let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !typed.is_empty();
+        if crate::ui_kit::b02(ui, tr("Создать папку")).clicked() || enter {
+            let base = if typed.is_empty() { tr("Новая папка").to_string() } else { typed };
+            st.folders.push(crate::settings::ProjectFolder { name: unused_folder_name(&st.folders, &base), ..Default::default() });
             h.folder_draft.clear();
             *action = HomeAction::SettingsChanged;
         }
     });
     ui.add_space(14.0);
+}
+
+/// `base`, а если такая папка уже есть — `base 2`, `base 3`…
+fn unused_folder_name(folders: &[crate::settings::ProjectFolder], base: &str) -> String {
+    let mut name = base.to_string();
+    let mut n = 2;
+    while folders.iter().any(|f| f.name == name) {
+        name = format!("{base} {n}");
+        n += 1;
+    }
+    name
 }
 
 /// Настройки открытой папки: автосохранение на сервер (демо), имя, удаление. Модели при удалении остаются.
@@ -990,35 +1001,38 @@ fn folder_card(ui: &mut egui::Ui, name: &str, sub: &str, pills: &[String], sync:
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// B15 — «Новый проект»: плоская таблетка 48 px, значок и подпись по центру; при загрузке вместо плюса дуга-спиннер.
 fn new_project_button(ui: &mut egui::Ui, loading: bool) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(210.0, 48.0), if loading { egui::Sense::hover() } else { egui::Sense::click() });
+    let text = if loading { tr("Подготовка проекта…") } else { tr("Новый проект") };
+    let font = egui::FontId::proportional(15.5);
+    let text_width = ui.painter().layout_no_wrap(text.to_string(), font.clone(), Color32::WHITE).size().x;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2((text_width + 18.0 + 10.0 + 52.0).max(200.0), 48.0), if loading { egui::Sense::hover() } else { egui::Sense::click() });
     let hover = crate::widgets::feedback(ui, response.id.with("hover"), response.hovered() && !loading);
     let press = crate::widgets::feedback(ui, response.id.with("press"), response.is_pointer_button_down_on());
-    let paint = rect.shrink(press * 1.5);
+    let paint = rect.shrink(press);
     crate::ui_kit::pill_fill(ui, paint, 24.0, hover, press);
     let color = crate::theme::on_accent();
-    if loading {
-        let center = paint.left_center() + egui::vec2(25.0, 0.0);
-        if crate::theme::reduced_motion() {
-            ui.painter().circle_filled(center, 4.0, color);
-        } else {
-            let time = ui.input(|i| i.time) as f32;
-            for i in 0..8 {
-                let a = time * 5.5 + i as f32 * std::f32::consts::TAU / 8.0;
-                let dir = egui::vec2(a.cos(), a.sin());
-                ui.painter().line_segment([center + dir * 5.0, center + dir * 9.0], egui::Stroke::new(2.0_f32, color.gamma_multiply((i + 1) as f32 / 8.0)));
-            }
-            ui.ctx().request_repaint();
-        }
-        ui.painter().text(paint.left_center() + egui::vec2(44.0, 0.0), egui::Align2::LEFT_CENTER, tr("Подготовка проекта…"), egui::FontId::proportional(14.5), color);
+    let left = paint.center().x - (18.0 + 10.0 + text_width) / 2.0;
+    let icon = egui::pos2(left + 9.0, paint.center().y);
+    let stroke = egui::Stroke::new(2.4_f32, color);
+    if loading && !crate::theme::reduced_motion() {
+        let t = ui.input(|i| i.time) as f32 * 5.5;
+        let arc: Vec<egui::Pos2> = (0..=14).map(|i| {
+            let a = t + i as f32 * std::f32::consts::TAU * 0.75 / 14.0;
+            icon + egui::vec2(a.cos(), a.sin()) * 7.5
+        }).collect();
+        ui.painter().add(egui::Shape::line(arc, stroke));
+        ui.ctx().request_repaint();
+    } else if loading {
+        ui.painter().circle_filled(icon, 4.0, color);
     } else {
-        if let Some(icon) = crate::icons::icon("add", 22.0, color) {
-            icon.paint_at(ui, egui::Rect::from_center_size(paint.left_center() + egui::vec2(25.0, 0.0), egui::vec2(22.0, 22.0) * (1.0 - press * 0.10)));
-        }
-        ui.painter().text(paint.left_center() + egui::vec2(44.0, 0.0), egui::Align2::LEFT_CENTER, tr("Новый проект"), egui::FontId::proportional(15.0), color);
+        let k = 6.0 * (1.0 - press * 0.1);
+        ui.painter().line_segment([icon - egui::vec2(k, 0.0), icon + egui::vec2(k, 0.0)], stroke);
+        ui.painter().line_segment([icon - egui::vec2(0.0, k), icon + egui::vec2(0.0, k)], stroke);
     }
+    ui.painter().text(egui::pos2(left + 28.0, paint.center().y), egui::Align2::LEFT_CENTER, text, font, color);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, !loading, tr("Новый проект")));
-    response
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 #[cfg(test)]
@@ -1091,6 +1105,14 @@ mod tests {
         assert_eq!(home.queued.len(), 3); // модель и два примера
         home.refresh(&recent);
         assert_eq!(home.queued.len(), 3); // повторный вход не дублирует задания
+    }
+
+    #[test]
+    fn folder_names_never_collide() {
+        let named = |n: &str| crate::settings::ProjectFolder { name: n.into(), ..Default::default() };
+        assert_eq!(unused_folder_name(&[], "Новая папка"), "Новая папка");
+        assert_eq!(unused_folder_name(&[named("Новая папка")], "Новая папка"), "Новая папка 2");
+        assert_eq!(unused_folder_name(&[named("A"), named("A 2")], "A"), "A 3");
     }
 
     #[test]

@@ -75,8 +75,9 @@ button:disabled{opacity:.4;cursor:default}
 .b13:hover{background:var(--accent);color:var(--on-accent)}
 .b14{height:28px;padding:0 16px;border-radius:14px;background:none;font-weight:500}
 .b14[aria-selected=true]{background:var(--accent);color:var(--on-accent)}
-.b15{height:48px;padding:0 24px 0 18px;border-radius:24px;background:var(--accent);color:var(--on-accent);font-weight:600;font-size:15px;display:inline-flex;align-items:center;gap:10px}
-.spin{width:16px;height:16px;border-radius:50%;border:2.4px solid rgba(255,255,255,.35);border-top-color:#fff;animation:sp .8s linear infinite;display:none}
+.b15{height:48px;min-width:200px;justify-content:center;padding:0 26px;border-radius:24px;background:var(--accent);color:var(--on-accent);font-weight:600;font-size:15px;display:inline-flex;align-items:center;gap:10px}
+.spin{width:18px;height:18px;border-radius:50%;border:2.4px solid transparent;border-top-color:#fff;border-right-color:#fff;border-bottom-color:#fff;animation:sp .8s linear infinite;display:none}
+.b15 .ic{width:18px;height:18px;stroke-width:2.4}
 .b15.loading .spin{display:block} .b15.loading .plus{display:none}
 @keyframes sp{to{transform:rotate(360deg)}}
 input[type=text],input[type=password]{height:40px;padding:0 14px;border-radius:12px;border:0;background:var(--fill);color:var(--text);font:inherit;font-size:16px;width:220px;outline:none}
@@ -163,7 +164,7 @@ const cards=[
  ['B12','Галочка','Список параметров. Штрих рисуется ровно 320 мс.',`<label class="chk"><input type="checkbox" checked><span class="box"><svg viewBox="0 0 16 16"><path d="M3 8.5l3.2 3.2L13 4.8"/></svg></span>Привязка к сетке</label>`,'22 · r7 · 320 мс linear'],
  ['B13','Пункт меню','Контекстное меню и меню «Файл». Значок + текст, подсветка 6 px.',`<div><button class="b13">${ic('trash')}Удалить тело</button><button class="b13">${ic('line')}Переименовать</button></div>`,'30 · r6 · ширина ≥ 220'],
  ['B14','Вкладка документа','Верхняя строка: «Главная», проекты.',`<div class="seg" style="background:none"><button class="b14" aria-selected="false">Главная</button><button class="b14" aria-selected="true">Кронштейн</button></div>`,'28 · r14'],
- ['B15','Новый проект (с загрузкой)','Единственная большая кнопка библиотеки. После нажатия — спиннер и «Подготовка проекта…».',`<button class="b15" id="np"><span class="plus">${ic('plus')}</span><span class="spin"></span><span id="npt">Новый проект</span></button>`,'48 · r24'],
+ ['B15','Новый проект (с загрузкой)','Единственная большая кнопка библиотеки. После нажатия — спиннер и «Подготовка проекта…».',`<button class="b15" id="np"><span class="plus">${ic('plus')}</span><span class="spin"></span><span id="npt">Новый проект</span></button>`,'48 · r24 · плюс 18 + подпись по центру · при загрузке дуга-спиннер'],
 ];
 document.getElementById('buttons').innerHTML=cards.map(c=>`<div class="card"><div class="tag"><span class="num">${c[0]}</span><h3>${c[1]}</h3></div><p>${c[2]}</p><div class="stage">${c[3]}</div><div class="spec">${c[4]}</div></div>`).join('');
 
