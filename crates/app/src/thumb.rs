@@ -146,4 +146,25 @@ mod viz {
         let img = render(&[m.bodies[0].mesh()], -0.9, 0.75, 900, 700).unwrap();
         image::RgbaImage::from_raw(img.w as u32, img.h as u32, img.data).unwrap().save(out).unwrap();
     }
+
+    /// Ручная проверка: два скруглённых ребра сходятся в угле бруска (GENIX_VIZ2=путь.png).
+    #[test]
+    fn two_edges_meeting_at_a_box_corner_png() {
+        let Ok(out) = std::env::var("GENIX_VIZ2") else { return };
+        let n = |v: f64| Expr::num(v);
+        let mut d = Document::default();
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(80.0), d: n(50.0), h: n(10.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        let mut ev = Evaluator::default();
+        ev.evaluate(&d);
+        let body = ev.model().bodies[0].id;
+        let p = |x: f64, y: f64| [x, y, 10.0];
+        let edges = vec![EdgeRef::line(p(0.0, 0.0), p(80.0, 0.0)), EdgeRef::line(p(80.0, 0.0), p(80.0, 50.0))];
+        d.insert(FeatureKind::Fillet { body, edges, radius: n(5.0) });
+        ev.evaluate(&d);
+        assert!(ev.steps().iter().all(|s| s.error.is_none()), "{:?}", ev.steps().iter().map(|s| s.error.clone()).collect::<Vec<_>>());
+        let m = ev.model();
+        let img = render(&[m.bodies[0].mesh()], -0.3, 0.6, 1000, 700).unwrap();
+        image::RgbaImage::from_raw(img.w as u32, img.h as u32, img.data).unwrap().save(out).unwrap();
+        println!("volume {}", m.bodies[0].solid.volume());
+    }
 }
