@@ -53,6 +53,22 @@ impl VisualStyle {
     }
 }
 
+/// Человек, которому открыт проект (демо: хранится только на этом устройстве).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Person {
+    pub email: String,
+    /// `true` — может править, `false` — только смотреть.
+    pub editor: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Share {
+    pub path: String,
+    pub people: Vec<Person>,
+}
+
 /// Демонстрационный билет подписки на сервер; `activated` — корешок оторван.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -109,6 +125,7 @@ pub struct Settings {
     pub recent: Vec<String>,
     pub folders: Vec<ProjectFolder>,
     pub ticket: Option<Ticket>,
+    pub shares: Vec<Share>,
     pub show_left_panel: bool,
     pub show_right_panel: bool,
 }
@@ -141,6 +158,7 @@ impl Default for Settings {
             recent: Vec::new(),
             folders: Vec::new(),
             ticket: None,
+            shares: Vec::new(),
             show_left_panel: true,
             show_right_panel: true,
         }
@@ -148,6 +166,27 @@ impl Default for Settings {
 }
 
 impl Settings {
+    pub fn people_of(&self, path: &str) -> &[Person] {
+        self.shares.iter().find(|s| s.path == path).map_or(&[], |s| s.people.as_slice())
+    }
+
+    /// Добавить человека в проект (демо: приглашение никуда не отправляется).
+    pub fn add_person(&mut self, path: &str, email: &str, editor: bool) -> Result<(), &'static str> {
+        let email = email.trim().to_lowercase();
+        if !crate::home::valid_email(&email) { return Err("Некорректная почта"); }
+        if self.people_of(path).iter().any(|p| p.email == email) { return Err("Этот человек уже в проекте"); }
+        match self.shares.iter_mut().find(|s| s.path == path) {
+            Some(s) => s.people.push(Person { email, editor }),
+            None => self.shares.push(Share { path: path.to_string(), people: vec![Person { email, editor }] }),
+        }
+        Ok(())
+    }
+
+    pub fn remove_person(&mut self, path: &str, email: &str) {
+        for s in &mut self.shares { if s.path == path { s.people.retain(|p| p.email != email); } }
+        self.shares.retain(|s| !s.people.is_empty());
+    }
+
     /// Подписка на сервер оформлена (пока локальная демонстрация).
     pub fn server_active(&self) -> bool {
         self.account.is_some() && self.server_demo_account == self.account
@@ -226,6 +265,17 @@ mod tests {
         assert_eq!(s.folder_of("/x.genix"), None);
         let old: Settings = serde_json::from_str(r#"{"lang":"En"}"#).unwrap();
         assert!(old.folders.is_empty());
+    }
+
+    #[test]
+    fn people_are_added_once_validated_and_removed() {
+        let mut s = Settings::default();
+        assert_eq!(s.add_person("/a.genix", "nope", true), Err("Некорректная почта"));
+        assert_eq!(s.add_person("/a.genix", " Ann@Example.com ", true), Ok(()));
+        assert_eq!(s.add_person("/a.genix", "ann@example.com", false), Err("Этот человек уже в проекте"));
+        assert_eq!(s.people_of("/a.genix").len(), 1);
+        s.remove_person("/a.genix", "ann@example.com");
+        assert!(s.people_of("/a.genix").is_empty() && s.shares.is_empty());
     }
 
     #[test]

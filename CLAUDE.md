@@ -1,5 +1,7 @@
 # Genix — continuation guide
 
+**Interface work is bound by [docs/design/PROMPT.md](docs/design/PROMPT.md) and the numbered kit in `docs/design/genix-design-system.html` (B01–B15, I01–I06). Read both before touching UI. Push every finished stage to the feature branch with `[skip ci]`.**
+
 ## Product and implementation
 
 Native parametric CAD built in Rust, egui 0.31 / eframe / wgpu. Do not replace it with a web app. User-facing copy defaults to Russian; English and Hebrew dictionaries are in `crates/app/src/i18n_*.rs`.

@@ -211,17 +211,17 @@ pub struct App {
 
 /// Кнопка со значком из набора (нет значка — текстовый символ).
 fn icon_button(ui: &mut egui::Ui, id: &str, fallback: &str, selected: bool, tip: &str, min: egui::Vec2) -> bool {
-    let main = if selected { crate::theme::on_accent() } else { ui.visuals().text_color() };
+    let main = if selected { crate::theme::accent() } else { ui.visuals().text_color() };
     let btn = match crate::icons::icon(id, 22.0, main) {
         Some(img) => egui::Button::image(img),
         None => egui::Button::new(RichText::new(fallback).size(16.0)),
     };
     let background = ui.painter().add(egui::Shape::Noop);
-    let response = ui.add(btn.corner_radius(12).selected(selected).frame(selected).min_size(min));
+    let response = ui.add(btn.corner_radius(12).frame(false).min_size(min));
     crate::widgets::warm_tooltip(&response, tip);
     let hover = response.hovered() && !ui.input(|i| i.any_touches());
-    if !selected && hover {
-        ui.painter().set(background, egui::Shape::rect_filled(response.rect, 12.0, crate::theme::tint(20)));
+    if selected || hover {
+        ui.painter().set(background, egui::Shape::rect_filled(response.rect, 12.0, crate::theme::tint(if selected { 46 } else { 20 })));
     }
     response.clicked()
 }
@@ -1516,7 +1516,17 @@ impl App {
 
     fn toolbar(&mut self, ui: &mut egui::Ui, now: f64) {
         if let Mode::Sketch(s) = &mut self.mode {
-            let act = egui::ScrollArea::horizontal().auto_shrink([false, true]).show(ui, |ui| s.toolbar(ui)).inner;
+            let full = ui.available_rect_before_wrap();
+            let split = full.max.x - 300.0_f32.min(full.width() * 0.45);
+            // fixed row height: separators stretch to the available height, so an open-ended rect makes the bar grow
+            let mut tools = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(full.min, egui::pos2(split, full.min.y + 92.0))));
+            let row = egui::ScrollArea::horizontal().auto_shrink([false, true]).show(&mut tools, |ui| {
+                s.toolbar(ui);
+                ui.min_rect().height() + 6.0
+            }).inner;
+            let mut done = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(egui::pos2(split, full.min.y), egui::pos2(full.max.x, full.min.y + row))).layout(egui::Layout::right_to_left(egui::Align::Center)));
+            let act = s.actions(&mut done);
+            ui.allocate_rect(Rect::from_min_max(full.min, egui::pos2(full.max.x, full.min.y + row)), egui::Sense::hover());
             match act {
                 SketchAction::Finish => self.finish_sketch(true),
                 SketchAction::Cancel => self.finish_sketch(false),
@@ -1987,7 +1997,7 @@ impl App {
         let target = selected_ids.iter().copied().find(|id| !self.doc.cutter_bodies.contains(id));
         let tools: Vec<u64> = selected_ids.iter().copied().filter(|id| self.doc.cutter_bodies.contains(id)).collect();
         if let Some(target) = target {
-            if !tools.is_empty() && crate::widgets::primary_button(ui, tr("Вычесть прозрачные тела"), 220.0).clicked() {
+            if !tools.is_empty() && crate::ui_kit::b01(ui, tr("Вычесть прозрачные тела"), 220.0).clicked() {
                 self.checkpoint();
                 self.doc.insert(FeatureKind::Combine { target, tools: tools.clone(), op: BoolOp::Subtract, keep_tools: false });
                 for id in &tools { self.doc.cutter_bodies.remove(id); }
@@ -2888,13 +2898,13 @@ impl App {
                 ui.label(tr("Щёлкните плоскость начала координат или плоскую грань тела."));
                 ui.add_space(6.0);
                 for (i, pl) in ORIGIN_PLANES.iter().enumerate() {
-                    if ui.button(tf!("Плоскость {}", tr(plane_name(i)))).clicked() {
+                    if crate::ui_kit::b02(ui, &tf!("Плоскость {}", tr(plane_name(i)))).clicked() {
                         self.begin_sketch_on(*pl, now);
                         return;
                     }
                 }
                 ui.add_space(6.0);
-                if ui.button(tr("Отмена")).clicked() {
+                if crate::ui_kit::b03(ui, tr("Отмена")).clicked() {
                     self.mode = Mode::Idle;
                 }
             }
@@ -2919,7 +2929,7 @@ impl App {
                 if ui.button(tr("Не сохранять")).clicked() {
                     choice = Some(SaveChoice::Discard);
                 }
-                if ui.button(tr("Отмена")).clicked() {
+                if crate::ui_kit::b03(ui, tr("Отмена")).clicked() {
                     choice = Some(SaveChoice::Cancel);
                 }
             });

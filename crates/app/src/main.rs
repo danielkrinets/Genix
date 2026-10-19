@@ -13,6 +13,7 @@ mod home;
 mod backgrounds;
 mod mascot;
 mod ticket;
+mod ui_kit;
 mod updates;
 mod icons;
 mod trace_ui;

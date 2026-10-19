@@ -125,29 +125,6 @@ fn feedback_duration(ui: &egui::Ui, id: egui::Id, active: bool, duration: f64, l
     value
 }
 
-pub fn primary_button(ui: &mut egui::Ui, text: &str, width: f32) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 46.0), egui::Sense::click());
-    let hover = feedback(ui, response.id.with("hover"), response.hovered() && !ui.input(|i| i.any_touches()));
-    let press = feedback(ui, response.id.with("press"), response.is_pointer_button_down_on());
-    pill_fill(ui, rect.shrink(press), 23.0, hover, press);
-    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(15.5), crate::theme::on_accent());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));
-    response.on_hover_cursor(egui::CursorIcon::PointingHand)
-}
-
-/// Accent pill: soft shadow, light sheen on the upper half, hover lift and press darkening.
-pub fn pill_fill(ui: &egui::Ui, rect: egui::Rect, radius: f32, hover: f32, press: f32) {
-    let p = ui.painter();
-    let accent = crate::theme::accent();
-    p.rect_filled(rect.translate(egui::vec2(0.0, 2.0)), radius, accent.gamma_multiply(0.35));
-    p.rect_filled(rect, radius, accent);
-    let r = radius as u8;
-    let top = egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.center().y));
-    p.rect_filled(top, egui::CornerRadius { nw: r, ne: r, sw: 0, se: 0 }, Color32::from_white_alpha(28));
-    if hover > 0.0 { p.rect_filled(rect, radius, Color32::from_white_alpha((hover * 18.0) as u8)); }
-    if press > 0.0 { p.rect_filled(rect, radius, Color32::from_black_alpha((press * 40.0) as u8)); }
-}
-
 #[derive(Clone, Default)]
 struct WarmTip {
     open: Option<egui::Id>,

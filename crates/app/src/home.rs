@@ -43,7 +43,7 @@ pub struct Gate {
     msg: Option<String>,
 }
 
-fn valid_email(email: &str) -> bool {
+pub(crate) fn valid_email(email: &str) -> bool {
     let email = email.trim();
     let Some((local, host)) = email.split_once('@') else { return false };
     !local.is_empty() && host.contains('.') && !host.starts_with('.') && !host.ends_with('.')
@@ -123,15 +123,13 @@ pub fn gate_ui(ctx: &egui::Context, st: &mut Settings, g: &mut Gate) -> bool {
                         changed = g.submit(st);
                     }
                     ui.add_space(2.0);
-                    let login = egui::Button::new(RichText::new(if g.login { tr("Нет аккаунта? Зарегистрироваться") } else { tr("Уже есть аккаунт? Войти") }).color(crate::theme::accent())).frame(false);
-                    if ui.add_sized(egui::vec2(ui.available_width(), 34.0), login).clicked() {
+                    if crate::ui_kit::b03(ui, if g.login { tr("Нет аккаунта? Зарегистрироваться") } else { tr("Уже есть аккаунт? Войти") }).clicked() {
                         g.login = !g.login;
                         g.msg = None;
                         g.pass.clear();
                         g.repeat.clear();
                     }
-                    let skip = egui::Button::new(RichText::new(tr("Продолжить без аккаунта")).color(muted(ui))).frame(false);
-                    if ui.add_sized(egui::vec2(ui.available_width(), 34.0), skip).clicked() {
+                    if crate::ui_kit::b03(ui, tr("Продолжить без аккаунта")).clicked() {
                         st.account = None;
                         st.account_skipped = true;
                         st.license.get_or_insert_with(|| "DEMO".into());
@@ -158,7 +156,7 @@ pub fn gate_ui(ctx: &egui::Context, st: &mut Settings, g: &mut Gate) -> bool {
 pub(crate) fn muted(ui: &egui::Ui) -> Color32 { crate::theme::secondary(ui) }
 
 fn primary(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    crate::widgets::primary_button(ui, text, ui.available_width().min(392.0))
+    crate::ui_kit::b01(ui, text, ui.available_width().min(392.0))
 }
 
 // ------------------------------------------------------------------ главная
@@ -235,6 +233,10 @@ pub struct HomeState {
     new_project_started: Option<f64>,
     sidebar_pinned: bool,
     open_folder: Option<String>,
+    share_path: Option<String>,
+    share_email: String,
+    share_editor: bool,
+    share_msg: Option<&'static str>,
     folder_draft: String,
     folder_rename: String,
 }
@@ -493,24 +495,24 @@ fn hub_content_inner(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, pr
                             }
                         }
                         ui.add_space(12.0);
-                        if ui.button(tr("Отключить демо-подписку")).clicked() {
+                        if crate::ui_kit::b04(ui, tr("Отключить демо-подписку")).clicked() {
                             st.server_demo_account = None;
                             st.ticket = None;
                             action = HomeAction::SettingsChanged;
                         }
                     } else if st.account.is_none() {
                         ui.label(tr("Для демо-подписки войдите в аккаунт."));
-                        if ui.button(tr("Перейти в профиль")).clicked() { h.navigate(HomePage::Profile); }
+                        if crate::ui_kit::b02(ui, tr("Перейти в профиль")).clicked() { h.navigate(HomePage::Profile); }
                     } else if h.checkout {
                         ui.separator();
                         ui.label(RichText::new(tr("Подтверждение демо-покупки")).strong());
                         ui.label(tr("Деньги не списываются. Банковские данные не требуются."));
-                        if ui.button(tr("Подтвердить демо-подписку")).clicked() {
+                        if crate::ui_kit::b01(ui, tr("Подтвердить демо-подписку"), 260.0).clicked() {
                             st.server_demo_account = st.account.clone();
                             h.checkout = false;
                             action = HomeAction::SettingsChanged;
                         }
-                        if ui.button(tr("Отмена")).clicked() { h.checkout = false; }
+                        if crate::ui_kit::b03(ui, tr("Отмена")).clicked() { h.checkout = false; }
                     } else if primary(ui, tr("Купить подписку на сервер (мок)")).clicked() {
                         h.checkout = true;
                     }
@@ -600,6 +602,7 @@ fn settings_page(ui: &mut egui::Ui, st: &mut Settings, action: &mut HomeAction) 
 fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects: &[String], viewer: bool) -> HomeAction {
     let mut action = HomeAction::None;
     let mut move_to: Option<(String, Option<usize>)> = None;
+    let mut share_req: Option<String> = None;
     let folder_idx = h.open_folder.as_ref().and_then(|n| st.folders.iter().position(|f| &f.name == n));
     if folder_idx.is_none() { h.open_folder = None; }
     let ready: Vec<_> = std::mem::take(&mut *h.pending.lock().unwrap());
@@ -652,7 +655,7 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
                     h.new_project_started = Some(ui.input(|i| i.time));
                     ui.ctx().request_repaint();
                 }
-                if !cfg!(target_os = "ios") && ui.add(egui::Button::new(tr("Открыть файл…")).min_size(egui::vec2(130.0, 42.0))).clicked() {
+                if !cfg!(target_os = "ios") && crate::ui_kit::b02(ui, tr("Открыть файл…")).clicked() {
                     action = HomeAction::Open;
                 }
             }
@@ -667,13 +670,8 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
             ui.painter().circle_stroke(center,7.0,stroke);
             ui.painter().line_segment([center+egui::vec2(5.0,5.0),center+egui::vec2(10.0,10.0)],stroke);
             if !h.search.is_empty() && ui.button(tr("Очистить")).clicked() { h.search.clear(); }
-            let filters_selected = h.filters_open || h.filters.active();
             let filters_label = if h.filters.active() { format!("{} •", tr("Фильтры")) } else { tr("Фильтры").into() };
-            // This compact control sits directly on the accent fill. Keep its
-            // label white even when the global accent contrast heuristic
-            // chooses dark text for larger primary buttons.
-            let filters_text = RichText::new(filters_label).color(if filters_selected { egui::Color32::WHITE } else { ui.visuals().text_color() });
-            if ui.add(egui::Button::new(filters_text).corner_radius(12).selected(filters_selected)).clicked() { h.filters_open = !h.filters_open; }
+            if crate::ui_kit::b08(ui, &filters_label, h.filters_open || h.filters.active()).clicked() { h.filters_open = !h.filters_open; }
         });
         let openness = crate::widgets::feedback(ui, ui.id().with("project-filters"), h.filters_open);
         if openness > 0.0 {
@@ -724,7 +722,7 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
             folders_section(ui, h, st, &mut action);
         }
         let thumbs = &h.thumbs;
-        let card = |ui: &mut egui::Ui, key: &str, title: &str, sub: &str| -> egui::Response {
+        let card = |ui: &mut egui::Ui, key: &str, title: &str, sub: &str, people: usize| -> egui::Response {
             let (rect, resp) = ui.allocate_exact_size(egui::vec2(240.0, 160.0), egui::Sense::click());
             let v = ui.visuals();
             let hover = resp.hovered() && !ui.input(|i| i.any_touches());
@@ -742,6 +740,14 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
                 p.image(t.id(), r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
             } else {
                 p.text(area.center(), egui::Align2::CENTER_CENTER, if h.completed.contains(key) { tr("Предпросмотр недоступен") } else { tr("Предпросмотр…") }, egui::FontId::proportional(12.0), muted(ui));
+            }
+            if people > 0 {
+                let chip = egui::Rect::from_min_size(area.right_top() + egui::vec2(-48.0, 6.0), egui::vec2(42.0, 20.0));
+                p.rect_filled(chip, 10.0, crate::theme::accent());
+                if let Some(icon) = crate::icons::icon("profile", 13.0, crate::theme::on_accent()) {
+                    icon.paint_at(ui, egui::Rect::from_center_size(chip.left_center() + egui::vec2(11.0, 0.0), egui::vec2(13.0, 13.0)));
+                }
+                p.text(chip.right_center() - egui::vec2(10.0, 0.0), egui::Align2::CENTER_CENTER, people.to_string(), egui::FontId::proportional(12.0), crate::theme::on_accent());
             }
             let text = |text: &str, y: f32, size: f32, color: Color32| {
                 let mut job = egui::text::LayoutJob::simple(text.into(), egui::FontId::proportional(size), color, rect.width() - 24.0);
@@ -779,12 +785,13 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
             for p in shown {
                 let Some(info) = h.infos.get(p).cloned() else { continue };
                 let sub = if info.exists { format!("{} · {}", info.time, info.steps.map(|n| tf!("шагов: {}", n)).unwrap_or_else(|| tr("не читается").into())) } else { tr("файл не найден").into() };
-                let r = card(ui, &info.preview_key, &info.name, &sub).on_hover_text(p.as_str());
+                let r = card(ui, &info.preview_key, &info.name, &sub, st.people_of(p).len()).on_hover_text(p.as_str());
                 if r.clicked() && info.exists {
                     action = HomeAction::OpenPath(PathBuf::from(p));
                 }
                 r.context_menu(|ui| {
                     if cfg!(target_os="macos") && info.exists && crate::app::menu_item(ui, "search", tr("Показать в Finder")) {crate::desktop::reveal(std::path::Path::new(p)); ui.close_menu();}
+                    if info.exists && crate::app::menu_item(ui, "profile", tr("Поделиться…")) { share_req = Some(p.clone()); ui.close_menu(); }
                     ui.menu_button(tr("Переместить в папку"), |ui| {
                         if st.folders.is_empty() { ui.label(RichText::new(tr("Папок пока нет")).color(muted(ui))); }
                         for (i, f) in st.folders.iter().enumerate() {
@@ -808,7 +815,7 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
         ui.horizontal_wrapped(|ui| {
             ui.add_space(24.0);
             for (i, (name, sub)) in [(tr("Кронштейн (параметрический)"), tr("пластина с отверстиями и стойка")), (tr("Втулка (вращение)"), tr("деталь вращения"))].into_iter().enumerate() {
-                if card(ui, &format!("ex:{i}"), name, sub).clicked() {
+                if card(ui, &format!("ex:{i}"), name, sub, 0).clicked() {
                     action = HomeAction::Example(i);
                 }
             }
@@ -818,7 +825,67 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
         st.move_to_folder(&path, to);
         action = HomeAction::SettingsChanged;
     }
+    if share_req.is_some() {
+        h.share_path = share_req;
+        h.share_msg = None;
+    }
+    share_dialog(ui.ctx(), h, st, &mut action);
     action
+}
+
+/// Окно «Поделиться»: добавить человека в проект, сменить права, убрать. Демо — ничего не отправляется.
+fn share_dialog(ctx: &egui::Context, h: &mut HomeState, st: &mut Settings, action: &mut HomeAction) {
+    let Some(path) = h.share_path.clone() else { return };
+    let name = h.infos.get(&path).map_or_else(|| path.clone(), |i| i.name.clone());
+    let mut open = true;
+    let mut remove: Option<String> = None;
+    egui::Window::new(tf!("Доступ к проекту: {}", name)).open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).fixed_size([440.0, 0.0]).show(ctx, |ui| {
+        ui.label(RichText::new(tr("Демо: приглашения не отправляются, список людей хранится только на этом устройстве.")).color(muted(ui)).small());
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut h.share_email).hint_text(RichText::new(tr("Почта человека")).color(muted(ui))).margin(egui::Margin::symmetric(12, 10)).desired_width(190.0).char_limit(254));
+            egui::ComboBox::from_id_salt("share-role").selected_text(if h.share_editor { tr("Может править") } else { tr("Только просмотр") }).show_ui(ui, |ui| {
+                ui.selectable_value(&mut h.share_editor, true, tr("Может править"));
+                ui.selectable_value(&mut h.share_editor, false, tr("Только просмотр"));
+            });
+            if crate::ui_kit::b02(ui, tr("Добавить")).clicked() {
+                match st.add_person(&path, &h.share_email, h.share_editor) {
+                    Ok(()) => { h.share_email.clear(); h.share_msg = None; *action = HomeAction::SettingsChanged; }
+                    Err(e) => h.share_msg = Some(e),
+                }
+            }
+        });
+        if let Some(msg) = h.share_msg { ui.colored_label(ui.visuals().error_fg_color, tr(msg)); }
+        ui.add_space(10.0);
+        let owner = st.account.clone().unwrap_or_else(|| tr("Вы").to_string());
+        let rows: Vec<(String, String, bool)> = std::iter::once((owner, tr("Владелец").to_string(), false)).chain(st.people_of(&path).iter().map(|p| (p.email.clone(), tr(if p.editor { "Может править" } else { "Только просмотр" }).to_string(), true))).collect();
+        for (email, role, removable) in rows {
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
+                ui.painter().circle_filled(rect.center(), 16.0, crate::theme::tint(55));
+                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, email.chars().next().map_or('?', |c| c.to_ascii_uppercase()), egui::FontId::proportional(14.0), crate::theme::accent());
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    ui.label(email.as_str());
+                    ui.label(RichText::new(role).color(muted(ui)).small());
+                });
+                if removable {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if crate::ui_kit::b03(ui, tr("Убрать")).clicked() { remove = Some(email.clone()); }
+                    });
+                }
+            });
+        }
+    });
+    if let Some(email) = remove {
+        st.remove_person(&path, &email);
+        *action = HomeAction::SettingsChanged;
+    }
+    if !open {
+        h.share_path = None;
+        h.share_email.clear();
+        h.share_msg = None;
+    }
 }
 
 /// Папки над списком моделей: карточки и создание новой.
@@ -843,7 +910,7 @@ fn folders_section(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, acti
         let name = h.folder_draft.trim().to_string();
         let free = !name.is_empty() && !st.folders.iter().any(|f| f.name == name);
         let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        if (ui.add_enabled(free, egui::Button::new(tr("Создать папку")).corner_radius(12).min_size(egui::vec2(130.0, 38.0))).clicked() || enter) && free {
+        if (ui.add_enabled_ui(free, |ui| crate::ui_kit::b02(ui, tr("Создать папку"))).inner.clicked() || enter) && free {
             st.folders.push(crate::settings::ProjectFolder { name, ..Default::default() });
             h.folder_draft.clear();
             *action = HomeAction::SettingsChanged;
@@ -871,12 +938,12 @@ fn folder_settings(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, i: u
                 ui.add(egui::TextEdit::singleline(&mut h.folder_rename).margin(egui::Margin::symmetric(12, 8)).desired_width(200.0).char_limit(60));
                 let name = h.folder_rename.trim().to_string();
                 let free = !name.is_empty() && name != st.folders[i].name && !st.folders.iter().any(|f| f.name == name);
-                if ui.add_enabled(free, egui::Button::new(tr("Переименовать")).corner_radius(12)).clicked() {
+                if ui.add_enabled_ui(free, |ui| crate::ui_kit::b02(ui, tr("Переименовать"))).inner.clicked() {
                     st.folders[i].name = name.clone();
                     h.open_folder = Some(name);
                     *action = HomeAction::SettingsChanged;
                 }
-                if ui.add(egui::Button::new(tr("Удалить папку")).corner_radius(12)).on_hover_text(tr("Модели останутся в библиотеке")).clicked() {
+                if crate::ui_kit::b04(ui, tr("Удалить папку")).on_hover_text(tr("Модели останутся в библиотеке")).clicked() {
                     st.folders.remove(i);
                     h.open_folder = None;
                     *action = HomeAction::SettingsChanged;
@@ -928,7 +995,7 @@ fn new_project_button(ui: &mut egui::Ui, loading: bool) -> egui::Response {
     let hover = crate::widgets::feedback(ui, response.id.with("hover"), response.hovered() && !loading);
     let press = crate::widgets::feedback(ui, response.id.with("press"), response.is_pointer_button_down_on());
     let paint = rect.shrink(press * 1.5);
-    crate::widgets::pill_fill(ui, paint, 24.0, hover, press);
+    crate::ui_kit::pill_fill(ui, paint, 24.0, hover, press);
     let color = crate::theme::on_accent();
     if loading {
         let center = paint.left_center() + egui::vec2(25.0, 0.0);

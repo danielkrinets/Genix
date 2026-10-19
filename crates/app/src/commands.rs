@@ -558,7 +558,7 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
         if ui.add(ok).on_hover_text("Enter").clicked() {
             result = CmdResult::Ok;
         }
-        if ui.button(tr("Отмена")).on_hover_text("Esc").clicked() {
+        if crate::ui_kit::b03(ui, tr("Отмена")).on_hover_text("Esc").clicked() {
             result = CmdResult::Cancel;
         }
     });

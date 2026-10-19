@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="ru" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Genix — дизайн-система (flat iOS 18)</title>
+<style>
+:root{
+  --accent:#0078d4; --on-accent:#fff; --ink:var(--accent);
+  --canvas:#f2f2f7; --surface:#fff; --inset:#ebebf0; --line:#dcdce1;
+  --text:#1c1c1e; --muted:#63636d; --red:#d93a4d;
+  --fill:rgba(60,60,67,.08); --fill-hover:rgba(60,60,67,.14);
+  --ease:cubic-bezier(.23,1,.32,1);
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;
+}
+[data-theme=dark]{
+  --ink:color-mix(in srgb,var(--accent) 55%,#fff);
+  --canvas:#2a3240; --surface:#364150; --inset:#273040; --line:#46536a;
+  --text:#f5f5f7; --muted:#aeb4c2; --red:#ff7a8a;
+  --fill:rgba(255,255,255,.09); --fill-hover:rgba(255,255,255,.16);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--canvas);color:var(--text);font:14px/1.4 var(--font)}
+header{position:sticky;top:0;z-index:5;display:flex;gap:16px;align-items:center;flex-wrap:wrap;padding:14px 28px;background:color-mix(in srgb,var(--canvas) 88%,transparent);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
+header h1{font-size:18px;margin:0;font-weight:650}
+header .sp{flex:1}
+.swatches{display:flex;gap:8px}
+.sw{width:22px;height:22px;border-radius:50%;border:2px solid transparent;cursor:pointer;transition:transform .16s var(--ease)}
+.sw:active{transform:scale(.88)} .sw[aria-pressed=true]{border-color:var(--text)}
+main{max-width:1180px;margin:0 auto;padding:28px}
+h2{font-size:22px;margin:36px 0 6px} .lead{color:var(--muted);margin:0 0 18px;max-width:760px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px}
+.card{background:var(--surface);border-radius:22px;padding:18px 18px 16px;display:flex;flex-direction:column;gap:12px}
+.card .tag{display:flex;gap:10px;align-items:center}
+.num{font:600 12px/1 ui-monospace,monospace;background:var(--accent);color:var(--on-accent);border-radius:8px;padding:5px 7px}
+.card h3{margin:0;font-size:15px}
+.card p{margin:0;color:var(--muted);font-size:13px}
+.stage{background:var(--inset);border-radius:16px;padding:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;min-height:76px}
+.spec{font:12px ui-monospace,monospace;color:var(--muted)}
+/* ---------- buttons ---------- */
+button{font:inherit;color:inherit;cursor:pointer;border:0;transition:background .16s var(--ease),transform .16s var(--ease),filter .16s var(--ease)}
+button:active:not(:disabled){transform:scale(.97)}
+button:disabled{opacity:.4;cursor:default}
+.b01{height:46px;padding:0 26px;border-radius:23px;background:var(--accent);color:var(--on-accent);font-weight:600;font-size:15.5px}
+.b01:hover:not(:disabled){filter:brightness(1.08)}
+.b02{height:40px;padding:0 18px;border-radius:14px;background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--ink);font-weight:600}
+.b02:hover:not(:disabled){background:color-mix(in srgb,var(--accent) 22%,transparent)}
+.b03{height:34px;padding:0 12px;border-radius:12px;background:none;color:var(--ink);font-weight:500}
+.b03:hover:not(:disabled){background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.b04{height:40px;padding:0 18px;border-radius:14px;background:color-mix(in srgb,var(--red) 14%,transparent);color:var(--red);font-weight:600}
+.b04:hover:not(:disabled){background:color-mix(in srgb,var(--red) 22%,transparent)}
+.b05,.b06{width:36px;height:34px;border-radius:12px;background:none;display:grid;place-items:center}
+.b05:hover,.b06:hover{background:var(--fill)}
+.b06[aria-pressed=true]{background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent)}
+.ic{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.b07{width:66px;height:66px;border-radius:10px;background:none;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:11.5px}
+.b07 .ic{width:30px;height:30px}
+.b07:hover{background:var(--fill)} .b07[aria-pressed=true]{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent)}
+.b08{height:28px;padding:0 12px;border-radius:14px;background:var(--fill);font-size:13px}
+.b08:hover{background:var(--fill-hover)} .b08[aria-pressed=true]{background:var(--accent);color:var(--on-accent)}
+.seg{display:inline-flex;background:var(--fill);border-radius:12px;padding:3px}
+.seg button{height:30px;padding:0 14px;border-radius:9px;background:none;font-size:13px}
+.seg button[aria-pressed=true]{background:var(--surface);box-shadow:0 1px 3px rgba(0,0,0,.18);font-weight:600}
+.b10{height:28px;padding:0 12px;border-radius:10px;background:var(--fill);font-size:13px}
+.b10:hover:not(:disabled){background:var(--fill-hover)}
+.sw-toggle{width:46px;height:28px;border-radius:14px;background:var(--fill-hover);position:relative;padding:0}
+.sw-toggle::after{content:"";position:absolute;left:3px;top:3px;width:22px;height:22px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);transition:transform .2s var(--ease)}
+.sw-toggle[aria-checked=true]{background:var(--accent)} .sw-toggle[aria-checked=true]::after{transform:translateX(18px)}
+.chk{display:inline-flex;align-items:center;gap:9px;cursor:pointer}
+.chk input{display:none}
+.chk .box{width:22px;height:22px;border-radius:7px;background:var(--fill-hover);display:grid;place-items:center;transition:background .16s}
+.chk .box svg{width:14px;height:14px;stroke:var(--on-accent);fill:none;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:20;stroke-dashoffset:20;transition:stroke-dashoffset .32s linear}
+.chk input:checked+.box{background:var(--accent)} .chk input:checked+.box svg{stroke-dashoffset:0}
+.b13{display:flex;align-items:center;gap:10px;width:230px;height:30px;padding:0 10px;border-radius:6px;background:none;text-align:left}
+.b13:hover{background:var(--accent);color:var(--on-accent)}
+.b14{height:28px;padding:0 16px;border-radius:14px;background:none;font-weight:500}
+.b14[aria-selected=true]{background:var(--accent);color:var(--on-accent)}
+.b15{height:48px;padding:0 24px 0 18px;border-radius:24px;background:var(--accent);color:var(--on-accent);font-weight:600;font-size:15px;display:inline-flex;align-items:center;gap:10px}
+.spin{width:16px;height:16px;border-radius:50%;border:2.4px solid rgba(255,255,255,.35);border-top-color:#fff;animation:sp .8s linear infinite;display:none}
+.b15.loading .spin{display:block} .b15.loading .plus{display:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+input[type=text],input[type=password]{height:40px;padding:0 14px;border-radius:12px;border:0;background:var(--fill);color:var(--text);font:inherit;font-size:16px;width:220px;outline:none}
+input:focus{box-shadow:0 0 0 2px var(--accent)}
+/* ---------- interactive ---------- */
+.wide{grid-column:1/-1}
+#waves{width:100%;height:240px;border-radius:16px;background:#000;display:block}
+#slime{width:300px;height:210px;background:var(--inset);border-radius:16px}
+.tip{position:fixed;z-index:50;pointer-events:none;background:var(--accent);color:var(--on-accent);border-radius:16px;padding:5px 9px;font-size:11.5px;font-weight:500;display:flex;gap:7px;align-items:center;opacity:0;transform:translate(-50%,-100%);transition:left .3s var(--ease),top .3s var(--ease),opacity .12s}
+.tip kbd{font:inherit;font-size:10px;background:rgba(255,255,255,.2);border-radius:5px;padding:1px 5px}
+.tip.on{opacity:1}
+.ticket{position:relative;width:420px;height:200px;max-width:100%}
+.ticket .body{position:absolute;inset:0 130px 0 0;background:color-mix(in srgb,var(--accent) 14%,var(--surface));border-radius:16px 0 0 16px;padding:22px 24px}
+.ticket .stub{position:absolute;right:0;top:0;bottom:0;width:130px;background:color-mix(in srgb,var(--accent) 24%,var(--surface));border-radius:0 16px 16px 0;transform-origin:0 100%;padding:18px 14px;font-size:12px;cursor:grab;user-select:none;touch-action:none}
+.ticket .holes{position:absolute;right:129px;top:10px;bottom:10px;width:6px;background:radial-gradient(circle,var(--inset) 3px,transparent 3.5px) 0 0/6px 16px repeat-y}
+.folder{position:relative;width:220px;height:150px;margin-top:34px}
+.folder .back{position:absolute;inset:0;border-radius:18px;background:color-mix(in srgb,var(--accent) 22%,var(--surface))}
+.folder .back::before{content:"";position:absolute;left:0;top:-14px;width:88px;height:30px;border-radius:12px 12px 0 0;background:inherit}
+.folder .pill{position:absolute;left:18px;right:18px;height:22px;border-radius:11px;background:var(--surface);font-size:12px;padding:3px 10px;top:74px;transition:top .5s var(--ease)}
+.folder:hover .pill:nth-child(2){top:12px}.folder:hover .pill:nth-child(3){top:30px;transition-delay:.05s}.folder:hover .pill:nth-child(4){top:48px;transition-delay:.1s}
+.folder .flap{position:absolute;left:0;right:0;bottom:0;top:66px;border-radius:18px;background:color-mix(in srgb,var(--accent) 10%,var(--surface));padding:14px 16px;transition:transform .4s var(--ease);box-shadow:0 -6px 16px rgba(0,0,0,.12)}
+.folder:hover .flap{transform:translateY(6px)}
+.tree{--r:8px;position:relative;padding-left:14px;width:240px}
+.tree .trunk{position:absolute;left:0;top:34px;bottom:12px;width:1.5px;background:var(--line)}
+.tree .row{position:relative;height:32px;padding-left:36px;display:flex;align-items:center;cursor:pointer;color:var(--muted);font-size:14px}
+.tree .row svg{position:absolute;left:-14px;top:-8px;overflow:visible}
+.tree .row svg path{fill:none;stroke:var(--line);stroke-width:1.5}
+.tree .row[aria-current=true]{color:var(--accent);font-weight:600} .tree .row[aria-current=true] svg path{stroke:var(--accent)}
+.rules li{margin:6px 0}
+code{font:12.5px ui-monospace,monospace;background:var(--fill);padding:1px 6px;border-radius:6px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Genix · дизайн-система</h1><span class="spec">flat iOS 18 · v1</span>
+  <span class="sp"></span>
+  <div class="swatches" id="swatches"></div>
+  <div class="seg" id="theme"><button aria-pressed="true" data-t="light">Светлая</button><button aria-pressed="false" data-t="dark">Тёмная</button></div>
+</header>
+<main>
+<h2>Как этим пользоваться</h2>
+<p class="lead">У каждой кнопки и каждого интерактивного элемента есть номер (<span class="num">B01</span>, <span class="num">I02</span>…). Говори мне «на регистрацию — B01, под ней — B03», и я использую именно этот вариант. Новые кнопки без номера из этой страницы я не придумываю.</p>
+
+<h2>Кнопки</h2>
+<p class="lead">Плоские, без обводок и градиентов: заливка, радиус, одно состояние нажатия (сжатие 3 %, 160 мс). Наведение — на 1 ступень светлее. Белый текст на акценте.</p>
+<div class="grid" id="buttons"></div>
+
+<h2>Интерактивные элементы</h2>
+<p class="lead">Живые детали Genix. Они подчинены работе с моделью: не мешают вводу, при «уменьшении движения» замирают.</p>
+<div class="grid" id="inter"></div>
+
+<h2>Правила</h2>
+<div class="card"><ul class="rules" style="margin:0;padding-left:18px">
+<li>Основное действие экрана — одна кнопка <b>B01</b>. Рядом не больше одной <b>B02</b>.</li>
+<li>Ссылки и «Отмена» — <b>B03</b>. Всё необратимое — <b>B04</b>, и только после подтверждения.</li>
+<li>Значки без подписи — <b>B05</b>/<b>B06</b> с подсказкой <b>I03</b>. Включённое состояние — тонировка акцентом, а не сплошная синяя плашка.</li>
+<li>Панели инструментов — <b>B07</b>. Фильтры и теги — <b>B08</b>. Переключатель видов — <b>B09</b>.</li>
+<li>Панель не должна обрезать кнопку: главное действие закрепляется справа и не уезжает в прокрутку.</li>
+<li>Радиусы: кнопка 12–14, таблетка половина высоты, карточка 20, поверхность 22, пункт меню 6.</li>
+</ul></div>
+</main>
+<div class="tip" id="tip"></div>
+
+<script>
+const ACC={Синий:'#0078d4',Индиго:'#5846cb',Бирюзовый:'#007577',Оранжевый:'#c25a00',Розовый:'#bc2a53'};
+const I={
+ plus:'<path d="M12 5v14M5 12h14"/>',orbit:'<circle cx="12" cy="12" r="3"/><path d="M5 12a7 7 0 0 1 12-5M19 12a7 7 0 0 1-12 5"/>',
+ fit:'<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',panel:'<rect x="4" y="5" width="16" height="14" rx="3"/><path d="M10 5v14"/>',
+ line:'<path d="M5 19L19 5"/>',rect:'<rect x="5" y="6" width="14" height="12" rx="2"/>',circle:'<circle cx="12" cy="12" r="7"/>',trash:'<path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12"/>'
+};
+const ic=n=>`<svg class="ic" viewBox="0 0 24 24">${I[n]}</svg>`;
+const cards=[
+ ['B01','Главная кнопка (таблетка)','Одно главное действие экрана: «Зарегистрироваться», «Завершить чертёж», «Купить подписку». Высота 46, радиус 23.',`<button class="b01">Зарегистрироваться</button><button class="b01" disabled>Недоступно</button>`,'46 · r23 · плоская заливка accent · белый текст · без теней и градиентов'],
+ ['B02','Вторичная (тонированная)','Второе действие рядом с главным: «Открыть файл…», «Создать папку», «Переименовать». Высота 40, радиус 14.',`<button class="b02">Открыть файл…</button><button class="b02" disabled>Создать папку</button>`,'40 · r14 · accent 18 % · текст светлее в тёмной теме'],
+ ['B03','Текстовая (ссылка)','«Уже есть аккаунт? Войти», «Отмена», «Все модели». Без заливки.',`<button class="b03">Уже есть аккаунт? Войти</button><button class="b03">Отмена</button>`,'34 · r12 · без фона'],
+ ['B04','Опасная (тонированная красная)','«Удалить папку», «Убрать тело». Только с подтверждением.',`<button class="b04">Удалить папку</button>`,'40 · r14 · red 14 %'],
+ ['B05','Значок (без состояния)','Нижняя панель вида: вписать, масштаб, снимок. Подсказка I03 обязательна.',`<button class="b05" data-tip="Вписать модель" data-key="F">${ic('fit')}</button><button class="b05" data-tip="Приблизить">${ic('plus')}</button><button class="b05" data-tip="Снимок" data-key="⇧⌘P">${ic('circle')}</button>`,'36×34 · r12 · иконка 20'],
+ ['B06','Значок-переключатель','Панели слева/справа, сетка, плоскости. Включено = тонировка акцентом.',`<button class="b06" aria-pressed="true" data-tip="Левая панель">${ic('panel')}</button><button class="b06" aria-pressed="false" data-tip="Сетка">${ic('rect')}</button>`,'36×34 · вкл: accent 18 % + иконка accent'],
+ ['B07','Плитка инструмента','Верхняя панель редактора и чертежа: значок над подписью.',`<button class="b07" aria-pressed="false">${ic('line')}<span>Линия</span></button><button class="b07" aria-pressed="true">${ic('rect')}<span>Прямоуг.</span></button><button class="b07" aria-pressed="false">${ic('circle')}<span>Окружн.</span></button>`,'66 высота · r10 · иконка 30'],
+ ['B08','Чип','Фильтры, шаги истории, теги.',`<button class="b08" aria-pressed="false">За неделю</button><button class="b08" aria-pressed="true">Только читаемые</button>`,'28 · r14'],
+ ['B09','Сегмент','Светлая/тёмная, стиль отображения, вкладки настроек.',`<div class="seg"><button aria-pressed="true">Тело</button><button aria-pressed="false">Каркас</button><button aria-pressed="false">Оба</button></div>`,'30 · r12'],
+ ['B10','Компактная','Узкие панели: ограничения чертежа, «Изменить…», «Сохранить вид».',`<button class="b10">Горизонт.</button><button class="b10">Параллельно</button><button class="b10" disabled>Равно</button>`,'28 · r10'],
+ ['B11','Переключатель','Включить/выключить настройку (автосохранение папки).',`<button class="sw-toggle" role="switch" aria-checked="true" onclick="this.setAttribute('aria-checked',this.getAttribute('aria-checked')!=='true')"></button>`,'46×28'],
+ ['B12','Галочка','Список параметров. Штрих рисуется ровно 320 мс.',`<label class="chk"><input type="checkbox" checked><span class="box"><svg viewBox="0 0 16 16"><path d="M3 8.5l3.2 3.2L13 4.8"/></svg></span>Привязка к сетке</label>`,'22 · r7 · 320 мс linear'],
+ ['B13','Пункт меню','Контекстное меню и меню «Файл». Значок + текст, подсветка 6 px.',`<div><button class="b13">${ic('trash')}Удалить тело</button><button class="b13">${ic('line')}Переименовать</button></div>`,'30 · r6 · ширина ≥ 220'],
+ ['B14','Вкладка документа','Верхняя строка: «Главная», проекты.',`<div class="seg" style="background:none"><button class="b14" aria-selected="false">Главная</button><button class="b14" aria-selected="true">Кронштейн</button></div>`,'28 · r14'],
+ ['B15','Новый проект (с загрузкой)','Единственная большая кнопка библиотеки. После нажатия — спиннер и «Подготовка проекта…».',`<button class="b15" id="np"><span class="plus">${ic('plus')}</span><span class="spin"></span><span id="npt">Новый проект</span></button>`,'48 · r24'],
+];
+document.getElementById('buttons').innerHTML=cards.map(c=>`<div class="card"><div class="tag"><span class="num">${c[0]}</span><h3>${c[1]}</h3></div><p>${c[2]}</p><div class="stage">${c[3]}</div><div class="spec">${c[4]}</div></div>`).join('');
+
+/* interactive cards */
+document.getElementById('inter').innerHTML=`
+<div class="card"><div class="tag"><span class="num">I01</span><h3>Монстр-слизь</h3></div><p>Следит за курсором. Когда фокус в поле пароля — отворачивается и закрывает глаза. Живёт на экране регистрации слева внизу; при росте окна растягивается пропорционально.</p>
+<div class="stage" style="flex-direction:column;align-items:flex-start"><svg id="slime" viewBox="0 0 300 210"></svg><input type="password" id="pw" placeholder="Нажми сюда: пароль"></div><div class="spec">Ширина = 40 % окна, 220–560 px</div></div>
+<div class="card wide"><div class="tag"><span class="num">I02</span><h3>Текст-фон, реагирующий на мышь</h3></div><p>Сетка букв «Genix» (Pattern Waves) на чёрном: волна по времени, подсветка и кольца вокруг курсора. Фон библиотеки и регистрации. Не перехватывает ввод.</p><canvas id="waves"></canvas><div class="spec">Радиус света 130 px · кольца до 16 штук · ≤ 10 Гц в библиотеке, 30 Гц в регистрации</div></div>
+<div class="card"><div class="tag"><span class="num">I03</span><h3>Тёплая подсказка</h3></div><p>Первая — через 400 мс, следующие без задержки (300 мс «тёплого окна»). Одна плашка скользит между кнопками.</p><div class="stage"><button class="b05" data-tip="Вращение" data-key="O">${ic('orbit')}</button><button class="b05" data-tip="Вписать модель" data-key="F">${ic('fit')}</button><button class="b05" data-tip="Приблизить" data-key="+">${ic('plus')}</button><button class="b05" data-tip="Сетка" data-key="G">${ic('rect')}</button></div></div>
+<div class="card"><div class="tag"><span class="num">I04</span><h3>Билет (отрывной корешок)</h3><p></p></div><p>Выдаётся за (мок) подписку. Потяни корешок вправо-вниз: за порогом отрывается и «Ожидает активации» меняется на «Активирована (демо)».</p><div class="stage"><div class="ticket" id="tk"><div class="body"><b style="font-size:20px">Genix Server</b><div class="spec" style="margin-top:6px">Подписка · демо</div><div style="margin-top:40px;color:var(--accent);font-weight:600">GX-004217</div><div class="spec" id="tkst">Ожидает активации (демо)</div></div><div class="holes"></div><div class="stub" id="stub"><b style="color:var(--accent)">АКТИВАЦИЯ</b><div style="margin-top:8px">Потяните и оторвите</div></div></div></div></div>
+<div class="card"><div class="tag"><span class="num">I05</span><h3>Папка проектов</h3></div><p>Наведи: створка приоткрывается, выглядывают первые модели.</p><div class="stage" style="padding-top:40px"><div class="folder"><div class="back"></div><div class="pill">Кронштейн</div><div class="pill">Втулка</div><div class="pill">Корпус</div><div class="flap"><b>Работа</b><div class="spec">моделей: 3 · ☁ авто</div></div></div></div></div>
+<div class="card"><div class="tag"><span class="num">I06</span><h3>Дерево с ветками</h3></div><p>Ствол под стрелкой, изогнутая ветка к каждой строке, акцентная линия «доезжает» до выбранной.</p><div class="stage"><div class="tree" id="tree"><div class="trunk"></div></div></div></div>`;
+
+/* theme + accent */
+const sw=document.getElementById('swatches');
+Object.entries(ACC).forEach(([n,c],i)=>{const b=document.createElement('button');b.className='sw';b.style.background=c;b.title=n;b.setAttribute('aria-pressed',i==0);b.onclick=()=>{document.documentElement.style.setProperty('--accent',c);[...sw.children].forEach(x=>x.setAttribute('aria-pressed',x===b))};sw.appendChild(b)});
+document.querySelectorAll('#theme button').forEach(b=>b.onclick=()=>{document.documentElement.dataset.theme=b.dataset.t;document.querySelectorAll('#theme button').forEach(x=>x.setAttribute('aria-pressed',x===b))});
+document.body.addEventListener('click',e=>{const t=e.target.closest('.b06,.b07,.b08');if(t)t.setAttribute('aria-pressed',t.getAttribute('aria-pressed')!=='true');const s=e.target.closest('.seg:not(#theme) button');if(s&&!s.classList.contains('b14')){[...s.parentNode.children].forEach(x=>x.setAttribute('aria-pressed',x===s))}const tab=e.target.closest('.b14');if(tab){[...tab.parentNode.children].forEach(x=>x.setAttribute('aria-selected',x===tab))}});
+document.getElementById('np').onclick=function(){this.classList.add('loading');document.getElementById('npt').textContent='Подготовка проекта…';setTimeout(()=>{this.classList.remove('loading');document.getElementById('npt').textContent='Новый проект'},1400)};
+
+/* I03 warm tooltip */
+const tip=document.getElementById('tip');let warmUntil=0,openFor=null,timer;
+document.addEventListener('pointerover',e=>{const t=e.target.closest('[data-tip]');if(!t)return;clearTimeout(timer);const show=()=>{const r=t.getBoundingClientRect();tip.innerHTML=t.dataset.tip+(t.dataset.key?`<kbd>${t.dataset.key}</kbd>`:'');tip.style.left=r.left+r.width/2+'px';tip.style.top=r.top-6+'px';tip.classList.add('on');openFor=t};if(performance.now()<warmUntil||openFor)show();else timer=setTimeout(show,400)});
+document.addEventListener('pointerout',e=>{const t=e.target.closest('[data-tip]');if(!t)return;clearTimeout(timer);tip.classList.remove('on');openFor=null;warmUntil=performance.now()+300});
+
+/* I01 slime */
+const sl=document.getElementById('slime'),pw=document.getElementById('pw');let mx=300,my=100,shy=0,shyT=0;
+document.addEventListener('pointermove',e=>{const r=sl.getBoundingClientRect();mx=e.clientX-r.left;my=e.clientY-r.top});
+pw.onfocus=()=>shyT=1;pw.onblur=()=>shyT=0;
+function drawSlime(t){shy+=(shyT-shy)*.14;const gx=150,gy=190,w=220,h=136,lean=-.1*w*shy;let d='';
+ for(let k=0;k<=40;k++){const a=Math.PI*k/40,s=Math.sin(a);const wob=Math.sin(t/620+a*3)*.015;const x=gx+.5*w*Math.cos(a)*(1+wob)+lean*s;const y=gy-h*(1+Math.sin(t/550)*.025)*Math.pow(s,.75);d+=(k?'L':'M')+x.toFixed(1)+' '+y.toFixed(1)}
+ const ey=gy-.45*h,er=.085*w;let eyes='';
+ [-1,1].forEach(sd=>{const ex=gx+lean*.9+.16*w*(1-.2*shy)*sd;const dx=mx-ex,dy=my-ey,len=Math.hypot(dx,dy)||1,m=Math.min(len*.06,er*.45);const px=(dx/len*m)*(1-shy)+(-er*.5)*shy,py=dy/len*m*(1-shy);
+  eyes+=`<ellipse cx="${ex}" cy="${ey}" rx="${er*(1-.3*shy)}" ry="${er}" fill="#fff"/><circle cx="${ex+px}" cy="${ey+py}" r="${er*.5}" fill="#161a24"/><rect x="${ex-er}" y="${ey-er}" width="${er*2}" height="${er*2*Math.max(shy,(t%4500<120)?1:0)}" fill="var(--accent)" clip-path="inset(0)"/>`});
+ sl.innerHTML=`<ellipse cx="${gx}" cy="${gy}" rx="${w*.62}" ry="9" fill="var(--accent)" opacity=".25"/><path d="${d}Z" fill="var(--accent)" opacity=".95" stroke="rgba(0,0,0,.25)" stroke-width="2.5"/><ellipse cx="${gx-.18*w+lean*.6}" cy="${gy-.62*h}" rx="22" ry="8" fill="#fff" opacity=".35"/>${eyes}<path d="M${gx+lean*.9-15} ${ey+.14*h} q15 ${10*(1-shy)} 30 0" stroke="#161a24" stroke-width="3" fill="none" stroke-linecap="round"/>`;
+ requestAnimationFrame(drawSlime)}requestAnimationFrame(drawSlime);
+
+/* I02 waves */
+const cv=document.getElementById('waves'),cx=cv.getContext('2d');let pm=null,rings=[];
+function fit(){cv.width=cv.clientWidth*2;cv.height=cv.clientHeight*2}fit();addEventListener('resize',fit);
+cv.onpointermove=e=>{const r=cv.getBoundingClientRect();pm={x:(e.clientX-r.left)*2,y:(e.clientY-r.top)*2};if(rings.length<16&&Math.random()<.2)rings.push({x:pm.x,y:pm.y,t:performance.now()})};cv.onpointerleave=()=>pm=null;
+function waves(t){cx.clearRect(0,0,cv.width,cv.height);const cell=32,ch='Genix';cx.font='bold 18px ui-monospace,monospace';cx.textAlign='center';cx.textBaseline='middle';
+ for(let y=cell/2,r=0;y<cv.height;y+=cell,r++)for(let x=cell/2,c=0;x<cv.width;x+=cell,c++){const u=x*.94+y*.34,s=Math.sin(u/60+t/900+Math.sin(y/90+t/1500)*1.7);let a=.06+.14*(s+1)/2;
+  if(pm){const l=Math.max(0,1-Math.hypot(x-pm.x,y-pm.y)/260);a+=l*l*.5}
+  rings.forEach(g=>{const age=(t-g.t)/1000;if(age<1.2){const ring=Math.max(0,1-Math.abs(Math.hypot(x-g.x,y-g.y)-age*360)/60)*(1-age/1.2);a+=ring*.5}});
+  cx.fillStyle=`rgba(255,255,255,${Math.min(a,.85)})`;cx.fillText(ch[(c+r)%5],x,y)}
+ rings=rings.filter(g=>(t-g.t)<1200);requestAnimationFrame(waves)}requestAnimationFrame(waves);
+
+/* I04 ticket */
+const stub=document.getElementById('stub');let gx0=null,th=0,torn=false;
+stub.onpointerdown=e=>{if(torn)return;stub.setPointerCapture(e.pointerId);gx0=[e.clientX,e.clientY]};
+stub.onpointermove=e=>{if(!gx0||torn)return;th=Math.min(.9,Math.max(0,((e.clientX-gx0[0])+(e.clientY-gx0[1]))/130*.72));stub.style.transform=`rotate(${th}rad)`;if(th>=.52){torn=true;stub.style.transition='transform .6s cubic-bezier(.5,0,1,1),opacity .6s';stub.style.transform='translate(60px,260px) rotate(1.7rad)';stub.style.opacity=0;document.getElementById('tkst').textContent='Активирована (демо)'}};
+stub.onpointerup=()=>{gx0=null;if(!torn){stub.style.transition='transform .3s var(--ease)';stub.style.transform='none';setTimeout(()=>stub.style.transition='',320)}};
+
+/* I06 tree */
+const tree=document.getElementById('tree');['Тело 1','Тело 2','Чертёж 1'].forEach((n,i)=>{const r=document.createElement('div');r.className='row';r.setAttribute('aria-current',i==1);r.innerHTML=`<svg width="40" height="32"><path d="M14 0 V${16-8} A8 8 0 0 0 22 16 H34"/></svg>${n}`;r.onclick=()=>[...tree.querySelectorAll('.row')].forEach(x=>x.setAttribute('aria-current',x===r));tree.appendChild(r)});
+tree.querySelector('.trunk').style.top='0';
+</script>
+</body>
+</html>

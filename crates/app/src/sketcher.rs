@@ -1023,8 +1023,7 @@ impl SketchSession {
 
     // -------------------------------------------------------------- панель инструментов
 
-    pub fn toolbar(&mut self, ui: &mut egui::Ui) -> SketchAction {
-        let mut action = SketchAction::None;
+    pub fn toolbar(&mut self, ui: &mut egui::Ui) {
         let tool_btn = |ui: &mut egui::Ui, me: &mut Self, t: Tool, label: &str, key: &str| {
             let sel = me.tool == t;
             let icon_id = match t {
@@ -1118,16 +1117,19 @@ impl SketchSession {
                 tool_btn(ui, self, Tool::Dimension, tr("↔ Размер"), "D");
                 tool_btn(ui, self, Tool::Angle, tr("∠ Угол"), "");
             });
-            ui.separator();
-            group(ui, tr("ГОТОВО"), |ui| {
-                if crate::widgets::primary_button(ui, tr("Завершить чертёж"), 170.0).on_hover_text(tr("Сохранить чертёж и выйти")).clicked() {
-                    action = SketchAction::Finish;
-                }
-                if ui.add(egui::Button::new(tr("Отмена")).corner_radius(14).min_size(egui::vec2(84.0, 46.0))).on_hover_text(tr("Выйти без сохранения изменений")).clicked() {
-                    action = SketchAction::Cancel;
-                }
-            });
         });
+    }
+
+    /// Завершить / отменить чертёж: закреплено справа и не уезжает в прокрутку панели.
+    /// Вызывать в раскладке «справа налево»: B01 оказывается крайним справа.
+    pub fn actions(&self, ui: &mut egui::Ui) -> SketchAction {
+        let mut action = SketchAction::None;
+        if crate::ui_kit::b01(ui, tr("Завершить чертёж"), 170.0).on_hover_text(tr("Сохранить чертёж и выйти")).clicked() {
+            action = SketchAction::Finish;
+        }
+        if crate::ui_kit::b03(ui, tr("Отмена")).on_hover_text(tr("Выйти без сохранения изменений")).clicked() {
+            action = SketchAction::Cancel;
+        }
         action
     }
 
