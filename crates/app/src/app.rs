@@ -911,7 +911,7 @@ impl App {
             self.toast(tr("Сначала создайте чертёж (кнопка «Новый чертёж»)"), true, now);
             return;
         }
-        if matches!(kind, "hole" | "fillet" | "chamfer" | "scale" | "move" | "mirror" | "pattern" | "combine" | "remove") && model.bodies.is_empty() {
+        if matches!(kind, "hole" | "press_pull" | "fillet" | "chamfer" | "scale" | "move" | "mirror" | "pattern" | "combine" | "remove") && model.bodies.is_empty() {
             self.toast(tr("Сначала создайте тело"), true, now);
             return;
         }
@@ -1257,6 +1257,7 @@ impl App {
                     },
                     _ => None,
                 };
+                let ray = self.last_ray;
                 let edge = self.hover_edge;
                 let user_planes = self.doc.offset_planes();
                 let Some(f) = self.doc.feature_mut(uid) else { return };
@@ -1279,6 +1280,13 @@ impl App {
                     (FeatureKind::Shell { plane, .. }, _, PickTarget::Face) => {
                         if let Some((pl, _)) = face {
                             *plane = pl;
+                            changed = true;
+                        }
+                    }
+                    (FeatureKind::PressPull { plane, seed, .. }, Some(Hit::Body { t, .. }), PickTarget::Face) => {
+                        if let Some((pl, _)) = face {
+                            *plane = pl;
+                            *seed = (ray.0 + ray.1 * t).to_array();
                             changed = true;
                         }
                     }
@@ -3070,6 +3078,7 @@ fn tool_id(kind: &FeatureKind) -> &'static str {
         FeatureKind::Sweep { .. } => "sweep",
         FeatureKind::Loft { .. } => "loft",
         FeatureKind::Hole { .. } => "hole",
+        FeatureKind::PressPull { .. } => "press_pull",
         FeatureKind::Primitive { shape: Shape::Box { .. }, .. } => "box",
         FeatureKind::Primitive { shape: Shape::Cylinder { .. }, .. } => "cylinder",
         FeatureKind::Primitive { shape: Shape::Sphere { .. }, .. } => "sphere",

@@ -1047,13 +1047,8 @@ impl SketchSession {
                 Tool::Angle => "sk_angle",
                 Tool::Cons(_) => "",
             };
-            let main = if sel { Color32::WHITE } else { ui.visuals().text_color() };
             let text = label.split_once(' ').map(|x| x.1).unwrap_or(label);
-            let btn = match crate::icons::icon(icon_id, 24.0, main) {
-                Some(img) => egui::Button::image(img),
-                None => egui::Button::new(label),
-            };
-            let r = ui.add(btn.selected(sel).min_size(egui::vec2(44.0, 42.0))).on_hover_ui(|ui| crate::toolbar::visual_tip(ui, text, tr("Инструмент параметрического чертежа"), icon_id));
+            let r = crate::toolbar::tool_button(ui, icon_id, "", text, true, sel).on_hover_ui(|ui| crate::toolbar::visual_tip(ui, text, tr("Инструмент параметрического чертежа"), icon_id));
             let r = if key.is_empty() { r } else { r.on_hover_text(tf!("Клавиша {}", key)) };
             let r = match t {
                 Tool::CenterRect => r.on_hover_text(tr("Прямоугольник от центра")),
@@ -1077,11 +1072,7 @@ impl SketchSession {
             });
             ui.separator();
             group(ui, tr("ИМПОРТ"), |ui| {
-                let photo = match crate::icons::icon("sk_photo", 24.0, ui.visuals().text_color()) {
-                    Some(img) => egui::Button::image_and_text(img, tr("Фото → скетч")),
-                    None => egui::Button::new(tr("Фото → скетч")),
-                };
-                if ui.add(photo.min_size(egui::vec2(128.0,42.0))).on_hover_ui(|ui| crate::toolbar::visual_tip(ui, tr("Фото → скетч"), tr("PNG или JPG превращается в редактируемые контуры с реальным размером"), "sketch")).clicked() {
+                if crate::toolbar::tool_button(ui, "sk_photo", "📷", tr("Фото → скетч"), true, false).on_hover_ui(|ui| crate::toolbar::visual_tip(ui, tr("Фото → скетч"), tr("PNG или JPG превращается в редактируемые контуры с реальным размером"), "sketch")).clicked() {
                     if let Some(path) = crate::files::open(tr("Изображения"), &["png", "jpg", "jpeg", "bmp", "gif", "webp"]) {
                         match crate::trace_ui::TraceDialog::load(&path) {
                             Ok(d) => self.trace = Some(d),
@@ -1089,8 +1080,8 @@ impl SketchSession {
                         }
                     }
                 }
-                ui.menu_button(tr("DXF"), |ui| {
-                if ui.button(tr("📐 Импорт DXF")).on_hover_text(tr("Добавить в чертёж линии, окружности и дуги из файла DXF")).clicked() {
+                {
+                if crate::toolbar::tool_button(ui, "sk_dxf_import", "📐", tr("Импорт DXF"), true, false).on_hover_text(tr("Добавить в чертёж линии, окружности и дуги из файла DXF")).clicked() {
                     if let Some(path) = crate::files::open("DXF", &["dxf"]) {
                         match std::fs::read_to_string(&path) {
                             Ok(text) => {
@@ -1110,7 +1101,7 @@ impl SketchSession {
                         }
                     }
                 }
-                if ui.button(tr("📤 Экспорт DXF")).on_hover_text(tr("Сохранить чертёж в файл DXF")).clicked() {
+                if crate::toolbar::tool_button(ui, "sk_dxf_export", "📤", tr("Экспорт DXF"), true, false).on_hover_text(tr("Сохранить чертёж в файл DXF")).clicked() {
                     if let Some(path) = crate::files::save("DXF", &["dxf"], "blueprint.dxf") {
                         self.message = Some(match std::fs::write(&path, fusion_core::dxf::export(&self.sketch)) {
                             Ok(()) => tr("Чертёж сохранён в DXF").into(),
@@ -1118,7 +1109,7 @@ impl SketchSession {
                         });
                     }
                 }
-                });
+                }
             });
             ui.separator();
             group(ui, tr("ПРАВИТЬ"), |ui| {
@@ -1133,13 +1124,10 @@ impl SketchSession {
             });
             ui.separator();
             group(ui, tr("ГОТОВО"), |ui| {
-                let finish = egui::Button::new(RichText::new(tr("Завершить чертёж")).strong().color(Color32::WHITE))
-                    .fill(Color32::from_rgb(40, 150, 70))
-                    .min_size(egui::vec2(0.0, 26.0));
-                if ui.add(finish).on_hover_text(tr("Сохранить чертёж и выйти")).clicked() {
+                if crate::widgets::primary_button(ui, tr("Завершить чертёж"), 170.0).on_hover_text(tr("Сохранить чертёж и выйти")).clicked() {
                     action = SketchAction::Finish;
                 }
-                if ui.add(egui::Button::new(tr("Отмена")).min_size(egui::vec2(0.0, 26.0))).on_hover_text(tr("Выйти без сохранения изменений")).clicked() {
+                if ui.add(egui::Button::new(tr("Отмена")).corner_radius(14).min_size(egui::vec2(84.0, 46.0))).on_hover_text(tr("Выйти без сохранения изменений")).clicked() {
                     action = SketchAction::Cancel;
                 }
             });

@@ -46,7 +46,7 @@ impl Command {
         match kind {
             FeatureKind::Extrude { .. } | FeatureKind::Revolve { .. } | FeatureKind::Sweep { .. } | FeatureKind::Loft { .. } => PickTarget::Profiles,
             FeatureKind::Move { .. } | FeatureKind::Mirror { .. } | FeatureKind::Pattern { .. } | FeatureKind::Remove { .. } | FeatureKind::Scale { .. } => PickTarget::Bodies,
-            FeatureKind::Hole { .. } | FeatureKind::OffsetPlane { .. } | FeatureKind::Shell { .. } => PickTarget::Face,
+            FeatureKind::Hole { .. } | FeatureKind::OffsetPlane { .. } | FeatureKind::Shell { .. } | FeatureKind::PressPull { .. } => PickTarget::Face,
             FeatureKind::Chamfer { .. } | FeatureKind::Fillet { .. } => PickTarget::Edges,
             FeatureKind::Combine { .. } => PickTarget::CombineTarget,
             _ => PickTarget::None,
@@ -328,6 +328,17 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
             changed |= crate::widgets::checkbox(ui, keep_tools, tr("Сохранить инструменты")).changed();
         }
         FeatureKind::Remove { bodies } => bodies_ui(ui, bodies, body_name, &mut changed),
+        FeatureKind::PressPull { distance, .. } => {
+            section(ui, tr("ГРАНЬ"));
+            ui.label(RichText::new(tr("Щёлкните плоскую грань тела")).weak());
+            section(ui, tr("РАЗМЕРЫ"));
+            changed |= row(ui, tr("Расстояние"), |ui| expr_field(ui, ("press_pull", uid, 0), distance, p, tr("мм")));
+            ui.label(RichText::new(tr("Больше нуля — вытянуть грань наружу, меньше нуля — вдавить внутрь")).weak().small());
+            if ui.button(tr("⇅ Обратное направление")).clicked() {
+                *distance = negate(distance);
+                changed = true;
+            }
+        }
         FeatureKind::Hole { plane, at, dia, depth, kind } => {
             section(ui, tr("ПОЛОЖЕНИЕ"));
             ui.label(RichText::new(tr("Щёлкните грань: центр и оси привязываются автоматически")).weak());
@@ -632,6 +643,10 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
         "hole" => {
             let (plane, at) = c.top_face.unwrap_or((fusion_core::Plane::XY, [0.0, 0.0]));
             FeatureKind::Hole { plane, at: [num(at[0].round()), num(at[1].round())], dia: num(8.0), depth: None, kind: HoleKind::Simple }
+        }
+        "press_pull" => {
+            let (plane, at) = c.top_face.unwrap_or((fusion_core::Plane::XY, [0.0, 0.0]));
+            FeatureKind::PressPull { plane, seed: plane.to_world(at).to_array(), distance: num(5.0) }
         }
         "move" => FeatureKind::Move { bodies: selected.to_vec(), translate: zero(), rotate: zero(), copy: false },
         "scale" => FeatureKind::Scale { bodies: selected.to_vec(), factor: [num(2.0), num(1.0), num(1.0)], uniform: true },

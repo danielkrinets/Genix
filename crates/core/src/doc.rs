@@ -165,6 +165,8 @@ pub enum FeatureKind {
     Fillet { body: u64, edges: Vec<EdgeRef>, radius: Expr },
     /// Вспомогательная плоскость на расстоянии от другой плоскости (вдоль её нормали).
     OffsetPlane { base: Plane, offset: Expr },
+    /// Вытягивание плоской грани тела: `plane` — плоскость грани (нормаль наружу), `seed` — точка на грани, `distance` > 0 добавляет материал, < 0 вырезает.
+    PressPull { plane: Plane, seed: [f64; 3], distance: Expr },
     /// Оболочка: стенки толщиной `thickness`; грань на плоскости `plane` остаётся открытой (если `open`).
     Shell { plane: Plane, thickness: Expr, open: bool },
 }
@@ -180,6 +182,7 @@ impl FeatureKind {
             FeatureKind::Primitive { shape: Shape::Sphere { .. }, .. } => "Сфера",
             FeatureKind::Primitive { shape: Shape::Torus { .. }, .. } => "Тор",
             FeatureKind::Hole { .. } => "Отверстие",
+            FeatureKind::PressPull { .. } => "Вытягивание грани",
             FeatureKind::Coil { .. } => "Спираль",
             FeatureKind::Pipe { .. } => "Труба",
             FeatureKind::Sweep { .. } => "По траектории",
@@ -797,6 +800,19 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             apply_op(&mut m, tool, Op::Cut, id_base)?;
             Ok((Arc::new(m), None))
         }
+        FeatureKind::PressPull { plane, seed, distance } => {
+            let d = distance.eval(p)?;
+            if d.abs() < 1e-9 {
+                return Err("расстояние не может быть нулевым".into());
+            }
+            let region = prev.bodies.iter().find_map(|b| geom::face_region(b.mesh(), plane, DVec3::from(*seed))).ok_or("грань не найдена: тело изменилось")?;
+            // заход на 0,01 мм внутрь тела (при добавлении) или за грань (при вырезании) исключает щель на стыке
+            let (z0, z1, op) = if d > 0.0 { (-0.01, d, Op::Join) } else { (d, 0.01, Op::Cut) };
+            let tool = Solid::from_mesh(&geom::extrude_region(plane, &region, z0, z1).ok_or("не удалось построить грань")?)?;
+            let mut m = (**prev).clone();
+            apply_op(&mut m, tool, op, id_base)?;
+            Ok((Arc::new(m), None))
+        }
         FeatureKind::Coil { at, axis, dia, pitch, turns, section, op } => {
             let at = eval3(at, p)?;
             let (dia, sec) = (positive(dia, p, "диаметр")?, positive(section, p, "диаметр сечения")?);
@@ -1235,6 +1251,31 @@ mod new_ops {
             let v = ev.model().bodies[0].solid.volume();
             assert!(v < 12000.0 - 100.0 && v > 12000.0 - 1500.0 && v >= expect_min - 80.0, "{v} {expect_min}");
         }
+    }
+
+    #[test]
+    fn press_pull_pushes_and_pulls_a_planar_face_in_both_directions() {
+        let top = Plane { origin: [0.0, 0.0, 10.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+        for (distance, expect) in [(5.0, 40.0 * 30.0 * 15.0), (-4.0, 40.0 * 30.0 * 6.0)] {
+            let (mut d, _) = plate();
+            d.insert(FeatureKind::PressPull { plane: top, seed: [20.0, 15.0, 10.0], distance: Expr::num(distance) });
+            let ev = run(&d);
+            assert_eq!(ev.model().bodies.len(), 1);
+            let v = ev.model().bodies[0].solid.volume();
+            assert!((v - expect).abs() < 5.0, "{distance}: {v} != {expect}");
+        }
+    }
+
+    #[test]
+    fn press_pull_keeps_the_hole_of_a_face_with_an_opening() {
+        let top = Plane { origin: [0.0, 0.0, 10.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+        let (mut d, _) = plate();
+        d.insert(FeatureKind::Hole { plane: top, at: [Expr::num(20.0), Expr::num(15.0)], dia: Expr::num(10.0), depth: None, kind: HoleKind::Simple });
+        let before = run(&d).model().bodies[0].solid.volume();
+        d.insert(FeatureKind::PressPull { plane: top, seed: [1.0, 1.0, 10.0], distance: Expr::num(5.0) });
+        let after = run(&d).model().bodies[0].solid.volume();
+        let ring = (40.0 * 30.0 - std::f64::consts::PI * 25.0) * 5.0;
+        assert!(((after - before) - ring).abs() < ring * 0.02, "{} vs {ring}", after - before);
     }
 
     #[test]

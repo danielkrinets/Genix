@@ -838,3 +838,62 @@ mod tests {
         assert!((holed.volume() - r.volume() - removed).abs() / removed < 0.05, "{} vs {removed}", holed.volume() - r.volume());
     }
 }
+
+/// Planar face of `mesh` that contains `seed`: the connected triangles lying in `plane` and facing along its normal,
+/// returned as an outer loop plus holes in plane coordinates. `None` when no such face exists.
+pub fn face_region(mesh: &Mesh, plane: &Plane, seed: DVec3) -> Option<Region> {
+    use std::collections::{HashMap, HashSet};
+    let (n, o) = (plane.normal(), plane.o());
+    let mut ids: HashMap<(i64, i64, i64), usize> = HashMap::new();
+    let mut pos: Vec<DVec3> = Vec::new();
+    let vid: Vec<usize> = mesh.vertices.iter().map(|&v| {
+        let v = DVec3::from(v);
+        *ids.entry(((v.x * 1e5).round() as i64, (v.y * 1e5).round() as i64, (v.z * 1e5).round() as i64)).or_insert_with(|| { pos.push(v); pos.len() - 1 })
+    }).collect();
+    let tris: Vec<[usize; 3]> = mesh.triangles.iter().map(|t| t.map(|i| vid[i as usize])).collect();
+    let facing = |t: &[usize; 3]| t.iter().all(|&i| (pos[i] - o).dot(n).abs() < 1e-4)
+        && (pos[t[1]] - pos[t[0]]).cross(pos[t[2]] - pos[t[0]]).normalize_or_zero().dot(n) > 0.9999;
+    let flat: Vec<usize> = (0..tris.len()).filter(|&i| facing(&tris[i])).collect();
+    let inside = |t: &[usize; 3]| (0..3).all(|k| (pos[t[(k + 1) % 3]] - pos[t[k]]).cross(seed - pos[t[k]]).dot(n) > -1e-6);
+    let centre = |t: &[usize; 3]| (pos[t[0]] + pos[t[1]] + pos[t[2]]) / 3.0;
+    let start = flat.iter().copied().find(|&i| inside(&tris[i]))
+        .or_else(|| flat.iter().copied().min_by(|&a, &b| centre(&tris[a]).distance(seed).total_cmp(&centre(&tris[b]).distance(seed))))?;
+    let mut by_edge: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+    for &i in &flat {
+        for k in 0..3 {
+            let (a, b) = (tris[i][k], tris[i][(k + 1) % 3]);
+            by_edge.entry((a.min(b), a.max(b))).or_default().push(i);
+        }
+    }
+    let mut face = HashSet::from([start]);
+    let mut stack = vec![start];
+    while let Some(i) = stack.pop() {
+        for k in 0..3 {
+            let (a, b) = (tris[i][k], tris[i][(k + 1) % 3]);
+            for &j in &by_edge[&(a.min(b), a.max(b))] {
+                if face.insert(j) { stack.push(j); }
+            }
+        }
+    }
+    let tri_list = &tris;
+    let directed: HashSet<(usize, usize)> = face.iter().flat_map(|&i| (0..3).map(move |k| (tri_list[i][k], tri_list[i][(k + 1) % 3]))).collect();
+    let next: HashMap<usize, usize> = directed.iter().filter(|&&(a, b)| !directed.contains(&(b, a))).copied().collect();
+    let mut loops: Vec<Vec<P2>> = Vec::new();
+    let mut used: HashSet<usize> = HashSet::new();
+    for &first in next.keys() {
+        if used.contains(&first) { continue; }
+        let (mut lp, mut cur) = (Vec::new(), first);
+        loop {
+            used.insert(cur);
+            lp.push(plane.to_local(pos[cur]));
+            cur = *next.get(&cur)?;
+            if cur == first || used.contains(&cur) { break; }
+        }
+        if lp.len() >= 3 { loops.push(lp); }
+    }
+    let area = |l: &[P2]| 0.5 * (0..l.len()).map(|i| l[i][0] * l[(i + 1) % l.len()][1] - l[(i + 1) % l.len()][0] * l[i][1]).sum::<f64>();
+    let big = (0..loops.len()).max_by(|&a, &b| area(&loops[a]).abs().total_cmp(&area(&loops[b]).abs()))?;
+    if area(&loops[big]) < 0.0 { loops.iter_mut().for_each(|l| l.reverse()); }
+    let outer = loops.remove(big);
+    Some(Region { outer, holes: loops.into_iter().filter(|l| area(l) < 0.0).collect(), ids: Vec::new() })
+}
