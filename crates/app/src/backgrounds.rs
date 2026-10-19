@@ -115,7 +115,7 @@ pub fn paint(ui: &egui::Ui, rect: Rect, circles: bool) {
         let font = egui::FontId::proportional(size);
         for k in 0..8 {
             let a = k as f32 * std::f32::consts::FRAC_PI_4;
-            p.text(at + egui::vec2(a.cos(), a.sin()) * 4.0, egui::Align2::CENTER_CENTER, "Genix", font.clone(), crate::theme::accent().gamma_multiply(0.85));
+            p.text(at + egui::vec2(a.cos(), a.sin()) * 2.0, egui::Align2::CENTER_CENTER, "Genix", font.clone(), crate::theme::accent().gamma_multiply(0.85));
         }
         for off in [-1.5_f32, 0.0, 1.5] {
             p.text(at + egui::vec2(off, 0.0), egui::Align2::CENTER_CENTER, "Genix", font.clone(), bg);

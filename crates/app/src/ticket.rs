@@ -106,9 +106,9 @@ pub fn show(ui: &mut egui::Ui, number: &str, activated: bool) -> bool {
 
     p.galley(at(26.0, 28.0), galley(crate::i18n::tr("Genix Server"), 24.0, ink, W - STUB - 52.0), ink);
     p.galley(at(26.0, 66.0), galley(crate::i18n::tr("Подписка на сервер · демонстрация"), 14.0, ink.gamma_multiply(0.7), W - STUB - 52.0), ink);
-    p.galley(at(26.0, H - 74.0), galley(&number.to_string(), 18.0, accent, W - STUB - 52.0), accent);
+    p.galley(at(26.0, H - 74.0), galley(number, 18.0, accent, W - STUB - 52.0), accent);
     let state = if activated || finished { crate::i18n::tr("Активирована (демо)") } else { crate::i18n::tr("Ожидает активации (демо)") };
-    p.galley(at(26.0, H - 44.0), galley(&state, 13.0, ink.gamma_multiply(0.7), W - STUB - 52.0), ink);
+    p.galley(at(26.0, H - 44.0), galley(state, 13.0, ink.gamma_multiply(0.7), W - STUB - 52.0), ink);
 
     if finished { st = Tear::default(); }
     ui.data_mut(|d| d.insert_temp(id, st));

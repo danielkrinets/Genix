@@ -29,26 +29,35 @@ pub fn paint(ui: &egui::Ui, ground: Pos2, width: f32, shy: bool) {
     p.add(egui::Shape::ellipse_filled(ground, Vec2::new(width * 0.62, height * 0.07), shade.gamma_multiply(0.45)));
     let dome: Vec<Pos2> = (0..=40).map(|k| {
         let a = std::f32::consts::PI * k as f32 / 40.0;
-        let s = a.sin();
+        let s = a.sin().max(0.0); // sin(pi) is slightly negative in f32 and powf would give NaN
         Pos2::new(ground.x + 0.5 * width * a.cos() * (1.0 + wobble(a)) + lean * s, ground.y - height * breathe * s.powf(0.75) * (1.0 + wobble(a + 1.0)))
     }).collect();
-    p.add(egui::Shape::convex_polygon(dome, body.gamma_multiply(0.94), Stroke::new(width * 0.012, shade)));
-    p.add(egui::Shape::ellipse_filled(Pos2::new(ground.x - 0.18 * width + lean * 0.6, ground.y - 0.62 * height), Vec2::new(0.1 * width, 0.06 * height), Color32::from_white_alpha(90)));
+    // filled as a triangle fan from the ground point: Shape::convex_polygon left this body empty
+    let fill = body.gamma_multiply(0.96);
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(ground, fill);
+    for pt in &dome { mesh.colored_vertex(*pt, fill); }
+    for i in 1..dome.len() as u32 { mesh.add_triangle(0, i, i + 1); }
+    p.add(egui::Shape::mesh(mesh));
+    p.add(egui::Shape::closed_line(dome, Stroke::new(width * 0.012, shade)));
+    p.add(egui::Shape::ellipse_filled(Pos2::new(ground.x + lean * 0.4, ground.y - 0.2 * height), Vec2::new(0.34 * width, 0.14 * height), body.lerp_to_gamma(Color32::WHITE, 0.18)));
+    p.add(egui::Shape::ellipse_filled(Pos2::new(ground.x - 0.18 * width + lean * 0.6, ground.y - 0.62 * height), Vec2::new(0.1 * width, 0.06 * height), Color32::from_white_alpha(70)));
 
     let eye_y = ground.y - 0.45 * height;
     let eye_r = 0.085 * width;
     let turn = -0.24 * width * shy;
-    let blink = !reduced && shy < 0.5 && t % 4.5 < 0.12;
+    let phase = (t % 4.5) / 0.22;
+    let blink = if reduced || phase >= 1.0 { 0.0 } else { (std::f32::consts::PI * phase).sin() };
     for side in [-1.0_f32, 1.0] {
-        let eye = Pos2::new(ground.x + lean * 0.9 + turn + 0.16 * width * (1.0 - 0.55 * shy) * side, eye_y);
+        let eye = Pos2::new(ground.x + lean * 0.9 + turn + 0.16 * width * (1.0 - 0.3 * shy) * side, eye_y);
         let radius = Vec2::new(eye_r * (1.0 - 0.4 * shy), eye_r);
         p.add(egui::Shape::ellipse_filled(eye, radius, Color32::WHITE));
         let follow = pupil_offset(eye, pointer, eye_r);
         let look = follow + (Vec2::new(-eye_r * 0.6, 0.0) - follow) * shy;
         p.add(egui::Shape::circle_filled(eye + look, eye_r * 0.5, ink));
-        if blink {
-            let lid = egui::Rect::from_center_size(eye, radius * 2.0);
-            p.with_clip_rect(lid).rect_filled(lid, 0.0, body);
+        if blink > 0.0 {
+            let lid = egui::Rect::from_min_size(eye - radius, Vec2::new(radius.x * 2.0, radius.y * 2.0 * blink));
+            p.with_clip_rect(egui::Rect::from_center_size(eye, radius * 2.0 + Vec2::splat(1.0))).rect_filled(lid.expand(1.0), 0.0, body);
         }
     }
 
@@ -71,6 +80,17 @@ mod tests {
         let far = pupil_offset(eye, Pos2::new(5000.0, 100.0), r);
         assert!(far.x > 0.0 && far.length() <= r * 0.45 + 1e-3);
         assert!(pupil_offset(eye, Pos2::new(100.0, 0.0), r).y < 0.0);
+    }
+
+    #[test]
+    fn every_drawn_point_is_finite_and_the_body_is_filled() {
+        let ctx = egui::Context::default();
+        let mut input = egui::RawInput::default();
+        input.time = Some(2.0);
+        let out = ctx.run(input, |ctx| { egui::CentralPanel::default().show(ctx, |ui| paint(ui, Pos2::new(300.0, 500.0), 300.0, false)); });
+        let meshes: Vec<&egui::Mesh> = out.shapes.iter().filter_map(|s| if let egui::Shape::Mesh(m) = &s.shape { Some(&**m) } else { None }).collect();
+        assert!(meshes.iter().any(|m| m.vertices.len() > 20), "the dome must be a filled mesh");
+        assert!(meshes.iter().flat_map(|m| &m.vertices).all(|v| v.pos.x.is_finite() && v.pos.y.is_finite()));
     }
 
     #[test]

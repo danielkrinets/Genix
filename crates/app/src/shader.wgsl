@@ -78,21 +78,56 @@ fn fs_face(i: FaceOut) -> @location(0) vec4<f32> {
     if dot(n, v) < 0.0 {
         n = -n; // оборотная сторона (например, при разрезе) освещается так же
     }
-    let l = normalize(frame.light.xyz);
+    // the key light is a lamp at a finite distance: its highlight slides across a big flat face instead of lighting it evenly
+    let l = normalize(frame.light.xyz * 450.0 - i.world);
     let diff = max(dot(n, l), 0.0);
     let h = normalize(l + v);
     let cutter = i.color.a < 0.0;
     let reflection = select(clamp(i.color.a, 0.0, 1.0), 0.12, cutter);
-    let gloss_power = mix(12.0, 96.0, reflection);
-    let spec = pow(max(dot(n, h), 0.0), gloss_power) * mix(0.03, 0.62, reflection);
-    // мягкий «небесный» свет сверху
-    let sky = 0.5 + 0.5 * n.z;
-    // «окружение»: небо сверху, тёмная земля снизу; на скользящих углах отражение сильнее
+    // the material's "reflection" decides the family: low = plastic/wood, high = metal
+    let metal = smoothstep(0.45, 0.6, reflection);
+    let rough = select(mix(0.62, 0.26, clamp(reflection / 0.4, 0.0, 1.0)), mix(0.34, 0.06, clamp((reflection - 0.55) / 0.4, 0.0, 1.0)), metal > 0.5);
+    let albedo = i.color.rgb;
+    let ndv = max(dot(n, v), 0.0);
+    let f0 = mix(vec3<f32>(0.045), albedo, metal);
+    let fres = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - ndv, 5.0);
+    // reflection of a small photo studio: a sky, a horizon band and three soft boxes
     let r = reflect(-v, n);
-    let env = mix(vec3<f32>(0.035, 0.04, 0.05), vec3<f32>(0.75, 0.82, 0.95), smoothstep(-0.25, 0.85, r.z));
-    let fres = pow(1.0 - max(dot(n, v), 0.0), 3.0);
-    let c = i.color.rgb * (0.22 + 0.16 * sky + 0.62 * diff) + env * (0.03 + reflection * (0.34 + 0.34 * fres)) + vec3<f32>(spec);
-    return vec4<f32>(encode(c), select(1.0, 0.32, cutter));
+    let mirror = studio(room_direction(i.world, r), rough) * fres;
+    let sky = 0.5 + 0.5 * n.z;
+    // polished metal keeps a little body colour from the soft ambient light, the rest comes from the mirror
+    let diffuse = albedo * mix(1.0, 0.4, metal) * (0.2 + 0.16 * sky + 0.64 * diff);
+    // the key light as a glossy highlight: tight on polished metal, wide on rough plastic
+    let power = mix(14.0, 360.0, (1.0 - rough) * (1.0 - rough));
+    let spec = pow(max(dot(n, h), 0.0), power) * (0.25 + 1.1 * (1.0 - rough)) * diff;
+    let c = diffuse + mirror * (0.6 + 1.1 * metal) + spec * mix(vec3<f32>(1.0), albedo, metal * 0.6);
+    return vec4<f32>(encode(c / (1.0 + 0.12 * c)), select(1.0, 0.32, cutter));
+}
+
+// Parallax-corrected lookup: the studio is a box around the scene, so a flat polished face reflects a different
+// part of it at every point and shows a soft gradient instead of one flat tone.
+fn room_direction(p: vec3<f32>, r: vec3<f32>) -> vec3<f32> {
+    let half = vec3<f32>(240.0, 240.0, 180.0);
+    let safe = select(r, vec3<f32>(1e-4), abs(r) < vec3<f32>(1e-4));
+    let t1 = (half - p) / safe;
+    let t2 = (-half - p) / safe;
+    let far = max(t1, t2);
+    let t = min(min(far.x, far.y), far.z);
+    return normalize(p + r * max(t, 0.0));
+}
+
+// A procedural studio environment: what a glossy surface mirrors. `rough` washes the contrast out.
+fn studio(r: vec3<f32>, rough: f32) -> vec3<f32> {
+    let up = r.z;
+    var col = mix(vec3<f32>(0.04, 0.045, 0.055), vec3<f32>(0.95, 1.02, 1.15), smoothstep(-0.4, 0.9, up));
+    col += vec3<f32>(0.5, 0.52, 0.55) * exp(-pow((up - 0.06) * 5.0, 2.0)) * 0.4;
+    // soft boxes: wide lobes so that a flat face shows a visible band of light, not one flat tone
+    let k1 = pow(max(dot(r, normalize(vec3<f32>(-0.45, -0.55, 0.7))), 0.0), mix(18.0, 4.0, rough));
+    let k2 = pow(max(dot(r, normalize(vec3<f32>(0.8, -0.1, 0.55))), 0.0), mix(14.0, 3.0, rough));
+    let k3 = pow(max(dot(r, normalize(vec3<f32>(0.0, 0.9, 0.4))), 0.0), mix(14.0, 3.0, rough));
+    let ceiling = smoothstep(0.62, 0.95, up);
+    col += vec3<f32>(1.5, 1.48, 1.45) * k1 + vec3<f32>(0.8, 0.85, 1.0) * k2 + vec3<f32>(0.9) * k3 * 0.7 + vec3<f32>(1.0, 1.0, 1.05) * ceiling * 0.5;
+    return mix(col, vec3<f32>(0.3, 0.33, 0.38), rough * 0.5);
 }
 
 // ---------------------------------------------------------------- толстые линии

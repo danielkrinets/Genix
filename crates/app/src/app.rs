@@ -115,6 +115,21 @@ fn detect_device(ctx: &egui::Context) -> Device {
     if r.width().min(r.height()) < 600.0 { Device::Phone } else { Device::Tablet }
 }
 
+/// What a palette row does.
+#[derive(Clone, Copy)]
+enum PaletteCmd {
+    Sketch,
+    Start(&'static str),
+    Fit,
+    Save,
+    Export(&'static str),
+    Slicer(usize),
+    Home,
+    Settings,
+    NewTab,
+    Grid,
+}
+
 /// Группа вкладок как в Chrome: общее имя и цвет, можно свернуть.
 #[derive(Clone)]
 struct TabGroup {
@@ -132,6 +147,7 @@ const GROUP_COLORS: [Color32; 8] = [
 /// Припаркованное состояние неактивной вкладки-документа.
 #[derive(Default)]
 struct Tab {
+    suggested: Option<String>,
     group: Option<u32>,
     doc: Document,
     ev: Evaluator,
@@ -182,11 +198,15 @@ pub struct App {
     selection: Vec<u64>,
     /// Папка, в которую попадёт этот проект при первом сохранении.
     folder: Option<String>,
+    /// Имя, выбранное при создании модели: показывается во вкладке и подставляется в окно «Сохранить».
+    suggested: Option<String>,
     group: Option<u32>,
     tab_groups: Vec<TabGroup>,
     next_group: u32,
     /// Короткая плашка «Открываем проект…» после New/Open из меню, Finder и библиотеки.
     busy: Option<(f64, &'static str)>,
+    /// Палитра команд (⌘K): текст запроса и выбранная строка; `None` — закрыта.
+    palette: Option<(String, usize)>,
     splash_started: Option<f64>,
     hover: Option<Hit>,
     cache: RenderCache,
@@ -387,10 +407,12 @@ impl App {
             theme,
             selection: Vec::new(),
             folder: None,
+            suggested: None,
             group: None,
             tab_groups: Vec::new(),
             next_group: 1,
             busy: None,
+            palette: None,
             splash_started: None,
             hover: None,
             cache: RenderCache::default(),
@@ -473,6 +495,10 @@ impl App {
         self.undo.clear();
         self.redo.clear();
         self.selection.clear();
+        // a loaded document starts clean: no leftover folder, group or name from the tab's previous life
+        self.folder = None;
+        self.group = None;
+        self.suggested = None;
         self.ev = Evaluator::default();
         self.after_doc_change();
         self.need_fit = true;
@@ -486,7 +512,7 @@ impl App {
         if self.home_active {
             return format!("{} — Genix", tr("Главная"));
         }
-        let name = self.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| tr("Без имени").into());
+        let name = self.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).or_else(|| self.suggested.clone()).unwrap_or_else(|| tr("Без имени").into());
         format!("{name}{} — Genix", if self.dirty() { " •" } else { "" })
     }
 
@@ -519,6 +545,12 @@ impl App {
             HomeAction::NewIn(folder) => {
                 self.new_blank_tab();
                 self.folder = Some(folder);
+            }
+            HomeAction::NewNamed(name, folder) => {
+                self.set_busy(tr("Подготовка проекта…"));
+                self.new_blank_tab();
+                self.folder = folder;
+                self.suggested = Some(name);
             }
             HomeAction::Open => self.open_dialog(),
             HomeAction::OpenPath(path) => self.open_path(path),
@@ -559,6 +591,19 @@ impl App {
         }
     }
 
+    /// Opens an older version of the current file in a new tab, unsaved, so the file itself stays untouched.
+    fn open_version(&mut self, file: &std::path::Path, stamp: u64, now: f64) {
+        let stem = self.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        match std::fs::read_to_string(file).map_err(|e| e.to_string()).and_then(|s| Document::from_json(&s)) {
+            Ok(d) => {
+                self.new_blank_tab();
+                self.load_doc(d, None);
+                self.suggested = Some(format!("{stem} ({})", crate::home::format_time(stamp)));
+            }
+            Err(e) => self.toast(tf!("Не удалось открыть: {}", e), true, now),
+        }
+    }
+
     fn open_dialog(&mut self) {
         if let Some(p) = crate::files::open("Genix", &["genix", "ostov"]) {
             self.open_path(p);
@@ -569,11 +614,15 @@ impl App {
         self.commit_pending_edits();
         let path = match (&self.path, as_new) {
             (Some(p), false) => Some(p.clone()),
-            _ => crate::files::save("Genix", &["genix"], tr("деталь.genix")),
+            _ => crate::files::save("Genix", &["genix"], &self.suggested.as_ref().map_or_else(|| tr("деталь.genix").to_string(), |n| format!("{n}.genix"))),
         };
         let Some(mut p) = path else { return false };
         if p.extension().is_none() {
             p.set_extension("genix");
+        }
+        if let Some(base) = crate::files::versions_base() {
+            let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            let _ = crate::files::snapshot_version(&base, &p, stamp);
         }
         match crate::files::write_atomic(&p, self.doc.to_json().as_bytes()) {
             Ok(()) => {
@@ -588,6 +637,7 @@ impl App {
                 }
                 let synced = self.settings.server_active() && self.settings.folder_of(&key).is_some_and(|i| self.settings.folders[i].auto_sync);
                 self.path = Some(p);
+                self.suggested = None;
                 self.toast(if synced { tr("Сохранено · отправлено на сервер (демо)") } else { tr("Сохранено") }, false, now);
                 true
             }
@@ -748,6 +798,7 @@ impl App {
             selection: std::mem::take(&mut self.selection),
             folder: self.folder.take(),
             group: self.group.take(),
+            suggested: self.suggested.take(),
         }
     }
 
@@ -762,6 +813,7 @@ impl App {
         self.selection = t.selection;
         self.folder = t.folder;
         self.group = t.group;
+        self.suggested = t.suggested;
         self.mode = Mode::Idle;
         self.home_active = false;
         self.shown_model = None;
@@ -770,7 +822,8 @@ impl App {
 
     fn tab_title(&self, i: usize) -> (String, bool) {
         let (path, dirty) = if i == self.active { (&self.path, self.dirty()) } else { (&self.tabs[i].path, self.tabs[i].doc != self.tabs[i].saved) };
-        let name = path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| tr("Без имени").into());
+        let suggested = if i == self.active { &self.suggested } else { &self.tabs[i].suggested };
+        let name = path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).or_else(|| suggested.clone()).unwrap_or_else(|| tr("Без имени").into());
         (name, dirty)
     }
 
@@ -836,6 +889,96 @@ impl App {
         self.active = ni;
         self.restore(t);
         self.need_fit = false;
+    }
+
+    /// Every action the palette can run; `needs_model` ones are greyed out while there is nothing to act on.
+    fn palette_items(&self) -> Vec<(&'static str, String, PaletteCmd, bool)> {
+        use PaletteCmd::*;
+        let mut v = vec![
+            ("sketch", tr("Новый чертёж").to_string(), Sketch, false),
+            ("extrude", tr("Выдавить").to_string(), Start("extrude"), false),
+            ("revolve", tr("Вращение").to_string(), Start("revolve"), false),
+            ("hole", tr("Отверстие").to_string(), Start("hole"), true),
+            ("fillet", tr("Скругление").to_string(), Start("fillet"), true),
+            ("chamfer", tr("Фаска").to_string(), Start("chamfer"), true),
+            ("press_pull", tr("Вытянуть грань").to_string(), Start("press_pull"), true),
+            ("move", tr("Переместить").to_string(), Start("move"), true),
+            ("nav_fit", tr("Вписать модель").to_string(), Fit, true),
+            ("file_save", tr("Сохранить").to_string(), Save, false),
+            ("file_export_stl", tr("Экспорт STL (3D-печать)…").to_string(), Export("stl"), true),
+            ("file_export_3mf", tr("Экспорт 3MF (3D-печать)…").to_string(), Export("3mf"), true),
+            ("home_models", tr("Главная").to_string(), Home, false),
+            ("settings", tr("Настройки…").to_string(), Settings, false),
+            ("add", tr("Новая вкладка").to_string(), NewTab, false),
+            ("nav_grid", tr("Сетка").to_string(), Grid, false),
+        ];
+        for (i, s) in crate::slicers::SLICERS.iter().enumerate() {
+            if crate::slicers::installed(s).is_some() { v.push(("file_export_stl", format!("{} {}", tr("Открыть в слайсере"), s.name), Slicer(i), true)); }
+        }
+        v
+    }
+
+    /// Command palette: ⌘K / Ctrl+K opens a search over every action; ↑↓ choose, Enter runs, Esc closes.
+    fn palette_ui(&mut self, ctx: &egui::Context, now: f64) {
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::K)) {
+            self.palette = if self.palette.is_some() { None } else { Some((String::new(), 0)) };
+        }
+        let Some((mut query, mut selected)) = self.palette.clone() else { return };
+        let has_model = !self.home_active && !self.ev.model().bodies.is_empty();
+        let needle = query.trim().to_lowercase();
+        let items: Vec<_> = self.palette_items().into_iter().filter(|(_, label, _, _)| needle.is_empty() || label.to_lowercase().contains(&needle)).collect();
+        selected = selected.min(items.len().saturating_sub(1));
+        let (down, up, enter, esc) = ctx.input(|i| (i.key_pressed(egui::Key::ArrowDown), i.key_pressed(egui::Key::ArrowUp), i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+        if down { selected = (selected + 1).min(items.len().saturating_sub(1)); }
+        if up { selected = selected.saturating_sub(1); }
+        let mut run: Option<PaletteCmd> = None;
+        egui::Area::new(egui::Id::new("palette")).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 110.0)).show(ctx, |ui| {
+            egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(22).inner_margin(egui::Margin::same(12)).stroke(egui::Stroke::new(1.0_f32, ui.visuals().window_stroke.color)).show(ui, |ui| {
+                ui.set_width(540.0);
+                let field = ui.add(egui::TextEdit::singleline(&mut query).hint_text(RichText::new(tr("Что сделать?")).color(crate::theme::secondary(ui))).font(egui::FontId::proportional(18.0)).margin(egui::Margin::symmetric(14, 12)).desired_width(f32::INFINITY));
+                field.request_focus();
+                ui.add_space(8.0);
+                egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
+                    for (i, (icon, label, cmd, needs_model)) in items.iter().enumerate() {
+                        let usable = !needs_model || has_model;
+                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 38.0), if usable { egui::Sense::click() } else { egui::Sense::hover() });
+                        if i == selected || resp.hovered() && usable { ui.painter().rect_filled(rect, 10.0, crate::theme::tint(if i == selected { 46 } else { 22 })); }
+                        let ink = if usable { ui.visuals().text_color() } else { ui.visuals().text_color().gamma_multiply(0.4) };
+                        if let Some(img) = crate::icons::icon(icon, 18.0, ink) { img.paint_at(ui, egui::Rect::from_center_size(rect.left_center() + egui::vec2(20.0, 0.0), egui::vec2(18.0, 18.0))); }
+                        ui.painter().text(rect.left_center() + egui::vec2(42.0, 0.0), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(15.0), ink);
+                        if usable && resp.clicked() { run = Some(*cmd); }
+                        if usable && enter && i == selected { run = Some(*cmd); }
+                    }
+                    if items.is_empty() { ui.label(RichText::new(tr("Ничего не найдено")).color(crate::theme::secondary(ui))); }
+                });
+            });
+        });
+        self.palette = if run.is_some() || esc { None } else { Some((query, selected)) };
+        if let Some(cmd) = run {
+            use PaletteCmd::*;
+            match cmd {
+                Sketch => self.start_sketch(),
+                Start(kind) => self.start_command(kind, now),
+                Fit => self.need_fit = true,
+                Save => { self.save(false, now); }
+                Export(fmt) => self.export(fmt, now),
+                Slicer(i) => self.open_in_slicer(i, now),
+                Home => {
+                    self.commit_pending_edits();
+                    self.home_active = true;
+                    self.home.navigate(crate::home::HomePage::Models);
+                    let list = self.project_list();
+                    self.home.refresh(&list);
+                }
+                Settings => {
+                    self.commit_pending_edits();
+                    self.home_active = true;
+                    self.home.navigate(crate::home::HomePage::Settings);
+                }
+                NewTab => self.new_blank_tab(),
+                Grid => { self.settings.show_grid = !self.settings.show_grid; self.settings.save(); }
+            }
+        }
     }
 
     fn set_busy(&mut self, label: &'static str) {
@@ -1600,6 +1743,18 @@ impl App {
                         self.request(Confirm::OpenExample(crate::examples::bushing));
                     }
                 });
+                if menu_item(ui, "tree_folder", tr("Новая папка…")) {
+                    ui.close_menu();
+                    self.commit_pending_edits();
+                    self.home_active = true;
+                    self.home.open_name_dialog(true);
+                }
+                if menu_item(ui, "add", tr("Новая модель…")) {
+                    ui.close_menu();
+                    self.commit_pending_edits();
+                    self.home_active = true;
+                    self.home.open_name_dialog(false);
+                }
                 ui.separator();
                 if ui.add_enabled_ui(has_doc, |ui| menu_item(ui, "file_save", tr("Сохранить           ⌘S"))).inner {
                     ui.close_menu();
@@ -1609,6 +1764,17 @@ impl App {
                     ui.close_menu();
                     self.save(true, now);
                 }
+                let versions = self.path.as_ref().zip(crate::files::versions_base()).map(|(p, base)| crate::files::list_versions(&base, p)).unwrap_or_default();
+                ui.add_enabled_ui(has_doc && !versions.is_empty(), |ui| {
+                    ui.menu_button(tr("Версии файла"), |ui| {
+                        for (stamp, file) in &versions {
+                            if menu_item(ui, "tl_prev", &crate::home::format_time(*stamp)) {
+                                ui.close_menu();
+                                self.open_version(file, *stamp, now);
+                            }
+                        }
+                    });
+                });
                 ui.separator();
                 if ui.add_enabled_ui(has_model, |ui| menu_item(ui, "file_export_stl", tr("Экспорт STL (3D-печать)…"))).inner {
                     ui.close_menu();
@@ -2933,6 +3099,7 @@ impl eframe::App for App {
             self.confirm_window(ctx, now);
             return;
         }
+        self.palette_ui(ctx, now);
         for action in crate::desktop::take_actions() {
             match action {
                 crate::desktop::Action::New => { self.set_busy(tr("Подготовка проекта…")); self.request(Confirm::New) }
@@ -3888,6 +4055,36 @@ mod lifecycle_tests {
 
     fn app() -> App {
         App::from_settings(Settings::default(), Theme::Light)
+    }
+
+    #[test]
+    fn a_loaded_document_does_not_inherit_the_name_folder_or_group_of_the_tab() {
+        let mut app = app();
+        app.suggested = Some("Подставка".into());
+        app.folder = Some("Работа".into());
+        app.group = Some(7);
+        assert_eq!(app.tab_title(0).0, "Подставка");
+        app.load_doc(Document::default(), None);
+        assert_eq!((app.suggested.clone(), app.folder.clone(), app.group), (None, None, None));
+        assert_eq!(app.tab_title(0).0, tr("Без имени"));
+    }
+
+    #[test]
+    fn tab_groups_keep_their_tabs_together_and_vanish_when_empty() {
+        let mut app = app();
+        app.new_blank_tab();
+        app.new_blank_tab();
+        // tabs 0 and 2 go into one group: the display order puts them side by side
+        app.new_group_for(0);
+        let id = app.group_of(0).unwrap();
+        app.set_group(2, Some(id));
+        assert_eq!(app.tab_order(), vec![0, 2, 1]);
+        // the group data survives switching the active tab (the active tab's group lives in the App, the others in Tab)
+        app.switch_tab(1);
+        assert_eq!((app.group_of(0), app.group_of(2)), (Some(id), Some(id)));
+        app.set_group(0, None);
+        app.set_group(2, None);
+        assert_eq!(app.tab_order(), vec![0, 1, 2]);
     }
 
     #[test]

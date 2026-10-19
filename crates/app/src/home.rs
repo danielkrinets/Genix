@@ -227,7 +227,7 @@ pub struct HomeState {
     filters: ProjectFilters,
     infos: HashMap<String, ProjInfo>,
     thumbs: HashMap<String, egui::TextureHandle>,
-    pending: Arc<Mutex<Vec<(String, Option<crate::thumb::Rgba>)>>>,
+    pending: PendingFrames,
     queued: VecDeque<(String, fusion_core::Document)>,
     inflight: HashSet<String>,
     completed: HashSet<String>,
@@ -235,12 +235,18 @@ pub struct HomeState {
     new_project_started: Option<f64>,
     sidebar_pinned: bool,
     open_folder: Option<String>,
+    focus_rename: bool,
+    fab_open: bool,
+    fab_toggled_at: f64,
+    name_dialog: Option<NameDialog>,
     edit_mode: bool,
     edit_since: f64,
     selected: HashSet<String>,
     hold_since: Option<f64>,
     hover_since: Option<(String, f64)>,
     spin_started: HashSet<String>,
+    /// Models whose 360° frames are in memory, oldest first: only the last few are kept.
+    spin_order: VecDeque<String>,
     share_path: Option<String>,
     share_email: String,
     share_editor: bool,
@@ -248,12 +254,11 @@ pub struct HomeState {
     team_email: String,
     team_editor: bool,
     team_msg: Option<&'static str>,
-    folder_draft: String,
     folder_rename: String,
 }
 
 /// Отрисовать превью документа на фоновом потоке (прозрачный фон, изометрия).
-fn spawn_thumb(key: String, doc: fusion_core::Document, pending: Arc<Mutex<Vec<(String, Option<crate::thumb::Rgba>)>>>, busy: Arc<AtomicUsize>) {
+fn spawn_thumb(key: String, doc: fusion_core::Document, pending: PendingFrames, busy: Arc<AtomicUsize>) {
     busy.fetch_add(1, Ordering::SeqCst);
     std::thread::spawn(move || {
         let img = std::panic::catch_unwind(|| {
@@ -268,7 +273,17 @@ fn spawn_thumb(key: String, doc: fusion_core::Document, pending: Arc<Mutex<Vec<(
     });
 }
 
+/// Rendered preview frames travelling from worker threads to the UI thread.
+type PendingFrames = Arc<Mutex<Vec<(String, Option<crate::thumb::Rgba>)>>>;
+
 const SPIN_FRAMES: usize = 24;
+const SPIN_MODELS: usize = 4;
+
+/// Окно выбора имени для новой модели или папки.
+struct NameDialog {
+    folder: bool,
+    text: String,
+}
 
 /// Where a model for the 360° preview comes from.
 enum SpinSource {
@@ -277,7 +292,7 @@ enum SpinSource {
 }
 
 /// Render `SPIN_FRAMES` views around the model on a background thread; frames arrive through `pending` as `key#spinN`.
-fn spawn_spin(key: String, source: SpinSource, pending: Arc<Mutex<Vec<(String, Option<crate::thumb::Rgba>)>>>) {
+fn spawn_spin(key: String, source: SpinSource, pending: PendingFrames) {
     std::thread::spawn(move || {
         let doc = match source {
             SpinSource::File(path) => std::fs::read_to_string(path).ok().and_then(|s| fusion_core::Document::from_json(&s).ok()),
@@ -303,6 +318,8 @@ pub enum HomeAction {
     New,
     /// Новый проект сразу в выбранной папке.
     NewIn(String),
+    /// Новая модель с выбранным именем (и папкой, если создаём внутри неё).
+    NewNamed(String, Option<String>),
     Open,
     OpenPath(PathBuf),
     Example(usize),
@@ -312,11 +329,18 @@ pub enum HomeAction {
 }
 
 impl HomeState {
+    /// Opens the name prompt for a new folder or model (used by the «+» button and the File menu).
+    pub fn open_name_dialog(&mut self, folder: bool) {
+        self.page = HomePage::Models;
+        self.name_dialog = Some(NameDialog { folder, text: String::new() });
+    }
+
     /// Перечитать сведения о проектах (при заходе на главную).
     pub fn refresh(&mut self, recent: &[String]) {
         self.infos.clear();
         self.queued.clear();
         self.spin_started.clear();
+        self.spin_order.clear();
         let mut current = HashSet::new();
         for p in recent {
             let path = PathBuf::from(p);
@@ -959,6 +983,13 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
     if let Some((key, t0)) = h.hover_since.clone() {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(80));
         if now - t0 >= 3.0 && h.spin_started.insert(key.clone()) {
+            h.spin_order.push_back(key.clone());
+            while h.spin_order.len() > SPIN_MODELS {
+                if let Some(old) = h.spin_order.pop_front() {
+                    h.spin_started.remove(&old);
+                    for i in 0..SPIN_FRAMES { h.thumbs.remove(&format!("{old}#spin{i}")); }
+                }
+            }
             let source = if let Some(i) = key.strip_prefix("ex:").and_then(|i| i.parse().ok()) { Some(SpinSource::Example(i)) } else { h.infos.iter().find(|(_, info)| info.preview_key == key).map(|(p, _)| SpinSource::File(p.clone())) };
             if let Some(source) = source { spawn_spin(key, source, h.pending.clone()); }
         }
@@ -978,6 +1009,10 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
         h.share_msg = None;
     }
     share_dialog(ui.ctx(), h, st, &mut action);
+    if !viewer {
+        library_fab(ui.ctx(), h);
+        name_dialog(ui.ctx(), h, st, &mut action);
+    }
     action
 }
 
@@ -1031,6 +1066,76 @@ fn person_row(ui: &mut egui::Ui, email: &str, role: &str) {
         ui.label(email);
         ui.label(RichText::new(role).color(muted(ui)).small());
     });
+}
+
+/// Big round «+» on the library background: opens the choice «new model / new folder», each asks for a name.
+fn library_fab(ctx: &egui::Context, h: &mut HomeState) {
+    let fab = egui::Area::new(egui::Id::new("library-fab")).order(egui::Order::Foreground).anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-32.0, -32.0)).show(ctx, |ui| {
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(60.0, 60.0), egui::Sense::click());
+        let open = crate::widgets::feedback(ui, response.id.with("open"), h.fab_open);
+        let hover = crate::widgets::feedback(ui, response.id.with("hover"), response.hovered());
+        let press = crate::widgets::feedback(ui, response.id.with("press"), response.is_pointer_button_down_on());
+        crate::ui_kit::pill_fill(ui, rect.shrink(press * 1.5), 30.0, hover, press);
+        let (c, k, turn) = (rect.center(), 11.0, open * std::f32::consts::FRAC_PI_4);
+        let stroke = egui::Stroke::new(3.0_f32, crate::theme::on_accent());
+        for a in [turn, turn + std::f32::consts::FRAC_PI_2] {
+            let d = egui::vec2(a.cos(), a.sin()) * k;
+            ui.painter().line_segment([c - d, c + d], stroke);
+        }
+        // one physical click can arrive twice within a few frames; a short lock keeps the menu from opening and closing at once
+        let now = ui.input(|i| i.time);
+        if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && now - h.fab_toggled_at > 0.35 {
+            h.fab_open = !h.fab_open;
+            h.fab_toggled_at = now;
+        }
+    }).response.rect;
+    if h.fab_open {
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) { h.fab_open = false; }
+        let menu = egui::Area::new(egui::Id::new("library-fab-menu")).order(egui::Order::Foreground).anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-32.0, -104.0)).show(ctx, |ui| {
+            egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(22).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
+                for (icon, label, folder) in [("add", tr("Новая модель"), false), ("tree_folder", tr("Новая папка"), true)] {
+                    let (rect, row) = ui.allocate_exact_size(egui::vec2(230.0, 48.0), egui::Sense::click());
+                    if row.hovered() { ui.painter().rect_filled(rect, 14.0, crate::theme::tint(30)); }
+                    if let Some(img) = crate::icons::icon(icon, 22.0, crate::theme::accent()) { img.paint_at(ui, egui::Rect::from_center_size(rect.left_center() + egui::vec2(26.0, 0.0), egui::vec2(22.0, 22.0))); }
+                    ui.painter().text(rect.left_center() + egui::vec2(52.0, 0.0), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(16.0), ui.visuals().text_color());
+                    if row.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        h.name_dialog = Some(NameDialog { folder, text: String::new() });
+                        h.fab_open = false;
+                    }
+                }
+            });
+        }).response.rect;
+        if ctx.input(|i| i.pointer.any_pressed()) && ctx.input(|i| i.pointer.interact_pos()).is_some_and(|at| !fab.contains(at) && !menu.contains(at)) { h.fab_open = false; }
+    }
+}
+
+/// Name prompt for a new model or folder. Empty name gives a default one; a model made inside an open folder goes into it.
+fn name_dialog(ctx: &egui::Context, h: &mut HomeState, st: &mut Settings, action: &mut HomeAction) {
+    let Some(dialog) = h.name_dialog.as_mut() else { return };
+    let (folder, mut create, mut cancel) = (dialog.folder, false, false);
+    let title = if folder { tr("Новая папка") } else { tr("Новая модель") };
+    egui::Window::new(title).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).fixed_size([380.0, 0.0]).show(ctx, |ui| {
+        let field = ui.add(egui::TextEdit::singleline(&mut dialog.text).hint_text(RichText::new(tr("Название")).color(crate::theme::secondary(ui))).margin(egui::Margin::symmetric(14, 12)).font(egui::FontId::proportional(16.0)).desired_width(f32::INFINITY).char_limit(80));
+        if !field.has_focus() && !field.lost_focus() { field.request_focus(); }
+        let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            if crate::ui_kit::b01(ui, tr("Создать"), 150.0).clicked() || enter { create = true; }
+            if crate::ui_kit::b03(ui, tr("Отмена")).clicked() { cancel = true; }
+        });
+    });
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) { cancel = true; }
+    if create {
+        let typed = dialog.text.trim().to_string();
+        if folder {
+            let base = if typed.is_empty() { tr("Новая папка").to_string() } else { typed };
+            st.folders.push(crate::settings::ProjectFolder { name: unused_folder_name(&st.folders, &base), ..Default::default() });
+            *action = HomeAction::SettingsChanged;
+        } else {
+            *action = HomeAction::NewNamed(if typed.is_empty() { tr("Новая модель").to_string() } else { typed }, h.open_folder.clone());
+        }
+    }
+    if create || cancel { h.name_dialog = None; }
 }
 
 /// Окно «Поделиться»: добавить человека в проект, сменить права, убрать. Демо — ничего не отправляется.
@@ -1115,6 +1220,7 @@ fn folders_section(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, acti
     ui.horizontal_wrapped(|ui| {
         ui.add_space(24.0);
         let mut dropped: Option<(usize, Vec<String>)> = None;
+        let mut deleted: Option<usize> = None;
         for (i, f) in st.folders.iter().enumerate() {
             let pills: Vec<String> = f.projects.iter().filter_map(|p| h.infos.get(p).map(|info| info.name.clone())).take(3).collect();
             let r = folder_card(ui, &f.name, &tf!("моделей: {}", f.projects.len()), &pills, f.auto_sync, h.edit_mode);
@@ -1123,24 +1229,27 @@ fn folders_section(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, acti
                 h.folder_rename = f.name.clone();
             }
             if let Some(paths) = r.dnd_release_payload::<Vec<String>>() { dropped = Some((i, paths.as_ref().clone())); }
+            r.context_menu(|ui| {
+                if crate::app::menu_item(ui, "tree_folder_open", tr("Открыть")) { h.open_folder = Some(f.name.clone()); h.folder_rename = f.name.clone(); ui.close_menu(); }
+                if crate::app::menu_item(ui, "rename", tr("Переименовать…")) { h.open_folder = Some(f.name.clone()); h.folder_rename = f.name.clone(); h.focus_rename = true; ui.close_menu(); }
+                if crate::app::menu_item(ui, "delete", tr("Удалить папку")) { deleted = Some(i); ui.close_menu(); }
+            });
         }
         if let Some((i, paths)) = dropped {
             for p in &paths { st.move_to_folder(p, Some(i)); h.selected.remove(p); }
             *action = HomeAction::SettingsChanged;
         }
-    });
-    ui.horizontal_wrapped(|ui| {
-        ui.add_space(24.0);
-        let field = ui.add(egui::TextEdit::singleline(&mut h.folder_draft).font(egui::FontId::proportional(15.0)).margin(egui::Margin::symmetric(12, 10)).hint_text(RichText::new(tr("Название новой папки")).color(muted(ui))).desired_width(220.0).char_limit(60));
-        let typed = h.folder_draft.trim().to_string();
-        let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !typed.is_empty();
-        if crate::ui_kit::b02(ui, tr("Создать папку")).clicked() || enter {
-            let base = if typed.is_empty() { tr("Новая папка").to_string() } else { typed };
-            st.folders.push(crate::settings::ProjectFolder { name: unused_folder_name(&st.folders, &base), ..Default::default() });
-            h.folder_draft.clear();
+        if let Some(i) = deleted {
+            st.folders.remove(i);
             *action = HomeAction::SettingsChanged;
         }
     });
+    if st.folders.is_empty() {
+        ui.horizontal(|ui| {
+            ui.add_space(24.0);
+            ui.label(RichText::new(tr("Папок пока нет — создайте первую кнопкой «+» или через меню «Файл».")).color(muted(ui)));
+        });
+    }
     ui.add_space(14.0);
 }
 
@@ -1178,7 +1287,8 @@ fn folder_settings(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, i: u
         egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(22).show(ui, |ui| {
             ui.set_width(ui.available_width().min(620.0));
             settings_row(ui, tr("Название"), None, |ui| {
-                let field = ui.add(egui::TextEdit::singleline(&mut h.folder_rename).frame(false).horizontal_align(egui::Align::RIGHT).font(egui::FontId::proportional(15.0)).desired_width(240.0).char_limit(60));
+                let field = ui.add(egui::TextEdit::singleline(&mut h.folder_rename).hint_text(RichText::new(tr("Название папки")).color(muted(ui))).margin(egui::Margin::symmetric(12, 8)).font(egui::FontId::proportional(15.0)).desired_width(240.0).char_limit(60));
+                if std::mem::take(&mut h.focus_rename) { field.request_focus(); }
                 let name = h.folder_rename.trim().to_string();
                 if (field.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) && field.has_focus()) && !name.is_empty() && name != st.folders[i].name && !st.folders.iter().any(|f| f.name == name) {
                     st.folders[i].name = name.clone();

@@ -1,7 +1,7 @@
 //! Выбор файлов. На компьютерах — системные диалоги; на iPad/iPhone диалогов нет:
 //! документы лежат в папке приложения «Документы» (видна в приложении «Файлы»).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Папка документов приложения (на iOS — `~/Documents` контейнера).
 pub fn documents_dir() -> Option<PathBuf> {
@@ -61,9 +61,64 @@ pub fn write_atomic(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> 
     Ok(())
 }
 
+const KEEP_VERSIONS: usize = 10;
+
+/// Folder with the saved versions of one project; the path hash keeps same-named files in different folders apart.
+fn versions_dir(base: &Path, project: &Path) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    project.hash(&mut h);
+    let stem = project.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    base.join(format!("{stem}-{:08x}", h.finish() as u32))
+}
+
+/// Copies the current file into its history before it is overwritten and keeps the newest `KEEP_VERSIONS`.
+pub fn snapshot_version(base: &Path, project: &Path, stamp: u64) -> std::io::Result<()> {
+    if !project.is_file() { return Ok(()); }
+    let dir = versions_dir(base, project);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::copy(project, dir.join(format!("{stamp}.genix")))?;
+    let mut all = list_versions(base, project);
+    all.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, old) in all.into_iter().skip(KEEP_VERSIONS) { let _ = std::fs::remove_file(old); }
+    Ok(())
+}
+
+/// Saved versions of a project as (unix seconds, file), newest first.
+pub fn list_versions(base: &Path, project: &Path) -> Vec<(u64, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(versions_dir(base, project)) else { return Vec::new() };
+    let mut v: Vec<(u64, PathBuf)> = entries.flatten().filter_map(|e| {
+        let stamp = e.path().file_stem()?.to_str()?.parse().ok()?;
+        Some((stamp, e.path()))
+    }).collect();
+    v.sort_by(|a, b| b.0.cmp(&a.0));
+    v
+}
+
+/// Where versions live: next to the settings file.
+pub fn versions_base() -> Option<PathBuf> {
+    crate::settings::Settings::path().and_then(|p| p.parent().map(|d| d.join("versions")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn versions_keep_the_newest_ten_in_order_and_skip_missing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("деталь.genix");
+        let base = dir.path().join("versions");
+        snapshot_version(&base, &project, 1).unwrap();
+        assert!(list_versions(&base, &project).is_empty(), "nothing to snapshot before the first save");
+        for stamp in 1..=12u64 {
+            std::fs::write(&project, format!("v{stamp}")).unwrap();
+            snapshot_version(&base, &project, stamp).unwrap();
+        }
+        let versions = list_versions(&base, &project);
+        assert_eq!(versions.iter().map(|v| v.0).collect::<Vec<_>>(), (3..=12).rev().collect::<Vec<_>>());
+        assert_eq!(std::fs::read_to_string(&versions[0].1).unwrap(), "v12");
+    }
 
     #[test]
     fn atomic_save_creates_and_replaces_project() {
