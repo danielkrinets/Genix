@@ -247,7 +247,49 @@ fn tree_group(ui: &mut egui::Ui, id: &str, icon: &str, title: String, default_op
     if resp.clicked() {
         st.toggle(ui);
     }
-    st.show_body_indented(&resp, ui, body);
+    let rows_id = egui::Id::new("tree-rows");
+    ui.data_mut(|d| d.insert_temp(rows_id, Vec::<(f32, bool)>::new()));
+    let shown = ui.scope(|ui| {
+        ui.spacing_mut().indent = 24.0;
+        st.show_body_indented(&resp, ui, body)
+    }).inner;
+    let rows = ui.data_mut(|d| d.get_temp::<Vec<(f32, bool)>>(rows_id)).unwrap_or_default();
+    if let Some(inner) = shown {
+        draw_branches(ui, cid, rect, inner.response.rect, &rows);
+    }
+}
+
+/// Row of a tree group; remembers its vertical centre so the group can draw a branch to it.
+fn tree_row(ui: &mut egui::Ui, selected: bool, add: impl FnOnce(&mut egui::Ui)) {
+    let y = ui.horizontal(add).response.rect.center().y;
+    ui.data_mut(|d| d.get_temp_mut_or_default::<Vec<(f32, bool)>>(egui::Id::new("tree-rows")).push((y, selected)));
+}
+
+/// Trunk under the group arrow with a curved branch into every row; the selected row gets an accent line that travels down to it.
+fn draw_branches(ui: &egui::Ui, id: egui::Id, header: Rect, body: Rect, rows: &[(f32, bool)]) {
+    let Some(&(last, _)) = rows.last() else { return };
+    let p = ui.painter().with_clip_rect(Rect::from_min_max(header.left_bottom(), egui::pos2(header.right(), body.bottom() + 2.0)));
+    let (x, r) = (header.left() + 11.0, 7.0);
+    let end = x + r + 5.0;
+    let top = header.bottom() - 4.0;
+    let line = egui::Stroke::new(1.5_f32, ui.visuals().widgets.noninteractive.fg_stroke.color.gamma_multiply(0.3));
+    let branch = |y: f32| -> Vec<Pos2> {
+        let mut pts: Vec<Pos2> = (0..=8).map(|i| {
+            let a = std::f32::consts::PI * (1.0 - 0.5 * i as f32 / 8.0);
+            egui::pos2(x + r + r * a.cos(), y - r + r * a.sin())
+        }).collect();
+        pts.push(egui::pos2(end, y));
+        pts
+    };
+    p.line_segment([egui::pos2(x, top), egui::pos2(x, last - r)], line);
+    for &(y, _) in rows { p.add(egui::Shape::line(branch(y), line)); }
+    if let Some(&(sel, _)) = rows.iter().find(|row| row.1) {
+        let glide = if crate::theme::reduced_motion() { 0.0 } else { 0.3 };
+        let reach = ui.ctx().animate_value_with_time(id.with("reach"), sel, glide);
+        let accent = egui::Stroke::new(1.5_f32, crate::theme::accent());
+        p.line_segment([egui::pos2(x, top), egui::pos2(x, (reach - r).max(top))], accent);
+        if reach >= sel - 0.5 { p.add(egui::Shape::line(branch(sel), accent)); }
+    }
 }
 
 /// Значок глаза (показать/скрыть). true — значение изменилось.
@@ -260,7 +302,7 @@ fn eye_toggle(ui: &mut egui::Ui, vis: &mut bool, tip: &str) -> bool {
 }
 
 /// Пункт меню со значком слева.
-fn menu_item(ui: &mut egui::Ui, icon: &str, text: &str) -> bool {
+pub(crate) fn menu_item(ui: &mut egui::Ui, icon: &str, text: &str) -> bool {
     let col = ui.visuals().text_color();
     let btn = match crate::icons::icon(icon, 16.0, col) {
         Some(img) => egui::Button::image_and_text(img, text),
@@ -1479,13 +1521,13 @@ impl App {
         ui.label(RichText::new(tr("ДЕРЕВО")).small().strong().weak());
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             tree_group(ui, "t_doc", "tree_doc_settings", tr("Настройки документа").to_string(), false, |ui| {
-                ui.label(tr("Единицы: мм, г"));
+                tree_row(ui, false, |ui| { ui.label(tr("Единицы: мм, г")); });
             });
             tree_group(ui, "t_views", "tree_views", tf!("Именованные виды ({})", self.doc.views.len()), false, |ui| {
                 let mut go = None;
                 let mut del = None;
                 for (i, v) in self.doc.views.iter().enumerate() {
-                    ui.horizontal(|ui| {
+                    tree_row(ui, false, |ui| {
                         if ui.selectable_label(false, format!("▸ {}", v.name)).on_hover_text(tr("Перейти к виду")).clicked() {
                             go = Some(i);
                         }
@@ -1494,7 +1536,7 @@ impl App {
                         }
                     });
                 }
-                ui.horizontal(|ui| {
+                tree_row(ui, false, |ui| {
                     ui.add(egui::TextEdit::singleline(&mut self.new_view_name).hint_text(tr("имя вида")).desired_width(110.0));
                     if ui.button(tr("Сохранить вид")).clicked() {
                         let name = if self.new_view_name.trim().is_empty() { format!("{} {}", tr("Вид"), self.doc.views.len() + 1) } else { self.new_view_name.trim().to_string() };
@@ -1513,16 +1555,16 @@ impl App {
                 }
             });
             tree_group(ui, "t_origin", "tree_origin", tr("Начало координат").to_string(), false, |ui| {
-                crate::widgets::checkbox(ui, &mut self.show_planes, tr("Показывать плоскости"));
-                crate::widgets::checkbox(ui, &mut self.settings.show_grid, tr("Показывать сетку"));
+                tree_row(ui, false, |ui| { crate::widgets::checkbox(ui, &mut self.show_planes, tr("Показывать плоскости")); });
+                tree_row(ui, false, |ui| { crate::widgets::checkbox(ui, &mut self.settings.show_grid, tr("Показывать сетку")); });
             });
             let model = self.shown();
             tree_group(ui, "t_bodies", "tree_bodies", tf!("Тела ({})", model.bodies.len()), true, |ui| {
                 if model.bodies.is_empty() {
-                    ui.label(RichText::new(tr("Пока нет тел")).weak());
+                    tree_row(ui, false, |ui| { ui.label(RichText::new(tr("Пока нет тел")).weak()); });
                 }
                 for b in &model.bodies {
-                    ui.horizontal(|ui| {
+                    tree_row(ui, self.selection.contains(&b.id), |ui| {
                         let mut vis = !self.doc.hidden_bodies.contains(&b.id);
                         if eye_toggle(ui, &mut vis, tr("Показать/скрыть")) {
                             if vis {
@@ -1564,11 +1606,11 @@ impl App {
                             self.rename_body = Some((b.id, self.doc.body_name(b).to_string()));
                         }
                         r.context_menu(|ui| {
-                            if ui.button(tr("Переименовать")).clicked() {
+                            if menu_item(ui, "rename", tr("Переименовать")) {
                                 self.rename_body = Some((b.id, self.doc.body_name(b).to_string()));
                                 ui.close_menu();
                             }
-                            if ui.button(tr("Удалить тело")).clicked() {
+                            if menu_item(ui, "delete", tr("Удалить тело")) {
                                 ui.close_menu();
                                 self.delete_bodies(vec![b.id]);
                             }
@@ -1586,7 +1628,7 @@ impl App {
                 .collect();
             tree_group(ui, "t_sketches", "tree_sketches", tf!("Чертежи ({})", sketches.len()), true, |ui| {
                 for (uid, name, err) in sketches {
-                    ui.horizontal(|ui| {
+                    tree_row(ui, false, |ui| {
                         let mut vis = self.doc.visible_sketches.contains(&uid);
                         if eye_toggle(ui, &mut vis, tr("Показать/скрыть чертёж")) {
                             if vis {
@@ -1607,11 +1649,13 @@ impl App {
             tree_group(ui, "t_params", "tree_params", tf!("Параметры ({})", self.doc.params.items.len()), false, |ui| {
                 for (k, v) in &self.doc.params.items {
                     let val = self.doc.params.eval(&v.0).map(format_num).unwrap_or_else(|_| "?".into());
-                    ui.label(format!("{k} = {val}"));
+                    tree_row(ui, false, |ui| { ui.label(format!("{k} = {val}")); });
                 }
-                if ui.button(tr("Изменить…")).clicked() {
-                    self.params_open = true;
-                }
+                tree_row(ui, false, |ui| {
+                    if ui.button(tr("Изменить…")).clicked() {
+                        self.params_open = true;
+                    }
+                });
             });
         });
     }
@@ -1723,21 +1767,21 @@ impl App {
                             self.edit_feature(uid, now);
                         }
                         r.context_menu(|ui| {
-                            if ui.button(tr("Изменить")).clicked() {
+                            if menu_item(ui, "edit", tr("Изменить")) {
                                 ui.close_menu();
                                 self.edit_feature(uid, now);
                             }
-                            if ui.button(tr("Переименовать")).clicked() {
+                            if menu_item(ui, "rename", tr("Переименовать")) {
                                 ui.close_menu();
                                 self.rename_feature = Some((uid, name.clone()));
                             }
-                            if ui.button(tr("Откатить историю сюда")).clicked() {
+                            if menu_item(ui, "rollback", tr("Откатить историю сюда")) {
                                 ui.close_menu();
                                 self.cancel_mode();
                                 self.doc.rollback = i + 1;
                                 self.after_doc_change();
                             }
-                            if ui.button(if suppressed { tr("Включить") } else { tr("Отключить (подавить)") }).clicked() {
+                            if menu_item(ui, "suppress", if suppressed { tr("Включить") } else { tr("Отключить (подавить)") }) {
                                 ui.close_menu();
                                 self.cancel_mode();
                                 self.checkpoint();
@@ -2078,31 +2122,31 @@ impl App {
             resp.context_menu(|ui| {
                 if let Some(id) = cb {
                     ui.label(RichText::new(self.body_name(id)).strong());
-                    if ui.button(tr("Скрыть")).clicked() {
+                    if menu_item(ui, "hide", tr("Скрыть")) {
                         self.doc.hidden_bodies.insert(id);
                         self.selection.retain(|x| *x != id);
                         ui.close_menu();
                     }
-                    if ui.button(tr("Переместить…")).clicked() {
+                    if menu_item(ui, "move", tr("Переместить…")) {
                         self.selection = vec![id];
                         ui.close_menu();
                         self.start_command("move", now);
                     }
-                    if ui.button(tr("Удалить")).clicked() {
+                    if menu_item(ui, "delete", tr("Удалить")) {
                         ui.close_menu();
                         self.delete_bodies(vec![id]);
                     }
                     ui.separator();
                 }
-                if ui.button(tr("Новый чертёж")).clicked() {
+                if menu_item(ui, "sketch", tr("Новый чертёж")) {
                     ui.close_menu();
                     self.start_sketch();
                 }
-                if ui.button(tr("Вписать модель")).clicked() {
+                if menu_item(ui, "nav_fit", tr("Вписать модель")) {
                     ui.close_menu();
                     self.need_fit = true;
                 }
-                if !self.doc.hidden_bodies.is_empty() && ui.button(tr("Показать все тела")).clicked() {
+                if !self.doc.hidden_bodies.is_empty() && menu_item(ui, "show", tr("Показать все тела")) {
                     self.doc.hidden_bodies.clear();
                     ui.close_menu();
                 }

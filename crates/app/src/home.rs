@@ -364,24 +364,37 @@ pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
         let nav_width = 64.0 + (190.0 - 64.0) * open;
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(egui::vec2(nav_width, height), egui::Layout::top_down(egui::Align::Min), |ui| {
-                ui.add_space(20.0);
-                ui.horizontal(|ui| {
-                    logo(ui, 28.0);
-                    if open > 0.72 { ui.label(RichText::new("Genix").size(23.0).strong()); }
-                });
-                ui.add_space(28.0);
-                ui.spacing_mut().item_spacing.y = 6.0;
-                nav(ui, h, open > 0.72);
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                    ui.add_space(16.0);
-                    if open > 0.72 {
-                        crate::widgets::checkbox(ui, &mut h.sidebar_pinned, tr("Закрепить панель"));
-                        ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).color(muted(ui)).small());
-                        ui.label(RichText::new(if st.account.is_some() { st.display_name.as_str() } else { tr("Локальное пространство") }).strong());
-                    }
+                egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(22).inner_margin(egui::Margin::symmetric(10, 14)).show(ui, |ui| {
+                    ui.set_width(nav_width - 20.0);
+                    ui.set_min_height(height - 28.0);
+                    ui.horizontal(|ui| {
+                        logo(ui, 28.0);
+                        if open > 0.72 { ui.label(RichText::new("Genix").size(23.0).strong()); }
+                    });
+                    ui.add_space(22.0);
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    nav(ui, h, open > 0.72);
+                    ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                        let name = if st.account.is_some() { st.display_name.clone() } else { tr("Локальное пространство").to_string() };
+                        ui.horizontal(|ui| {
+                            let (rect, avatar) = ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::click());
+                            ui.painter().circle_filled(rect.center(), 18.0, crate::theme::tint(if avatar.hovered() { 80 } else { 55 }));
+                            let initial = name.chars().next().map_or('G', |c| c.to_ascii_uppercase());
+                            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, initial, egui::FontId::proportional(16.0), crate::theme::accent());
+                            if avatar.clicked() { h.navigate(HomePage::Profile); }
+                            if open > 0.72 {
+                                ui.vertical(|ui| {
+                                    ui.spacing_mut().item_spacing.y = 0.0;
+                                    ui.label(RichText::new(name).strong());
+                                    ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).color(muted(ui)).small());
+                                });
+                            }
+                        });
+                        if open > 0.72 { crate::widgets::checkbox(ui, &mut h.sidebar_pinned, tr("Закрепить панель")); }
+                    });
                 });
             });
-            ui.separator();
+            ui.add_space(10.0);
             ui.vertical(|ui| {
                 ui.set_width(ui.available_width());
                 let content = hub_content(ui, h, st, projects, viewer);
@@ -739,8 +752,8 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, _st: &Settings, projects: &
                     action = HomeAction::OpenPath(PathBuf::from(p));
                 }
                 r.context_menu(|ui| {
-                    if cfg!(target_os="macos") && info.exists && ui.button(tr("Показать в Finder")).clicked() {crate::desktop::reveal(std::path::Path::new(p)); ui.close_menu();}
-                    if ui.button(tr("Убрать из списка")).clicked() {
+                    if cfg!(target_os="macos") && info.exists && crate::app::menu_item(ui, "search", tr("Показать в Finder")) {crate::desktop::reveal(std::path::Path::new(p)); ui.close_menu();}
+                    if crate::app::menu_item(ui, "close", tr("Убрать из списка")) {
                         action = HomeAction::Forget(p.clone());
                         ui.close_menu();
                     }
