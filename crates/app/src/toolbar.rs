@@ -64,8 +64,8 @@ pub fn tool_button(ui: &mut egui::Ui, id: &str, icon: &str, label: &str, enabled
         let fill = if selected { crate::theme::tint(30) } else if hover { v.widgets.hovered.weak_bg_fill } else { Color32::TRANSPARENT };
         let p = ui.painter();
         let paint_rect = rect.shrink(press * 1.5);
-        p.rect_filled(paint_rect, 12.0, fill);
-        if resp.has_focus() { p.rect_stroke(paint_rect, 12.0, Stroke::new(1.5_f32, accent()), egui::StrokeKind::Inside); }
+        p.rect_filled(paint_rect, 6.0, fill);
+        if resp.has_focus() { p.rect_stroke(paint_rect, 6.0, Stroke::new(1.5_f32, accent()), egui::StrokeKind::Inside); }
         let col = if enabled { v.text_color() } else { v.weak_text_color().gamma_multiply(0.6) };
         let icon_rect = egui::Rect::from_center_size(rect.center_top() + egui::vec2(0.0, 24.0), egui::vec2(34.0, 34.0) * (1.0 - press * 0.03));
         match crate::icons::icon(id, 32.0, if selected { accent() } else { col }) {
@@ -84,7 +84,7 @@ pub fn tool_button(ui: &mut egui::Ui, id: &str, icon: &str, label: &str, enabled
 pub fn group(ui: &mut egui::Ui, title: &'static str, quick: &[&str], all: &'static [Item], enabled: bool, active: Option<&str>) -> Option<&'static str> {
     let mut chosen = None;
     ui.vertical(|ui| {
-        ui.horizontal(|ui| {
+        let row = ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             for id in quick {
                 if let Some(item) = all.iter().find(|i| i.id == *id) {
@@ -94,11 +94,11 @@ pub fn group(ui: &mut egui::Ui, title: &'static str, quick: &[&str], all: &'stat
                     }
                 }
             }
-        });
+        }).response.rect.width();
         let popup_id = ui.make_persistent_id(("toolbar_group", title));
         let open = ui.memory(|m| m.is_popup_open(popup_id));
-        let (title_rect, title_resp) = ui.allocate_exact_size(egui::vec2(ui.available_width().max(92.0), 28.0), if enabled { Sense::click() } else { Sense::hover() });
-        if title_resp.hovered() && enabled { ui.painter().rect_filled(title_rect, 7.0, ui.visuals().widgets.hovered.weak_bg_fill); }
+        let (title_rect, title_resp) = ui.allocate_exact_size(egui::vec2(row.max(92.0), 22.0), if enabled { Sense::click() } else { Sense::hover() });
+        if title_resp.hovered() && enabled { ui.painter().rect_filled(title_rect, 6.0, ui.visuals().widgets.hovered.weak_bg_fill); }
         let col = if enabled { ui.visuals().text_color() } else { ui.visuals().weak_text_color() };
         ui.painter().text(title_rect.left_center() + egui::vec2(8.0, 0.0), Align2::LEFT_CENTER, tr(title), FontId::proportional(12.5), col);
         let turn = crate::widgets::feedback(ui, title_resp.id.with("chevron"), open);
@@ -117,7 +117,7 @@ pub fn group(ui: &mut egui::Ui, title: &'static str, quick: &[&str], all: &'stat
                 let r = r.on_hover_ui(|ui| rich_tip(ui, item));
                 let p = ui.painter();
                 if r.hovered() {
-                    p.rect_filled(rect.shrink2(egui::vec2(2.0, 1.0)), 10.0, ui.visuals().widgets.hovered.weak_bg_fill);
+                    p.rect_filled(rect.shrink2(egui::vec2(2.0, 1.0)), 6.0, ui.visuals().widgets.hovered.weak_bg_fill);
                 }
                 let col = ui.visuals().text_color();
                 match crate::icons::icon(item.id, 20.0, col) {
@@ -155,7 +155,7 @@ pub fn visual_tip(ui: &mut egui::Ui, title: &str, body: &str, kind: &str) {
     ui.add_space(6.0);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(250.0, 112.0), Sense::hover());
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, 12.0, ui.visuals().extreme_bg_color);
+    p.rect_filled(rect, 6.0, ui.visuals().extreme_bg_color);
     let ink = ui.visuals().text_color().gamma_multiply(0.72);
     let accent = accent();
     let base = egui::Rect::from_min_max(rect.min + egui::vec2(24.0, 55.0), rect.min + egui::vec2(104.0, 88.0));
@@ -197,7 +197,7 @@ pub fn solid_toolbar(ui: &mut egui::Ui, enabled: bool, active: Option<&str>) -> 
         ui.vertical(|ui| {
             ui.add_space(2.0);
             ui.label(RichText::new(tr("ДЕТАЛЬ")).small().strong().color(accent()));
-            ui.add_space(30.0);
+            ui.add_space(22.0);
         });
         ui.separator();
         out = out.or(group(ui, "СТРОИТЬ", QUICK_CREATE, CREATE, enabled, active));
