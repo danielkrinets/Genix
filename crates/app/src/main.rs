@@ -3,6 +3,7 @@
 
 mod app;
 mod camera;
+mod cli;
 mod commands;
 mod examples;
 mod files;
@@ -12,6 +13,7 @@ mod gpu;
 mod home;
 mod backgrounds;
 mod mascot;
+mod slicers;
 mod ticket;
 mod ui_kit;
 mod updates;
@@ -32,6 +34,7 @@ mod widgets;
 use eframe::egui;
 
 fn main() -> eframe::Result {
+    if let Some(code) = cli::run(&std::env::args().collect::<Vec<_>>()) { std::process::exit(code); }
     // файл можно передать аргументом (двойной щелчок по документу)
     let open = std::env::args().nth(1).filter(|a| !a.starts_with('-')).map(std::path::PathBuf::from);
     desktop::install();

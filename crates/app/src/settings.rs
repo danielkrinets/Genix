@@ -126,6 +126,10 @@ pub struct Settings {
     pub folders: Vec<ProjectFolder>,
     pub ticket: Option<Ticket>,
     pub shares: Vec<Share>,
+    /// Команда рабочего пространства (демо, только на этом устройстве).
+    pub team: Vec<Person>,
+    /// Версия, для которой уже показывали экран первой загрузки (пусто — программа только что установлена).
+    pub splash_seen: String,
     pub show_left_panel: bool,
     pub show_right_panel: bool,
 }
@@ -159,10 +163,20 @@ impl Default for Settings {
             folders: Vec::new(),
             ticket: None,
             shares: Vec::new(),
+            team: Vec::new(),
+            splash_seen: String::new(),
             show_left_panel: true,
             show_right_panel: true,
         }
     }
+}
+
+/// Почта в нижнем регистре: проверена и ещё не встречается в `existing`.
+fn checked_email(email: &str, existing: &[Person]) -> Result<String, &'static str> {
+    let email = email.trim().to_lowercase();
+    if !crate::home::valid_email(&email) { return Err("Некорректная почта"); }
+    if existing.iter().any(|p| p.email == email) { return Err("Этот человек уже в списке"); }
+    Ok(email)
 }
 
 impl Settings {
@@ -172,13 +186,18 @@ impl Settings {
 
     /// Добавить человека в проект (демо: приглашение никуда не отправляется).
     pub fn add_person(&mut self, path: &str, email: &str, editor: bool) -> Result<(), &'static str> {
-        let email = email.trim().to_lowercase();
-        if !crate::home::valid_email(&email) { return Err("Некорректная почта"); }
-        if self.people_of(path).iter().any(|p| p.email == email) { return Err("Этот человек уже в проекте"); }
+        let email = checked_email(email, self.people_of(path))?;
         match self.shares.iter_mut().find(|s| s.path == path) {
             Some(s) => s.people.push(Person { email, editor }),
             None => self.shares.push(Share { path: path.to_string(), people: vec![Person { email, editor }] }),
         }
+        Ok(())
+    }
+
+    /// Добавить человека в команду.
+    pub fn add_team_member(&mut self, email: &str, editor: bool) -> Result<(), &'static str> {
+        let email = checked_email(email, &self.team)?;
+        self.team.push(Person { email, editor });
         Ok(())
     }
 
@@ -272,7 +291,9 @@ mod tests {
         let mut s = Settings::default();
         assert_eq!(s.add_person("/a.genix", "nope", true), Err("Некорректная почта"));
         assert_eq!(s.add_person("/a.genix", " Ann@Example.com ", true), Ok(()));
-        assert_eq!(s.add_person("/a.genix", "ann@example.com", false), Err("Этот человек уже в проекте"));
+        assert_eq!(s.add_person("/a.genix", "ann@example.com", false), Err("Этот человек уже в списке"));
+        assert_eq!(s.add_team_member("bob@example.com", true), Ok(()));
+        assert_eq!(s.add_team_member("bob@example.com", true), Err("Этот человек уже в списке"));
         assert_eq!(s.people_of("/a.genix").len(), 1);
         s.remove_person("/a.genix", "ann@example.com");
         assert!(s.people_of("/a.genix").is_empty() && s.shares.is_empty());

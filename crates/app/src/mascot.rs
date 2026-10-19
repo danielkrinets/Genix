@@ -10,7 +10,7 @@ fn pupil_offset(eye: Pos2, target: Pos2, r: f32) -> Vec2 {
 }
 
 /// Draws the slime sitting on `ground` (bottom centre). Everything scales with `width`.
-/// `shy` leans it away from the form on its right, looks away and closes the eyes.
+/// `shy` turns its head away from the form on its right: the face slides to the far edge and narrows, the eyes stay open and look aside.
 pub fn paint(ui: &egui::Ui, ground: Pos2, width: f32, shy: bool) {
     let ctx = ui.ctx();
     let reduced = crate::theme::reduced_motion();
@@ -21,7 +21,7 @@ pub fn paint(ui: &egui::Ui, ground: Pos2, width: f32, shy: bool) {
     let height = width * 0.62;
     let wobble = |a: f32| if reduced { 0.0 } else { (t * 1.6 + a * 3.0).sin() * 0.015 + (t * 2.3 - a * 2.0).cos() * 0.01 };
     let breathe = if reduced { 1.0 } else { 1.0 + (t * 1.8).sin() * 0.025 };
-    let lean = -0.10 * width * shy;
+    let lean = -0.14 * width * shy;
     let body = crate::theme::accent();
     let shade = body.lerp_to_gamma(Color32::BLACK, 0.3);
     let ink = Color32::from_rgb(22, 26, 36);
@@ -37,24 +37,24 @@ pub fn paint(ui: &egui::Ui, ground: Pos2, width: f32, shy: bool) {
 
     let eye_y = ground.y - 0.45 * height;
     let eye_r = 0.085 * width;
-    let blink = !reduced && t % 4.5 < 0.12;
+    let turn = -0.24 * width * shy;
+    let blink = !reduced && shy < 0.5 && t % 4.5 < 0.12;
     for side in [-1.0_f32, 1.0] {
-        let eye = Pos2::new(ground.x + lean * 0.9 + 0.16 * width * (1.0 - 0.2 * shy) * side, eye_y);
-        let radius = Vec2::new(eye_r * (1.0 - 0.3 * shy), eye_r);
+        let eye = Pos2::new(ground.x + lean * 0.9 + turn + 0.16 * width * (1.0 - 0.55 * shy) * side, eye_y);
+        let radius = Vec2::new(eye_r * (1.0 - 0.4 * shy), eye_r);
         p.add(egui::Shape::ellipse_filled(eye, radius, Color32::WHITE));
         let follow = pupil_offset(eye, pointer, eye_r);
-        let look = follow + (Vec2::new(-eye_r * 0.5, 0.0) - follow) * shy;
+        let look = follow + (Vec2::new(-eye_r * 0.6, 0.0) - follow) * shy;
         p.add(egui::Shape::circle_filled(eye + look, eye_r * 0.5, ink));
-        let closed = if blink { 1.0 } else { shy };
-        if closed > 0.0 {
-            let lid = egui::Rect::from_min_size(eye - radius, Vec2::new(radius.x * 2.0, radius.y * 2.0 * closed));
-            p.with_clip_rect(egui::Rect::from_center_size(eye, radius * 2.0)).rect_filled(lid, 0.0, body);
+        if blink {
+            let lid = egui::Rect::from_center_size(eye, radius * 2.0);
+            p.with_clip_rect(lid).rect_filled(lid, 0.0, body);
         }
     }
 
     let mouth: Vec<Pos2> = (0..=12).map(|i| {
         let u = i as f32 / 6.0 - 1.0;
-        Pos2::new(ground.x + lean * 0.9 + u * 0.07 * width, eye_y + 0.14 * height + 0.04 * height * (1.0 - u * u) * (1.0 - shy))
+        Pos2::new(ground.x + lean * 0.9 + turn + u * 0.07 * width * (1.0 - 0.5 * shy), eye_y + 0.14 * height + 0.04 * height * (1.0 - u * u))
     }).collect();
     p.add(egui::Shape::line(mouth, Stroke::new(0.02 * width, ink)));
 }

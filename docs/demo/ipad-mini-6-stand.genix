@@ -1,0 +1,365 @@
+{
+  "format": "genix",
+  "version": 1,
+  "params": {
+    "items": {}
+  },
+  "features": [
+    {
+      "uid": 1,
+      "name": "Чертёж 1",
+      "suppressed": false,
+      "kind": {
+        "Sketch": {
+          "plane": {
+            "origin": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "x": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "y": [
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "sketch": {
+            "points": [
+              {
+                "pos": [
+                  0.0,
+                  0.0
+                ]
+              },
+              {
+                "pos": [
+                  80.0,
+                  0.0
+                ]
+              },
+              {
+                "pos": [
+                  80.0,
+                  8.0
+                ]
+              },
+              {
+                "pos": [
+                  10.0,
+                  8.0
+                ]
+              },
+              {
+                "pos": [
+                  10.0,
+                  22.0
+                ]
+              },
+              {
+                "pos": [
+                  0.0,
+                  22.0
+                ]
+              }
+            ],
+            "entities": [
+              {
+                "Line": {
+                  "a": 0,
+                  "b": 1,
+                  "construction": false
+                }
+              },
+              {
+                "Line": {
+                  "a": 1,
+                  "b": 2,
+                  "construction": false
+                }
+              },
+              {
+                "Line": {
+                  "a": 2,
+                  "b": 3,
+                  "construction": false
+                }
+              },
+              {
+                "Line": {
+                  "a": 3,
+                  "b": 4,
+                  "construction": false
+                }
+              },
+              {
+                "Line": {
+                  "a": 4,
+                  "b": 5,
+                  "construction": false
+                }
+              },
+              {
+                "Line": {
+                  "a": 5,
+                  "b": 0,
+                  "construction": false
+                }
+              }
+            ],
+            "constraints": []
+          }
+        }
+      }
+    },
+    {
+      "uid": 2,
+      "name": "Выдавливание 1",
+      "suppressed": false,
+      "kind": {
+        "Extrude": {
+          "sketch": 1,
+          "profiles": [
+            {
+              "seed": [
+                40.0,
+                4.0
+              ],
+              "ids": []
+            }
+          ],
+          "extent": {
+            "Symmetric": "120"
+          },
+          "op": "NewBody"
+        }
+      }
+    },
+    {
+      "uid": 3,
+      "name": "Чертёж 2",
+      "suppressed": false,
+      "kind": {
+        "Sketch": {
+          "plane": {
+            "origin": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "x": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "y": [
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "sketch": {
+            "points": [
+              {
+                "pos": [
+                  22.0,
+                  6.0
+                ]
+              },
+              {
+                "pos": [
+                  34.0,
+                  6.0
+                ]
+              },
+              {
+                "pos": [
+                  58.0,
+                  105.0
+                ]
+              },
+              {
+                "pos": [
+                  46.0,
+                  105.0
+                ]
+              }
+            ],
+            "entities": [
+              {
+                "Line": {
+                  "a": 0,
+                  "b": 1,
+                  "construction": false
+                }
+              },
+              {
+                "Line": {
+                  "a": 1,
+                  "b": 2,
+                  "construction": false
+                }
+              },
+              {
+                "Line": {
+                  "a": 2,
+                  "b": 3,
+                  "construction": false
+                }
+              },
+              {
+                "Line": {
+                  "a": 3,
+                  "b": 0,
+                  "construction": false
+                }
+              }
+            ],
+            "constraints": []
+          }
+        }
+      }
+    },
+    {
+      "uid": 4,
+      "name": "Выдавливание 2",
+      "suppressed": false,
+      "kind": {
+        "Extrude": {
+          "sketch": 3,
+          "profiles": [
+            {
+              "seed": [
+                38.0,
+                50.0
+              ],
+              "ids": []
+            }
+          ],
+          "extent": {
+            "Symmetric": "120"
+          },
+          "op": "Join"
+        }
+      }
+    },
+    {
+      "uid": 5,
+      "name": "Параллелепипед 1",
+      "suppressed": false,
+      "kind": {
+        "Primitive": {
+          "shape": {
+            "Box": {
+              "w": "44",
+              "d": "60",
+              "h": "40"
+            }
+          },
+          "at": [
+            "-22",
+            "18",
+            "38"
+          ],
+          "op": "Cut"
+        }
+      }
+    },
+    {
+      "uid": 6,
+      "name": "Цилиндр 2",
+      "suppressed": false,
+      "kind": {
+        "Primitive": {
+          "shape": {
+            "Cylinder": {
+              "r": "7",
+              "h": "2"
+            }
+          },
+          "at": [
+            "-40",
+            "14",
+            "-0.01"
+          ],
+          "op": "Cut"
+        }
+      }
+    },
+    {
+      "uid": 7,
+      "name": "Цилиндр 3",
+      "suppressed": false,
+      "kind": {
+        "Primitive": {
+          "shape": {
+            "Cylinder": {
+              "r": "7",
+              "h": "2"
+            }
+          },
+          "at": [
+            "40",
+            "14",
+            "-0.01"
+          ],
+          "op": "Cut"
+        }
+      }
+    },
+    {
+      "uid": 8,
+      "name": "Цилиндр 4",
+      "suppressed": false,
+      "kind": {
+        "Primitive": {
+          "shape": {
+            "Cylinder": {
+              "r": "7",
+              "h": "2"
+            }
+          },
+          "at": [
+            "-40",
+            "66",
+            "-0.01"
+          ],
+          "op": "Cut"
+        }
+      }
+    },
+    {
+      "uid": 9,
+      "name": "Цилиндр 5",
+      "suppressed": false,
+      "kind": {
+        "Primitive": {
+          "shape": {
+            "Cylinder": {
+              "r": "7",
+              "h": "2"
+            }
+          },
+          "at": [
+            "40",
+            "66",
+            "-0.01"
+          ],
+          "op": "Cut"
+        }
+      }
+    }
+  ],
+  "next_uid": 10,
+  "rollback": 9,
+  "body_names": {},
+  "hidden_bodies": [],
+  "body_materials": {},
+  "cutter_bodies": [],
+  "visible_sketches": [],
+  "views": []
+}

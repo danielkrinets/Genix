@@ -125,6 +125,21 @@ fn feedback_duration(ui: &egui::Ui, id: egui::Id, active: bool, duration: f64, l
     value
 }
 
+/// Interface-scale slider: the zoom changes once, on release; while dragging only the number moves.
+/// Re-zooming the whole UI on every pointer move made everything stutter.
+pub fn scale_slider(ui: &mut egui::Ui, value: &mut f32) -> egui::Response {
+    let id = egui::Id::new("scale-slider-draft");
+    let mut draft = ui.data(|d| d.get_temp::<f32>(id)).unwrap_or(*value);
+    let response = ui.add(egui::Slider::new(&mut draft, 0.8..=1.6).step_by(0.05).fixed_decimals(2));
+    if response.dragged() {
+        ui.data_mut(|d| d.insert_temp(id, draft));
+    } else {
+        ui.data_mut(|d| d.remove::<f32>(id));
+        if response.drag_stopped() || response.changed() { *value = draft; }
+    }
+    response
+}
+
 #[derive(Clone, Default)]
 struct WarmTip {
     open: Option<egui::Id>,
@@ -266,9 +281,10 @@ pub fn navigation_button_mode(ui: &mut egui::Ui, label: &str, icon: &str, select
     let hover = response.hovered() && !ui.input(|i| i.any_touches());
     let t = feedback(ui, response.id.with("selected"), selected);
     let press = feedback(ui, response.id.with("press"), response.is_pointer_button_down_on());
-    if t > 0.0 || hover { ui.painter().rect_filled(rect, 14.0, crate::theme::tint(if selected { (t * 30.0) as u8 } else { 12 })); }
+    if t > 0.0 { ui.painter().rect_filled(rect, 14.0, crate::theme::accent().gamma_multiply(t)); }
+    if hover && !selected { ui.painter().rect_filled(rect, 14.0, crate::theme::tint(18)); }
     if response.has_focus() { ui.painter().rect_stroke(rect, 14.0, egui::Stroke::new(1.5_f32, crate::theme::accent()), egui::StrokeKind::Inside); }
-    let color = if selected { crate::theme::accent() } else { ui.visuals().text_color() };
+    let color = if selected { crate::theme::on_accent() } else { ui.visuals().text_color() };
     if let Some(img) = crate::icons::icon(icon, 20.0, color) {
         let center = if expanded { rect.left_center() + egui::vec2(23.0, 0.0) } else { rect.center() };
         img.paint_at(ui, egui::Rect::from_center_size(center, egui::vec2(20.0, 20.0) * (1.0 - press * 0.10)));

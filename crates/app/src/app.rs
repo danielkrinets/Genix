@@ -115,9 +115,24 @@ fn detect_device(ctx: &egui::Context) -> Device {
     if r.width().min(r.height()) < 600.0 { Device::Phone } else { Device::Tablet }
 }
 
+/// Группа вкладок как в Chrome: общее имя и цвет, можно свернуть.
+#[derive(Clone)]
+struct TabGroup {
+    id: u32,
+    name: String,
+    color: Color32,
+    collapsed: bool,
+}
+
+const GROUP_COLORS: [Color32; 8] = [
+    Color32::from_rgb(10, 132, 255), Color32::from_rgb(255, 69, 58), Color32::from_rgb(255, 159, 10), Color32::from_rgb(48, 209, 88),
+    Color32::from_rgb(255, 55, 140), Color32::from_rgb(175, 82, 222), Color32::from_rgb(50, 173, 230), Color32::from_rgb(142, 142, 147),
+];
+
 /// Припаркованное состояние неактивной вкладки-документа.
 #[derive(Default)]
 struct Tab {
+    group: Option<u32>,
     doc: Document,
     ev: Evaluator,
     path: Option<PathBuf>,
@@ -167,6 +182,12 @@ pub struct App {
     selection: Vec<u64>,
     /// Папка, в которую попадёт этот проект при первом сохранении.
     folder: Option<String>,
+    group: Option<u32>,
+    tab_groups: Vec<TabGroup>,
+    next_group: u32,
+    /// Короткая плашка «Открываем проект…» после New/Open из меню, Finder и библиотеки.
+    busy: Option<(f64, &'static str)>,
+    splash_started: Option<f64>,
     hover: Option<Hit>,
     cache: RenderCache,
     /// модель, чьи буферы уже на GPU (держим ссылку, чтобы адрес не достался новой модели)
@@ -366,6 +387,11 @@ impl App {
             theme,
             selection: Vec::new(),
             folder: None,
+            group: None,
+            tab_groups: Vec::new(),
+            next_group: 1,
+            busy: None,
+            splash_started: None,
             hover: None,
             cache: RenderCache::default(),
             shown_model: None,
@@ -519,6 +545,7 @@ impl App {
     }
 
     fn open_path(&mut self, p: PathBuf) {
+        self.set_busy(tr("Открываем проект…"));
         let canonical=std::fs::canonicalize(&p).ok();
         if let Some(index)=self.tabs.iter().position(|tab| tab.path.as_ref().is_some_and(|other| other==&p || canonical.as_ref().is_some_and(|p|std::fs::canonicalize(other).ok().as_ref()==Some(p)))) {
             self.switch_tab(index); self.home_active=false; return;
@@ -619,33 +646,58 @@ impl App {
         }
     }
 
-    fn export(&mut self, fmt: &str, now: f64) {
+    /// Selected (or all visible) bodies written in `fmt` ("stl", "3mf" or "obj"); the count of bodies goes along.
+    fn model_bytes(&self, fmt: &str) -> Option<(Vec<u8>, usize)> {
         let model = self.ev.model();
         let mut bodies: Vec<&fusion_core::doc::Body> = model.bodies.iter().filter(|b| self.selection.contains(&b.id)).collect();
         if bodies.is_empty() {
             bodies = model.bodies.iter().filter(|b| !self.doc.hidden_bodies.contains(&b.id)).collect();
         }
-        if bodies.is_empty() {
+        if bodies.is_empty() { return None; }
+        let named = || -> Vec<(&str, &Mesh)> { bodies.iter().map(|b| (self.doc.body_name(b), b.mesh())).collect() };
+        let bytes = match fmt {
+            "obj" => Mesh::write_obj(&named()).into_bytes(),
+            "3mf" => Mesh::write_3mf(&named()),
+            _ => {
+                let mut out = Vec::new();
+                Mesh::write_stl_binary(&bodies.iter().map(|b| b.mesh()).collect::<Vec<_>>(), &mut out);
+                out
+            }
+        };
+        Some((bytes, bodies.len()))
+    }
+
+    fn export(&mut self, fmt: &str, now: f64) {
+        if self.model_bytes(fmt).is_none() {
             self.toast(tr("Нет тел для экспорта"), true, now);
             return;
         }
         let (ext, label) = match fmt { "obj" => ("obj", "OBJ"), "3mf" => ("3mf", "3MF"), _ => ("stl", tr("STL (3D-печать)")) };
         let name = format!("{}.{ext}", self.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| tr("модель").into()));
         let Some(p) = crate::files::save(label, &[ext], &name) else { return };
-        let res = if fmt == "obj" {
-            let named: Vec<(&str, &Mesh)> = bodies.iter().map(|b| (self.doc.body_name(b), b.mesh())).collect();
-            std::fs::write(&p, Mesh::write_obj(&named))
-        } else if fmt == "3mf" {
-            let named: Vec<(&str, &Mesh)> = bodies.iter().map(|b| (self.doc.body_name(b), b.mesh())).collect();
-            std::fs::write(&p, Mesh::write_3mf(&named))
-        } else {
-            let mut out = Vec::new();
-            Mesh::write_stl_binary(&bodies.iter().map(|b| b.mesh()).collect::<Vec<_>>(), &mut out);
-            std::fs::write(&p, out)
-        };
-        match res {
-            Ok(()) => self.toast(tf!("Экспортировано тел: {}", bodies.len()), false, now),
+        let Some((bytes, count)) = self.model_bytes(fmt) else { return };
+        match std::fs::write(&p, bytes) {
+            Ok(()) => self.toast(tf!("Экспортировано тел: {}", count), false, now),
             Err(e) => self.toast(tf!("Ошибка экспорта: {}", e), true, now),
+        }
+    }
+
+    /// Writes the model to a temporary file and opens it in the chosen slicer app.
+    fn open_in_slicer(&mut self, index: usize, now: f64) {
+        let slicer = &crate::slicers::SLICERS[index];
+        let Some(app) = crate::slicers::installed(slicer) else {
+            self.toast(tf!("{} не установлен", slicer.name), true, now);
+            return;
+        };
+        let Some((bytes, _)) = self.model_bytes(slicer.format) else {
+            self.toast(tr("Нет тел для экспорта"), true, now);
+            return;
+        };
+        let stem = self.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| tr("модель").into());
+        let result = crate::slicers::temp_file(&stem, slicer.format).and_then(|file| std::fs::write(&file, bytes).map(|_| file)).map_err(|e| e.to_string()).and_then(|file| crate::slicers::open_in(app, &file));
+        match result {
+            Ok(()) => self.toast(tf!("Открываю в {}…", slicer.name), false, now),
+            Err(e) => self.toast(tf!("Не удалось открыть в слайсере: {}", e), true, now),
         }
     }
 
@@ -695,6 +747,7 @@ impl App {
             cam: self.cam,
             selection: std::mem::take(&mut self.selection),
             folder: self.folder.take(),
+            group: self.group.take(),
         }
     }
 
@@ -708,6 +761,7 @@ impl App {
         self.cam = t.cam;
         self.selection = t.selection;
         self.folder = t.folder;
+        self.group = t.group;
         self.mode = Mode::Idle;
         self.home_active = false;
         self.shown_model = None;
@@ -784,35 +838,144 @@ impl App {
         self.need_fit = false;
     }
 
+    fn set_busy(&mut self, label: &'static str) {
+        self.busy = Some((self.now + 0.6, label));
+    }
+
+    /// Dimmed screen with a spinner card while a project is being prepared or opened.
+    fn busy_overlay(&mut self, ctx: &egui::Context, now: f64) {
+        let Some((until, label)) = self.busy else { return };
+        if now >= until { self.busy = None; return; }
+        let screen = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("busy-overlay")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+            let (rect, _) = ui.allocate_exact_size(screen.size(), egui::Sense::click_and_drag());
+            ui.painter().rect_filled(rect, 0.0, Color32::from_black_alpha(90));
+            let card = Rect::from_center_size(rect.center(), egui::vec2(300.0, 76.0));
+            ui.painter().rect_filled(card, 22.0, crate::theme::surface(ui));
+            let spin = egui::pos2(card.left() + 38.0, card.center().y);
+            let t = now as f32 * 5.5;
+            let arc: Vec<egui::Pos2> = (0..=14).map(|i| {
+                let a = t + i as f32 * std::f32::consts::TAU * 0.75 / 14.0;
+                spin + egui::vec2(a.cos(), a.sin()) * 11.0
+            }).collect();
+            ui.painter().add(egui::Shape::line(arc, egui::Stroke::new(3.0_f32, crate::theme::accent())));
+            ui.painter().text(egui::pos2(card.left() + 68.0, card.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(16.0), ui.visuals().text_color());
+        });
+        ctx.request_repaint();
+    }
+
+    /// First launch after an install or update: logo, progress and a few steps. Returns true while it is on screen.
+    fn splash(&mut self, ctx: &egui::Context, now: f64) -> bool {
+        let version = env!("CARGO_PKG_VERSION");
+        if self.settings.splash_seen == version { return false; }
+        let start = *self.splash_started.get_or_insert(now);
+        let t = if crate::theme::reduced_motion() { 1.0 } else { ((now - start) / 2.6).clamp(0.0, 1.0) as f32 };
+        let first = self.settings.splash_seen.is_empty();
+        let mut skip = false;
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(ctx.style().visuals.panel_fill)).show(ctx, |ui| {
+            skip = ui.interact(ui.max_rect(), ui.id().with("splash-skip"), egui::Sense::click()).clicked();
+            let center = ui.max_rect().center();
+            let logo = Rect::from_center_size(center - egui::vec2(0.0, 70.0), egui::vec2(104.0, 104.0));
+            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(logo), |ui| crate::home::logo(ui, 104.0));
+            ui.painter().text(center + egui::vec2(0.0, 12.0), egui::Align2::CENTER_CENTER, "Genix", egui::FontId::proportional(36.0), ui.visuals().strong_text_color());
+            let line = if first { tr("Добро пожаловать") } else { tr("Обновление установлено") };
+            ui.painter().text(center + egui::vec2(0.0, 46.0), egui::Align2::CENTER_CENTER, format!("{line} · v{version}"), egui::FontId::proportional(14.0), crate::theme::secondary(ui));
+            let bar = Rect::from_center_size(center + egui::vec2(0.0, 92.0), egui::vec2(280.0, 6.0));
+            ui.painter().rect_filled(bar, 3.0, ui.visuals().extreme_bg_color);
+            let eased = 1.0 - (1.0 - t).powi(3);
+            ui.painter().rect_filled(Rect::from_min_size(bar.min, egui::vec2(bar.width() * eased, bar.height())), 3.0, crate::theme::accent());
+            let step = if t < 0.34 { tr("Готовим рабочее пространство…") } else if t < 0.68 { tr("Загружаем библиотеку моделей…") } else { tr("Почти готово…") };
+            ui.painter().text(center + egui::vec2(0.0, 118.0), egui::Align2::CENTER_CENTER, step, egui::FontId::proportional(13.0), crate::theme::secondary(ui));
+        });
+        if t >= 1.0 || skip {
+            self.settings.splash_seen = version.to_string();
+            self.settings.save();
+            return false;
+        }
+        ctx.request_repaint();
+        true
+    }
+
+    fn group_of(&self, i: usize) -> Option<u32> {
+        if i == self.active { self.group } else { self.tabs[i].group }
+    }
+
+    fn set_group(&mut self, i: usize, g: Option<u32>) {
+        if i == self.active { self.group = g } else { self.tabs[i].group = g }
+    }
+
+    /// Порядок показа: вкладки одной группы стоят подряд, как в Chrome.
+    fn tab_order(&self) -> Vec<usize> {
+        let mut order = Vec::new();
+        for i in 0..self.tabs.len() {
+            match self.group_of(i) {
+                Some(g) if order.iter().any(|&k| self.group_of(k) == Some(g)) => {}
+                Some(g) => order.extend((0..self.tabs.len()).filter(|&k| self.group_of(k) == Some(g))),
+                None => order.push(i),
+            }
+        }
+        order
+    }
+
+    fn new_group_for(&mut self, i: usize) {
+        let id = self.next_group;
+        self.next_group += 1;
+        let color = GROUP_COLORS[(id as usize - 1) % GROUP_COLORS.len()];
+        self.tab_groups.push(TabGroup { id, name: format!("{} {}", tr("Группа"), id), color, collapsed: false });
+        self.set_group(i, Some(id));
+    }
+
     fn tab_bar(&mut self, ui: &mut egui::Ui) {
+        enum Act { NewGroup(usize), Join(usize, u32), Leave(usize), Fold(u32), Rename(u32, String), Color(u32, Color32), Ungroup(u32) }
         let idle = matches!(self.mode, Mode::Idle);
         let titles: Vec<(String, bool)> = (0..self.tabs.len()).map(|i| self.tab_title(i)).collect();
-        let (mut go, mut close, mut add) = (None, None, false);
+        let order = self.tab_order();
+        let (mut go, mut close, mut add, mut act, mut home) = (None, None, false, None, false);
         ui.add_enabled_ui(idle, |ui| {
             egui::ScrollArea::horizontal().auto_shrink([false, true]).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
-                    if ui.add(egui::Button::opt_image_and_text(crate::icons::icon("nav_home", 16.0, if self.home_active { crate::theme::on_accent() } else { ui.visuals().text_color() }), Some(RichText::new(tr("Главная")).strong().size(12.5).color(if self.home_active { crate::theme::on_accent() } else { ui.visuals().text_color() }).into())).corner_radius(12).selected(self.home_active).frame(self.home_active).min_size(egui::vec2(90.0, 24.0))).clicked() {
-                        self.home_active = true;
-                        self.home.navigate(crate::home::HomePage::Models);
-                        let list = self.project_list();
-                        self.home.refresh(&list);
-                    }
+                    if crate::ui_kit::b14(ui, tr("Главная"), self.home_active, None, false).tab.clicked() { home = true; }
                     ui.add_space(6.0);
-                    for (i, (name, dirty)) in titles.iter().enumerate() {
-                        let sel = i == self.active && !self.home_active;
-                        let label = format!("{}{}", name, if *dirty { " •" } else { "" });
-                        let r = ui.add(egui::Button::new(RichText::new(label).strong().size(12.5).color(if sel { crate::theme::on_accent() } else { ui.visuals().text_color() })).corner_radius(12).selected(sel).frame(sel).min_size(egui::vec2(90.0, 24.0)));
-                        if r.clicked() {
-                            go = Some(i);
+                    let mut shown_chip: Option<u32> = None;
+                    for &i in &order {
+                        let group = self.group_of(i).and_then(|g| self.tab_groups.iter().find(|x| x.id == g).cloned());
+                        if let Some(g) = &group {
+                            if shown_chip != Some(g.id) {
+                                shown_chip = Some(g.id);
+                                let count = order.iter().filter(|&&k| self.group_of(k) == Some(g.id)).count();
+                                let chip = crate::ui_kit::group_chip(ui, &if g.collapsed { format!("{} · {}", g.name, count) } else { g.name.clone() }, g.color);
+                                if chip.clicked() { act = Some(Act::Fold(g.id)); }
+                                chip.context_menu(|ui| {
+                                    let mut name = g.name.clone();
+                                    if ui.add(egui::TextEdit::singleline(&mut name).desired_width(170.0).margin(egui::Margin::symmetric(10, 8))).changed() { act = Some(Act::Rename(g.id, name)); }
+                                    ui.horizontal(|ui| {
+                                        for c in GROUP_COLORS {
+                                            let (rect, r) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::click());
+                                            ui.painter().circle_filled(rect.center(), 8.0, c);
+                                            if g.color == c { ui.painter().circle_stroke(rect.center(), 10.0, egui::Stroke::new(1.5_f32, ui.visuals().text_color())); }
+                                            if r.clicked() { act = Some(Act::Color(g.id, c)); }
+                                        }
+                                    });
+                                    if menu_item(ui, "close", tr("Разгруппировать")) { act = Some(Act::Ungroup(g.id)); ui.close_menu(); }
+                                });
+                                ui.add_space(2.0);
+                            }
+                            if g.collapsed && i != self.active { continue; }
                         }
-                        if r.middle_clicked() {
-                            close = Some(i);
-                        }
-                        if ui.add(egui::Button::new("✕").small().frame(false)).on_hover_text(tr("Закрыть вкладку")).clicked() {
-                            close = Some(i);
-                        }
-                        ui.add_space(6.0);
+                        let (name, dirty) = &titles[i];
+                        let hit = crate::ui_kit::b14(ui, &format!("{}{}", name, if *dirty { " •" } else { "" }), i == self.active && !self.home_active, group.as_ref().map(|g| g.color), true);
+                        if hit.tab.clicked() { go = Some(i); }
+                        if hit.tab.middle_clicked() || hit.close { close = Some(i); }
+                        hit.tab.context_menu(|ui| {
+                            if menu_item(ui, "add", tr("В новую группу")) { act = Some(Act::NewGroup(i)); ui.close_menu(); }
+                            for g in &self.tab_groups {
+                                if self.group_of(i) != Some(g.id) && menu_item(ui, "tree_folder", &format!("{} «{}»", tr("В группу"), g.name)) { act = Some(Act::Join(i, g.id)); ui.close_menu(); }
+                            }
+                            if self.group_of(i).is_some() && menu_item(ui, "tree_folder_open", tr("Убрать из группы")) { act = Some(Act::Leave(i)); ui.close_menu(); }
+                            if menu_item(ui, "close", tr("Закрыть вкладку")) { close = Some(i); ui.close_menu(); }
+                        });
+                        ui.add_space(4.0);
                     }
                     if ui.add(egui::Button::new(RichText::new("+").size(17.0)).frame(false)).on_hover_text(tr("Новая вкладка")).clicked() {
                         add = true;
@@ -820,6 +983,24 @@ impl App {
                 });
             });
         });
+        match act {
+            Some(Act::NewGroup(i)) => self.new_group_for(i),
+            Some(Act::Join(i, g)) => self.set_group(i, Some(g)),
+            Some(Act::Leave(i)) => self.set_group(i, None),
+            Some(Act::Fold(id)) => if let Some(g) = self.tab_groups.iter_mut().find(|g| g.id == id) { g.collapsed = !g.collapsed },
+            Some(Act::Rename(id, name)) => if let Some(g) = self.tab_groups.iter_mut().find(|g| g.id == id) { g.name = name },
+            Some(Act::Color(id, c)) => if let Some(g) = self.tab_groups.iter_mut().find(|g| g.id == id) { g.color = c },
+            Some(Act::Ungroup(id)) => (0..self.tabs.len()).for_each(|i| if self.group_of(i) == Some(id) { self.set_group(i, None) }),
+            None => {}
+        }
+        let used: Vec<Option<u32>> = (0..self.tabs.len()).map(|i| self.group_of(i)).collect();
+        self.tab_groups.retain(|g| used.contains(&Some(g.id)));
+        if home {
+            self.home_active = true;
+            self.home.navigate(crate::home::HomePage::Models);
+            let list = self.project_list();
+            self.home.refresh(&list);
+        }
         if let Some(i) = go {
             self.home_active = false;
             self.switch_tab(i);
@@ -838,7 +1019,7 @@ impl App {
 
     fn run_confirmed(&mut self, c: Confirm) {
         match c {
-            Confirm::New => self.new_blank_tab(),
+            Confirm::New => { self.set_busy(tr("Подготовка проекта…")); self.new_blank_tab() }
             Confirm::Open => self.open_dialog(),
             Confirm::OpenExample(f) => self.open_in_tab(f(), None),
             Confirm::CloseTab => self.close_tab_now(),
@@ -1396,6 +1577,8 @@ impl App {
         visuals.widgets.active.corner_radius = egui::CornerRadius::same(6);
         visuals.widgets.open.corner_radius = egui::CornerRadius::same(6);
         let start = ui.cursor().left();
+        let has_doc = !self.home_active;
+        let has_model = has_doc && !self.ev.model().bodies.is_empty();
         egui::menu::bar(ui, |ui| {
             crate::home::logo(ui, 18.0);
             ui.menu_button(tr("Файл"), |ui| {
@@ -1418,31 +1601,43 @@ impl App {
                     }
                 });
                 ui.separator();
-                if menu_item(ui, "file_save", tr("Сохранить           ⌘S")) {
+                if ui.add_enabled_ui(has_doc, |ui| menu_item(ui, "file_save", tr("Сохранить           ⌘S"))).inner {
                     ui.close_menu();
                     self.save(false, now);
                 }
-                if menu_item(ui, "file_saveas", tr("Сохранить как…    ⇧⌘S")) {
+                if ui.add_enabled_ui(has_doc, |ui| menu_item(ui, "file_saveas", tr("Сохранить как…    ⇧⌘S"))).inner {
                     ui.close_menu();
                     self.save(true, now);
                 }
                 ui.separator();
-                if menu_item(ui, "file_export_stl", tr("Экспорт STL (3D-печать)…")) {
+                if ui.add_enabled_ui(has_model, |ui| menu_item(ui, "file_export_stl", tr("Экспорт STL (3D-печать)…"))).inner {
                     ui.close_menu();
                     self.export("stl", now);
                 }
-                if menu_item(ui, "sk_photo", tr("Снимок модели PNG без фона…")) {
+                if ui.add_enabled_ui(has_model, |ui| menu_item(ui, "sk_photo", tr("Снимок модели PNG без фона…"))).inner {
                     ui.close_menu();
                     self.export_png(now);
                 }
-                if menu_item(ui, "file_export_3mf", tr("Экспорт 3MF (3D-печать)…")) {
+                if ui.add_enabled_ui(has_model, |ui| menu_item(ui, "file_export_3mf", tr("Экспорт 3MF (3D-печать)…"))).inner {
                     ui.close_menu();
                     self.export("3mf", now);
                 }
-                if menu_item(ui, "file_export_obj", tr("Экспорт OBJ…")) {
+                if ui.add_enabled_ui(has_model, |ui| menu_item(ui, "file_export_obj", tr("Экспорт OBJ…"))).inner {
                     ui.close_menu();
                     self.export("obj", now);
                 }
+                ui.add_enabled_ui(has_model, |ui| {
+                    ui.menu_button(tr("Открыть в слайсере"), |ui| {
+                        for (i, slicer) in crate::slicers::SLICERS.iter().enumerate() {
+                            let installed = crate::slicers::installed(slicer).is_some();
+                            let label = if installed { slicer.name.to_string() } else { format!("{} — {}", slicer.name, tr("не установлен")) };
+                            if ui.add_enabled_ui(installed, |ui| menu_item(ui, "file_export_stl", &label)).inner {
+                                ui.close_menu();
+                                self.open_in_slicer(i, now);
+                            }
+                        }
+                    });
+                });
             });
             ui.menu_button(tr("Правка"), |ui| {
                 if ui.add_enabled(!self.undo.is_empty(), egui::Button::new(tr("Отменить        ⌘Z"))).clicked() {
@@ -1454,7 +1649,7 @@ impl App {
                     self.do_redo();
                 }
                 ui.separator();
-                if ui.button(tr("Параметры…")).clicked() {
+                if ui.add_enabled(has_doc, egui::Button::new(tr("Параметры…"))).clicked() {
                     ui.close_menu();
                     self.params_open = true;
                 }
@@ -1479,7 +1674,7 @@ impl App {
                 ui.separator();
                 crate::widgets::checkbox(ui, &mut self.settings.show_grid, tr("Сетка"));
                 crate::widgets::checkbox(ui, &mut self.show_planes, tr("Плоскости начала координат"));
-                if ui.button(tr("Вписать модель           F")).clicked() {
+                if ui.add_enabled(has_model, egui::Button::new(tr("Вписать модель           F"))).clicked() {
                     ui.close_menu();
                     self.need_fit = true;
                 }
@@ -2180,6 +2375,13 @@ impl App {
                     ui.close_menu();
                     self.start_sketch();
                 }
+                for (icon, label, kind) in [("extrude", "Выдавить", "extrude"), ("hole", "Отверстие", "hole"), ("fillet", "Скругление", "fillet"), ("chamfer", "Фаска", "chamfer"), ("press_pull", "Вытянуть грань", "press_pull")] {
+                    if menu_item(ui, icon, tr(label)) {
+                        ui.close_menu();
+                        self.start_command(kind, now);
+                    }
+                }
+                ui.separator();
                 if menu_item(ui, "nav_fit", tr("Вписать модель")) {
                     ui.close_menu();
                     self.need_fit = true;
@@ -2187,6 +2389,25 @@ impl App {
                 if !self.doc.hidden_bodies.is_empty() && menu_item(ui, "show", tr("Показать все тела")) {
                     self.doc.hidden_bodies.clear();
                     ui.close_menu();
+                }
+            });
+        } else if matches!(self.mode, Mode::Sketch(_)) {
+            resp.context_menu(|ui| {
+                use crate::sketcher::Tool;
+                for (icon, label, tool) in [("sk_line", "Линия", Tool::Line), ("sk_rect", "Прямоугольник", Tool::Rect), ("sk_circle", "Окружность", Tool::Circle), ("sk_dim", "Размер", Tool::Dimension)] {
+                    if menu_item(ui, icon, tr(label)) {
+                        if let Mode::Sketch(s) = &mut self.mode { s.set_tool(tool); }
+                        ui.close_menu();
+                    }
+                }
+                ui.separator();
+                if menu_item(ui, "sk_finish", tr("Завершить чертёж")) {
+                    ui.close_menu();
+                    self.finish_sketch(true);
+                }
+                if menu_item(ui, "close", tr("Отмена")) {
+                    ui.close_menu();
+                    self.finish_sketch(false);
                 }
             });
         }
@@ -2632,6 +2853,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = ctx.input(|i| i.time);
         self.now = now;
+        self.busy_overlay(ctx, now);
         if std::env::var("GENIX_DEBUG_EVENTS").is_ok() {
             ctx.input(|i| {
                 for e in &i.events {
@@ -2699,6 +2921,7 @@ impl eframe::App for App {
         for file in ctx.input(|i| i.raw.dropped_files.clone()) {
             if let Some(path)=file.path {crate::desktop::enqueue(path);}
         }
+        if self.splash(ctx, now) { return; }
         // сначала лицензия, затем аккаунт (демо)
         if !crate::home::unlocked(&self.settings) {
             if crate::home::gate_ui(ctx, &mut self.settings, &mut self.gate) {
@@ -2712,7 +2935,7 @@ impl eframe::App for App {
         }
         for action in crate::desktop::take_actions() {
             match action {
-                crate::desktop::Action::New => self.request(Confirm::New),
+                crate::desktop::Action::New => { self.set_busy(tr("Подготовка проекта…")); self.request(Confirm::New) }
                 crate::desktop::Action::Open => self.request(Confirm::Open),
                 crate::desktop::Action::Save => { self.save(false, now); }
                 crate::desktop::Action::SaveAs => { self.save(true, now); }
@@ -3389,27 +3612,55 @@ impl App {
         }
     }
 
-    /// Поле значения над моделью: главный размер текущей команды можно вписать прямо в окне (как в Fusion).
+    /// Поля значений над моделью: все главные размеры текущей команды можно вписать прямо в окне (как в Fusion),
+    /// не только в правой панели. Длина, радиус, высота, угол, смещение и т. д. — по виду операции.
     fn value_box(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        use fusion_core::doc::{Extent, PatternKind, Shape};
         let Mode::Command(cmd) = &self.mode else { return };
         let uid = cmd.uid;
         let params = self.doc.params.clone();
         let Some(f) = self.doc.feature_mut(uid) else { return };
-        let (label, unit, expr): (&str, &'static str, &mut Expr) = match &mut f.kind {
-            FeatureKind::Extrude { extent: fusion_core::doc::Extent::OneSide(e) | fusion_core::doc::Extent::Symmetric(e), .. } => ("Расстояние", "мм", e),
-            FeatureKind::Fillet { radius, .. } => ("Радиус", "мм", radius),
-            FeatureKind::Chamfer { dist, .. } => ("Расстояние", "мм", dist),
-            FeatureKind::Hole { dia, .. } => ("Диаметр", "мм", dia),
-            FeatureKind::Shell { thickness, .. } => ("Толщина", "мм", thickness),
-            FeatureKind::OffsetPlane { offset, .. } => ("Расстояние", "мм", offset),
+        let mut fields: Vec<(&str, &'static str, &mut Expr)> = match &mut f.kind {
+            FeatureKind::Extrude { extent: Extent::OneSide(e) | Extent::Symmetric(e), .. } => vec![("Расстояние", "мм", e)],
+            FeatureKind::Extrude { extent: Extent::TwoSides(a, b), .. } => vec![("Вперёд", "мм", a), ("Назад", "мм", b)],
+            FeatureKind::Revolve { angle, .. } => vec![("Угол", "°", angle)],
+            FeatureKind::Fillet { radius, .. } => vec![("Радиус", "мм", radius)],
+            FeatureKind::Chamfer { dist, .. } => vec![("Расстояние", "мм", dist)],
+            FeatureKind::Hole { dia, depth, .. } => {
+                let mut v = vec![("Диаметр", "мм", dia)];
+                if let Some(d) = depth { v.push(("Глубина", "мм", d)); }
+                v
+            }
+            FeatureKind::Shell { thickness, .. } => vec![("Толщина", "мм", thickness)],
+            FeatureKind::OffsetPlane { offset, .. } => vec![("Расстояние", "мм", offset)],
+            FeatureKind::PressPull { distance, .. } => vec![("Расстояние", "мм", distance)],
+            FeatureKind::Primitive { shape: Shape::Box { w, d, h }, .. } => vec![("Ширина", "мм", w), ("Глубина", "мм", d), ("Высота", "мм", h)],
+            FeatureKind::Primitive { shape: Shape::Cylinder { r, h }, .. } => vec![("Радиус", "мм", r), ("Высота", "мм", h)],
+            FeatureKind::Primitive { shape: Shape::Sphere { r }, .. } => vec![("Радиус", "мм", r)],
+            FeatureKind::Primitive { shape: Shape::Torus { major, minor }, .. } => vec![("Большой радиус", "мм", major), ("Малый радиус", "мм", minor)],
+            FeatureKind::Scale { factor, uniform: true, .. } => vec![("Масштаб", "×", &mut factor[0])],
+            FeatureKind::Scale { factor, .. } => {
+                let [x, y, z] = factor;
+                vec![("X", "×", x), ("Y", "×", y), ("Z", "×", z)]
+            }
+            FeatureKind::Move { translate, .. } => {
+                let [x, y, z] = translate;
+                vec![("X", "мм", x), ("Y", "мм", y), ("Z", "мм", z)]
+            }
+            FeatureKind::Pattern { kind: PatternKind::Rect { nx, dx, ny, dy }, .. } => vec![("Кол-во X", "", nx), ("Шаг X", "мм", dx), ("Кол-во Y", "", ny), ("Шаг Y", "мм", dy)],
+            FeatureKind::Pattern { kind: PatternKind::Circular { count, angle, .. }, .. } => vec![("Кол-во", "", count), ("Угол", "°", angle)],
             _ => return,
         };
         let mut changed = false;
         egui::Area::new(egui::Id::new("value_box")).fixed_pos(Pos2::new(rect.center().x, rect.top() + 14.0)).pivot(egui::Align2::CENTER_TOP).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
-            egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+            egui::Frame::popup(ui.style()).corner_radius(18).inner_margin(egui::Margin::symmetric(14, 8)).show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(tr(label)).strong());
-                    changed = crate::widgets::expr_field(ui, ("value_box", uid), expr, &params, unit);
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    for (i, (label, unit, expr)) in fields.iter_mut().enumerate() {
+                        if i > 0 { ui.add_space(10.0); }
+                        ui.label(RichText::new(tr(label)).strong());
+                        changed |= crate::widgets::expr_field(ui, ("value_box", uid, i), expr, &params, unit);
+                    }
                 });
             });
         });
@@ -3531,7 +3782,7 @@ impl App {
                     });
                     crate::widgets::toggle(ui, &mut st.reduce_motion, tr("Уменьшить движение"));
                     row(ui, tr("Масштаб интерфейса"), &mut |ui| {
-                        ui.add(egui::Slider::new(&mut st.ui_scale, 0.8..=1.6).step_by(0.05).fixed_decimals(2));
+                        crate::widgets::scale_slider(ui, &mut st.ui_scale);
                     });
                     row(ui, tr("Материал по умолчанию"), &mut |ui| {
                         egui::ComboBox::from_id_salt("mat_default").selected_text(tr(Materials::get(st.material).0)).show_ui(ui, |ui| {
