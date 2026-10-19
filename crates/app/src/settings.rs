@@ -53,6 +53,14 @@ impl VisualStyle {
     }
 }
 
+/// Демонстрационный билет подписки на сервер; `activated` — корешок оторван.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Ticket {
+    pub number: String,
+    pub activated: bool,
+}
+
 /// Папка проектов в библиотеке. `auto_sync` — сохранять её модели на сервер подписки (пока демонстрация).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -100,6 +108,7 @@ pub struct Settings {
     /// Недавние проекты (полные пути), новые первыми.
     pub recent: Vec<String>,
     pub folders: Vec<ProjectFolder>,
+    pub ticket: Option<Ticket>,
     pub show_left_panel: bool,
     pub show_right_panel: bool,
 }
@@ -131,6 +140,7 @@ impl Default for Settings {
             server_demo_account: None,
             recent: Vec::new(),
             folders: Vec::new(),
+            ticket: None,
             show_left_panel: true,
             show_right_panel: true,
         }

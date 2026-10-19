@@ -315,7 +315,7 @@ mod rounded_tests {
     #[test]
     fn feedback_reverses_from_its_current_value_without_jumping() {
         let ctx = egui::Context::default();
-        let mut sample = |time: f64, active: bool| {
+        let sample = |time: f64, active: bool| {
             let mut input = egui::RawInput::default(); input.time = Some(time);
             let mut value = 0.0;
             let _ = ctx.run(input, |ctx| { egui::CentralPanel::default().show(ctx, |ui| {
@@ -336,7 +336,7 @@ mod rounded_tests {
     #[test]
     fn checkmark_is_half_drawn_after_160ms_and_finishes_after_320ms() {
         let ctx = egui::Context::default();
-        let mut sample = |time: f64, selected: bool| {
+        let sample = |time: f64, selected: bool| {
             let mut input = egui::RawInput::default(); input.time = Some(time);
             let mut value = 0.0;
             let _ = ctx.run(input, |ctx| { egui::CentralPanel::default().show(ctx, |ui| {

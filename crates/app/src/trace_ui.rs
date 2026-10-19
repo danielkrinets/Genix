@@ -122,9 +122,9 @@ impl TraceDialog {
             p.rect_filled(rect, 4.0, ui.visuals().extreme_bg_color);
             for l in &self.loops {
                 let pts: Vec<Pos2> = l.iter().map(|q| origin + egui::vec2(q[0] as f32, q[1] as f32) * k).collect();
-                p.add(egui::Shape::closed_line(pts, Stroke::new(1.2, accent())));
+                p.add(egui::Shape::closed_line(pts, Stroke::new(1.2_f32, accent())));
             }
-            p.rect_stroke(Rect::from_min_size(origin, egui::vec2(self.w as f32, self.h as f32) * k), 0.0, Stroke::new(1.0, Color32::from_gray(110)), egui::StrokeKind::Inside);
+            p.rect_stroke(Rect::from_min_size(origin, egui::vec2(self.w as f32, self.h as f32) * k), 0.0, Stroke::new(1.0_f32, Color32::from_gray(110)), egui::StrokeKind::Inside);
             let pts: usize = self.loops.iter().map(|l| l.len()).sum();
             ui.label(RichText::new(tf!("Контуров: {}, отрезков: {}", self.loops.len(), pts)).weak().small());
             if pts > 1500 {

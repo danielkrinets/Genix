@@ -12,6 +12,7 @@ mod gpu;
 mod home;
 mod backgrounds;
 mod mascot;
+mod ticket;
 mod updates;
 mod icons;
 mod trace_ui;

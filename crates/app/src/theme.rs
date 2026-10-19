@@ -86,6 +86,7 @@ pub const SURFACE_RADIUS: u8 = 8;
 pub struct ViewColors {
     pub bg_top: Color32,
     pub bg_bottom: Color32,
+    #[cfg(test)]
     pub body: Color32,
     pub body_selected: Color32,
     pub body_hover: Color32,
@@ -110,6 +111,7 @@ impl Theme {
         let common = |bg_top, bg_bottom, edge, grid_minor, grid_major, sketch, dim_text| ViewColors {
             bg_top,
             bg_bottom,
+            #[cfg(test)]
             body: if self == Theme::Light { Color32::from_rgb(160, 168, 180) } else { Color32::from_rgb(176, 184, 198) },
             body_selected: accent(),
             body_hover: Color32::from_rgb(178, 196, 218),

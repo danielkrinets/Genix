@@ -188,43 +188,6 @@ fn grid_level(out: &mut Vec<LineInst>, plane: &Plane, center: P2, step: f64, hal
     }
 }
 
-/// Сетка на плоскости вокруг точки (в координатах плоскости).
-pub fn grid(out: &mut Vec<LineInst>, plane: &Plane, center: P2, step: f64, half_cells: i64, minor: Color32, major: Color32) {
-    let major_every = 5;
-    let cx = (center[0] / step).round() as i64;
-    let cy = (center[1] / step).round() as i64;
-    let (x0, x1) = ((cx - half_cells) as f64 * step, (cx + half_cells) as f64 * step);
-    let (y0, y1) = ((cy - half_cells) as f64 * step, (cy + half_cells) as f64 * step);
-    let radius = half_cells as f64 * step;
-    // линия режется на куски; чем дальше от центра обзора, тем бледнее — сетка растворяется вдали
-    let seg = |out: &mut Vec<LineInst>, a: P2, b: P2, col: Color32| {
-        const K: usize = 10;
-        for k in 0..K {
-            let (t0, t1) = (k as f64 / K as f64, (k + 1) as f64 / K as f64);
-            let mid = [a[0] + (b[0] - a[0]) * (t0 + t1) / 2.0, a[1] + (b[1] - a[1]) * (t0 + t1) / 2.0];
-            let d = ((mid[0] - center[0]).powi(2) + (mid[1] - center[1]).powi(2)).sqrt() / radius;
-            let alpha = (1.0 - d).clamp(0.0, 1.0).powf(1.4) as f32;
-            if alpha < 0.03 {
-                continue;
-            }
-            let p0 = [a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0];
-            let p1 = [a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1];
-            out.push(line(plane.to_world(p0), plane.to_world(p1), col.gamma_multiply(alpha), 1.0));
-        }
-    };
-    for i in -half_cells..=half_cells {
-        let (gx, gy) = (cx + i, cy + i);
-        let (x, y) = (gx as f64 * step, gy as f64 * step);
-        // линии через начало координат рисуются осями отдельно
-        if gx != 0 {
-            seg(out, [x, y0], [x, y1], if gx % major_every == 0 { major } else { minor });
-        }
-        if gy != 0 {
-            seg(out, [x0, y], [x1, y], if gy % major_every == 0 { major } else { minor });
-        }
-    }
-}
-
 /// Числа вдоль осей X и Y плоскости через каждые 5 шагов сетки.
 pub fn axis_labels(painter: &eframe::egui::Painter, cam: &crate::camera::Camera, rect: eframe::egui::Rect, plane: &Plane, major: f64, color: Color32) {
     let font = eframe::egui::FontId::proportional(10.5);

@@ -482,8 +482,20 @@ fn hub_content_inner(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, pr
                     if active {
                         ui.label(RichText::new(tr("Демо-подписка активна")).strong());
                         ui.label(tr("Это локальный статус для проверки интерфейса. Загрузка на сервер недоступна."));
+                        ui.add_space(12.0);
+                        if st.ticket.is_none() {
+                            st.ticket = Some(crate::settings::Ticket { number: crate::ticket::number_for(st.account.as_deref().unwrap_or_default()), activated: false });
+                        }
+                        if let Some(ticket) = st.ticket.clone() {
+                            if crate::ticket::show(ui, &ticket.number, ticket.activated) {
+                                st.ticket = Some(crate::settings::Ticket { activated: true, ..ticket });
+                                action = HomeAction::SettingsChanged;
+                            }
+                        }
+                        ui.add_space(12.0);
                         if ui.button(tr("Отключить демо-подписку")).clicked() {
                             st.server_demo_account = None;
+                            st.ticket = None;
                             action = HomeAction::SettingsChanged;
                         }
                     } else if st.account.is_none() {
@@ -675,7 +687,7 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
                 clip.max.y = clip.max.y.min(top + height * openness);
                 ui.set_clip_rect(clip);
                 ui.set_opacity(openness);
-                ui.set_enabled(h.filters_open);
+                if !h.filters_open { ui.disable(); }
                 egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(20).inner_margin(16).show(ui, |ui| {
                     ui.horizontal_wrapped(|ui| {
                         crate::widgets::checkbox(ui, &mut h.filters.in_path, tr("Искать в пути файла"));

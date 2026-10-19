@@ -238,7 +238,7 @@ fn tree_group(ui: &mut egui::Ui, id: &str, icon: &str, title: String, default_op
     }
     let col = ui.visuals().text_color();
     let mut x = rect.left() + 4.0;
-    let mut draw = |name: &str, size: f32, x: &mut f32| {
+    let draw = |name: &str, size: f32, x: &mut f32| {
         if let Some(img) = crate::icons::icon(name, size, col) {
             img.paint_at(ui, egui::Rect::from_min_size(egui::pos2(*x, rect.center().y - size / 2.0), egui::vec2(size, size)));
         }
