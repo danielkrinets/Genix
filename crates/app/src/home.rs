@@ -70,7 +70,6 @@ pub fn gate_ui(ctx: &egui::Context, st: &mut Settings, g: &mut Gate) -> bool {
             ui.horizontal(|ui| {
             ui.add_space(offset);
             ui.vertical_centered(|ui| {
-                if !wide { ui.label(RichText::new("Genix").size(32.0).strong()); }
                 ui.label(tr("От идеи к вашей следующей модели"));
                 ui.add_space(24.0);
                 ui.allocate_ui_with_layout(egui::vec2(460.0_f32.min(ui.available_width()), 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -380,7 +379,7 @@ fn hub_content(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
 
 fn hub_content_inner(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects: &[String], viewer: bool) -> HomeAction {
     if h.page == HomePage::Models {
-        // фон из бегущих букв убран: мешал читать список моделей
+        crate::backgrounds::paint(ui, ui.max_rect(), false);
         return projects_ui(ui, h, st, projects, viewer)
     }
     let mut action = HomeAction::None;
