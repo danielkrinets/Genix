@@ -157,37 +157,91 @@ pub fn visual_tip(ui: &mut egui::Ui, title: &str, body: &str, kind: &str) {
     let p = ui.painter_at(rect);
     p.rect_filled(rect, 6.0, ui.visuals().extreme_bg_color);
     let ink = ui.visuals().text_color().gamma_multiply(0.72);
-    let accent = accent();
-    let base = egui::Rect::from_min_max(rect.min + egui::vec2(24.0, 55.0), rect.min + egui::vec2(104.0, 88.0));
-    p.rect_filled(base, 5.0, ink.gamma_multiply(0.18));
-    p.rect_stroke(base, 5.0, Stroke::new(1.5_f32, ink), egui::StrokeKind::Inside);
-    let result = egui::Rect::from_min_max(rect.min + egui::vec2(148.0, 30.0), rect.min + egui::vec2(226.0, 88.0));
+    let acc = accent();
+    let cell = egui::vec2(84.0, 84.0);
+    let before = egui::Rect::from_center_size(rect.center() + egui::vec2(-68.0, 0.0), cell);
+    let after = egui::Rect::from_center_size(rect.center() + egui::vec2(68.0, 0.0), cell);
+    tip_shape(&p, before, kind, false, ink, acc);
+    tip_shape(&p, after, kind, true, ink, acc);
+    let y = rect.center().y;
+    let (x0, x1) = (rect.center().x - 16.0, rect.center().x + 16.0);
+    p.line_segment([egui::pos2(x0, y), egui::pos2(x1, y)], Stroke::new(2.0_f32, acc));
+    p.line_segment([egui::pos2(x1 - 6.0, y - 5.0), egui::pos2(x1, y)], Stroke::new(2.0_f32, acc));
+    p.line_segment([egui::pos2(x1 - 6.0, y + 5.0), egui::pos2(x1, y)], Stroke::new(2.0_f32, acc));
+}
+
+/// Схема «до / после» для подсказки: вид сбоку на брусок, над которым выполняется действие.
+fn tip_shape(p: &egui::Painter, r: egui::Rect, kind: &str, done: bool, ink: Color32, acc: Color32) {
+    use egui::{pos2, Pos2, Shape};
+    let fill = ink.gamma_multiply(0.16);
+    let line = Stroke::new(1.5_f32, ink);
+    let hot = Stroke::new(3.0_f32, acc);
+    let b = egui::Rect::from_min_max(r.min + egui::vec2(10.0, 24.0), r.max - egui::vec2(10.0, 12.0));
+    // сплошной контур; углы по часовой стрелке от левого верхнего
+    let poly = |pts: Vec<Pos2>, stroke: Stroke| {
+        p.add(Shape::convex_polygon(pts.clone(), fill, Stroke::NONE));
+        let mut closed = pts;
+        closed.push(closed[0]);
+        p.add(Shape::line(closed, stroke));
+    };
+    let arc = |c: Pos2, rad: f32, a0: f32, a1: f32| -> Vec<Pos2> {
+        (0..=10).map(|i| { let a = a0 + (a1 - a0) * i as f32 / 10.0; pos2(c.x + rad * a.cos(), c.y + rad * a.sin()) }).collect()
+    };
     match kind {
-        "hole" => {
-            p.rect_filled(result, 7.0, accent.gamma_multiply(0.25));
-            p.rect_stroke(result, 7.0, Stroke::new(1.5_f32, accent), egui::StrokeKind::Inside);
-            p.circle_filled(result.center(), 13.0, ui.visuals().extreme_bg_color);
-            p.circle_stroke(result.center(), 13.0, Stroke::new(2.0_f32, accent));
-        }
         "fillet" | "chamfer" => {
-            let a = result.left_bottom(); let b = result.right_top();
-            p.line_segment([a + egui::vec2(0.0,-18.0), a + egui::vec2(28.0,-18.0)], Stroke::new(4.0_f32, accent));
-            p.add(egui::Shape::line(vec![a + egui::vec2(28.0,-18.0), b-egui::vec2(20.0,0.0), b], Stroke::new(4.0_f32, accent)));
+            let k = 20.0;
+            let mut pts = vec![b.left_top()];
+            let mut edge = Vec::new();
+            if !done {
+                pts.push(b.right_top());
+            } else if kind == "fillet" {
+                pts.push(pos2(b.right() - k, b.top()));
+                edge = arc(pos2(b.right() - k, b.top() + k), k, -std::f32::consts::FRAC_PI_2, 0.0);
+                pts.extend(edge.iter().copied());
+            } else {
+                pts.push(pos2(b.right() - k, b.top()));
+                edge = vec![pos2(b.right() - k, b.top()), pos2(b.right(), b.top() + k)];
+                pts.push(pos2(b.right(), b.top() + k));
+            }
+            pts.push(b.right_bottom());
+            pts.push(b.left_bottom());
+            poly(pts, line);
+            if done { p.add(Shape::line(edge, hot)); } else { p.circle_filled(b.right_top(), 4.0, acc); }
+        }
+        "hole" | "cutter" => {
+            poly(vec![b.left_top(), b.right_top(), b.right_bottom(), b.left_bottom()], line);
+            let w = 22.0;
+            let slot = egui::Rect::from_min_max(pos2(b.center().x - w / 2.0, b.top()), pos2(b.center().x + w / 2.0, b.bottom()));
+            if done {
+                p.rect_filled(slot, 0.0, p.ctx().style().visuals.extreme_bg_color);
+                p.line_segment([slot.left_top(), slot.left_bottom()], hot);
+                p.line_segment([slot.right_top(), slot.right_bottom()], hot);
+            } else {
+                p.circle_stroke(pos2(b.center().x, b.top()), 6.0, hot);
+                p.line_segment([pos2(b.center().x, b.top() - 14.0), pos2(b.center().x, b.top() - 3.0)], hot);
+            }
         }
         "sketch" => {
-            p.rect_stroke(result.shrink(15.0), 2.0, Stroke::new(2.5_f32, accent), egui::StrokeKind::Inside);
-            p.circle_stroke(result.center(), 11.0, Stroke::new(2.0_f32, accent));
+            let s = egui::Rect::from_center_size(r.center(), egui::vec2(52.0, 40.0));
+            p.rect_stroke(s, 2.0, if done { hot } else { Stroke::new(2.0_f32, acc) }, egui::StrokeKind::Middle);
+            if done { p.circle_stroke(s.center(), 9.0, hot); }
+        }
+        "extrude" | "revolve" | "sweep" | "loft" | "pipe" => {
+            let s = egui::Rect::from_center_size(r.center() + egui::vec2(-6.0, 8.0), egui::vec2(46.0, 30.0));
+            if !done {
+                p.rect_stroke(s, 2.0, hot, egui::StrokeKind::Middle);
+            } else {
+                let o = egui::vec2(14.0, -14.0);
+                p.add(Shape::convex_polygon(vec![s.left_top(), s.left_top() + o, s.right_top() + o, s.right_top()], fill.gamma_multiply(1.6), line));
+                p.add(Shape::convex_polygon(vec![s.right_top(), s.right_top() + o, s.right_bottom() + o, s.right_bottom()], fill.gamma_multiply(2.4), line));
+                p.add(Shape::convex_polygon(vec![s.left_top(), s.right_top(), s.right_bottom(), s.left_bottom()], fill, hot));
+            }
         }
         _ => {
-            p.rect_filled(result, 7.0, accent.gamma_multiply(0.28));
-            p.rect_stroke(result, 7.0, Stroke::new(1.5_f32, accent), egui::StrokeKind::Inside);
-            p.line_segment([result.left_top()+egui::vec2(10.0,12.0), result.right_top()+egui::vec2(-10.0,12.0)], Stroke::new(2.0_f32, accent));
+            poly(vec![b.left_top(), b.right_top(), b.right_bottom(), b.left_bottom()], line);
+            if done { p.rect_stroke(b.shrink(1.5), 2.0, hot, egui::StrokeKind::Inside); }
         }
     }
-    let y = rect.center().y;
-    p.line_segment([egui::pos2(base.right()+12.0,y), egui::pos2(result.left()-12.0,y)], Stroke::new(2.0_f32, accent));
-    p.line_segment([egui::pos2(result.left()-18.0,y-5.0), egui::pos2(result.left()-12.0,y)], Stroke::new(2.0_f32, accent));
-    p.line_segment([egui::pos2(result.left()-18.0,y+5.0), egui::pos2(result.left()-12.0,y)], Stroke::new(2.0_f32, accent));
 }
 
 /// Все группы вкладки «Твердотельное моделирование». Возвращает выбранный инструмент.
