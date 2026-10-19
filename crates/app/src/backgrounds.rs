@@ -64,7 +64,8 @@ pub fn paint(ui: &egui::Ui, rect: Rect, circles: bool) {
     ui.data_mut(|d| d.insert_temp(id,state.clone()));
     let time = if reduced { 0.0 } else { ui.input(|i| i.time) as f32 };
     let dark = ui.visuals().dark_mode;
-    let bg = if dark { Color32::BLACK } else { Color32::from_rgb(242,242,247) };
+    // Registration keeps the reference's black field; the library blends into the app panel.
+    let bg = if !circles { ui.visuals().panel_fill } else if dark { Color32::BLACK } else { Color32::from_rgb(242,242,247) };
     let p = ui.painter_at(rect);
     p.rect_filled(rect, 0.0, bg);
     // Bound geometry cost on large displays while keeping the requested 12px circle grid.
@@ -112,7 +113,8 @@ pub fn paint(ui: &egui::Ui, rect: Rect, circles: bool) {
         let at = Pos2::new(rect.left()+rect.width()*0.255,rect.center().y);
         p.text(at,egui::Align2::CENTER_CENTER,"Genix",egui::FontId::proportional((rect.width()*0.12).min(180.0)),bg);
     }
-    if !reduced && ui.input(|i| i.focused) { ui.ctx().request_repaint_after(Duration::from_millis(33)); }
+    // The letter field sits behind a readable list, so it drifts at 10 Hz instead of 30 Hz.
+    if !reduced && ui.input(|i| i.focused) { ui.ctx().request_repaint_after(Duration::from_millis(if circles { 33 } else { 100 })); }
 }
 
 #[cfg(test)]
@@ -143,6 +145,18 @@ mod tests {
                 }); }).shapes
             };
             assert_ne!(render(false),render(true),"circles={circles}");
+        }
+    }
+
+    #[test]
+    fn library_background_uses_the_theme_panel_fill_in_both_themes() {
+        for dark in [true,false] {
+            let ctx=egui::Context::default();
+            ctx.set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
+            let panel=ctx.style().visuals.panel_fill;
+            let out=ctx.run(egui::RawInput::default(),|ctx| { egui::CentralPanel::default().show(ctx,|ui| { paint(ui,Rect::from_min_size(Pos2::ZERO,egui::vec2(600.0,400.0)),false); }); });
+            let filled=out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Rect(r) if r.fill==panel && r.rect.size()==egui::vec2(600.0,400.0)));
+            assert!(filled,"dark={dark}");
         }
     }
 
