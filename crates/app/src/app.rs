@@ -126,6 +126,7 @@ struct Tab {
     redo: Vec<Document>,
     cam: Camera,
     selection: Vec<u64>,
+    folder: Option<String>,
 }
 
 struct Materials;
@@ -164,6 +165,8 @@ pub struct App {
     cam: Camera,
     theme: Theme,
     selection: Vec<u64>,
+    /// Папка, в которую попадёт этот проект при первом сохранении.
+    folder: Option<String>,
     hover: Option<Hit>,
     cache: RenderCache,
     /// модель, чьи буферы уже на GPU (держим ссылку, чтобы адрес не достался новой модели)
@@ -362,6 +365,7 @@ impl App {
             home_active: true,
             theme,
             selection: Vec::new(),
+            folder: None,
             hover: None,
             cache: RenderCache::default(),
             shown_model: None,
@@ -486,6 +490,10 @@ impl App {
         match action {
             HomeAction::None => {},
             HomeAction::New => self.new_blank_tab(),
+            HomeAction::NewIn(folder) => {
+                self.new_blank_tab();
+                self.folder = Some(folder);
+            }
             HomeAction::Open => self.open_dialog(),
             HomeAction::OpenPath(path) => self.open_path(path),
             HomeAction::Example(i) => {
@@ -545,8 +553,15 @@ impl App {
                 self.saved = self.doc.clone();
                 self.last_autosave = now;
                 self.note_recent(&p);
+                let key = p.to_string_lossy().into_owned();
+                if let Some(name) = self.folder.take() {
+                    let target = self.settings.folders.iter().position(|f| f.name == name);
+                    self.settings.move_to_folder(&key, target);
+                    self.settings.save();
+                }
+                let synced = self.settings.server_active() && self.settings.folder_of(&key).is_some_and(|i| self.settings.folders[i].auto_sync);
                 self.path = Some(p);
-                self.toast(tr("Сохранено"), false, now);
+                self.toast(if synced { tr("Сохранено · отправлено на сервер (демо)") } else { tr("Сохранено") }, false, now);
                 true
             }
             Err(e) => {
@@ -679,6 +694,7 @@ impl App {
             redo: std::mem::take(&mut self.redo),
             cam: self.cam,
             selection: std::mem::take(&mut self.selection),
+            folder: self.folder.take(),
         }
     }
 
@@ -691,6 +707,7 @@ impl App {
         self.redo = t.redo;
         self.cam = t.cam;
         self.selection = t.selection;
+        self.folder = t.folder;
         self.mode = Mode::Idle;
         self.home_active = false;
         self.shown_model = None;

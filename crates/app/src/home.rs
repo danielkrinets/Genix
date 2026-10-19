@@ -234,6 +234,9 @@ pub struct HomeState {
     busy: Arc<AtomicUsize>,
     new_project_started: Option<f64>,
     sidebar_pinned: bool,
+    open_folder: Option<String>,
+    folder_draft: String,
+    folder_rename: String,
 }
 
 /// Отрисовать превью документа на фоновом потоке (прозрачный фон, изометрия).
@@ -255,6 +258,8 @@ fn spawn_thumb(key: String, doc: fusion_core::Document, pending: Arc<Mutex<Vec<(
 pub enum HomeAction {
     None,
     New,
+    /// Новый проект сразу в выбранной папке.
+    NewIn(String),
     Open,
     OpenPath(PathBuf),
     Example(usize),
@@ -580,8 +585,11 @@ fn settings_page(ui: &mut egui::Ui, st: &mut Settings, action: &mut HomeAction) 
     if *st != before && matches!(action, HomeAction::None) { *action = HomeAction::SettingsChanged; }
 }
 
-fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, _st: &Settings, projects: &[String], viewer: bool) -> HomeAction {
+fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects: &[String], viewer: bool) -> HomeAction {
     let mut action = HomeAction::None;
+    let mut move_to: Option<(String, Option<usize>)> = None;
+    let folder_idx = h.open_folder.as_ref().and_then(|n| st.folders.iter().position(|f| &f.name == n));
+    if folder_idx.is_none() { h.open_folder = None; }
     let ready: Vec<_> = std::mem::take(&mut *h.pending.lock().unwrap());
     for (k, img) in ready {
         h.inflight.remove(&k);
@@ -604,9 +612,15 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, _st: &Settings, projects: &
         ui.horizontal(|ui| {
             ui.add_space(24.0);
             ui.vertical(|ui| {
-                ui.label(RichText::new(tr("Мои модели")).size(26.0).strong().background_color(ui.visuals().panel_fill));
-                let who = tr("Локальные проекты · выберите модель, чтобы открыть редактор");
-                ui.label(RichText::new(who).color(muted(ui)).background_color(ui.visuals().panel_fill));
+                if let Some(i) = folder_idx {
+                    if ui.add(egui::Button::new(RichText::new(format!("← {}", tr("Все модели"))).color(crate::theme::accent())).frame(false)).clicked() { h.open_folder = None; }
+                    ui.label(RichText::new(st.folders[i].name.as_str()).size(26.0).strong().background_color(ui.visuals().panel_fill));
+                    ui.label(RichText::new(tf!("Моделей в папке: {}", st.folders[i].projects.len())).color(muted(ui)).background_color(ui.visuals().panel_fill));
+                } else {
+                    ui.label(RichText::new(tr("Мои модели")).size(26.0).strong().background_color(ui.visuals().panel_fill));
+                    let who = tr("Локальные проекты · выберите модель, чтобы открыть редактор");
+                    ui.label(RichText::new(who).color(muted(ui)).background_color(ui.visuals().panel_fill));
+                }
             });
         });
         ui.add_space(12.0);
@@ -618,7 +632,7 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, _st: &Settings, projects: &
                     new_project_button(ui, true);
                     if ui.input(|i| i.time) - started >= 0.55 {
                         h.new_project_started = None;
-                        action = HomeAction::New;
+                        action = match &h.open_folder { Some(name) => HomeAction::NewIn(name.clone()), None => HomeAction::New };
                     } else {
                         ui.ctx().request_repaint();
                     }
@@ -692,6 +706,11 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, _st: &Settings, projects: &
         if h.busy.load(Ordering::SeqCst) > 0 || !h.queued.is_empty() {
             ui.horizontal(|ui| { ui.add_space(24.0); crate::widgets::loading(ui, tr("Подготавливаем предпросмотр…")); });
         }
+        if let Some(i) = folder_idx {
+            folder_settings(ui, h, st, i, &mut action);
+        } else if !viewer {
+            folders_section(ui, h, st, &mut action);
+        }
         let thumbs = &h.thumbs;
         let card = |ui: &mut egui::Ui, key: &str, title: &str, sub: &str| -> egui::Response {
             let (rect, resp) = ui.allocate_exact_size(egui::vec2(240.0, 160.0), egui::Sense::click());
@@ -727,19 +746,20 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, _st: &Settings, projects: &
         let q = h.search.trim().to_lowercase();
         ui.horizontal(|ui| {
             ui.add_space(24.0);
-            ui.label(RichText::new(tr("Недавние модели")).size(16.0).strong().color(muted(ui)).background_color(ui.visuals().panel_fill));
+            ui.label(RichText::new(if folder_idx.is_some() { tr("Модели в папке") } else { tr("Недавние модели") }).size(16.0).strong().color(muted(ui)).background_color(ui.visuals().panel_fill));
         });
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-        let mut shown: Vec<&String> = projects.iter().filter(|p| h.infos.get(*p).is_some_and(|i| h.filters.matches(&q, p, i, now))).collect();
+        let visible: Vec<&String> = projects.iter().filter(|p| match folder_idx { Some(i) => st.folders[i].projects.contains(*p), None => st.folder_of(p).is_none() }).collect();
+        let mut shown: Vec<&String> = visible.iter().copied().filter(|p| h.infos.get(*p).is_some_and(|i| h.filters.matches(&q, p, i, now))).collect();
         shown.sort_by(|a,b| {
             let (a,b) = (&h.infos[*a], &h.infos[*b]);
             match h.filters.sort { 1 => b.modified.cmp(&a.modified), 2 => a.name.to_lowercase().cmp(&b.name.to_lowercase()), 3 => b.steps.cmp(&a.steps), _ => std::cmp::Ordering::Equal }
         });
-        ui.horizontal(|ui| { ui.add_space(24.0); ui.label(RichText::new(tf!("Найдено: {} из {}", shown.len(), projects.len())).size(14.0).color(muted(ui)).background_color(ui.visuals().panel_fill)); });
+        ui.horizontal(|ui| { ui.add_space(24.0); ui.label(RichText::new(tf!("Найдено: {} из {}", shown.len(), visible.len())).size(14.0).color(muted(ui)).background_color(ui.visuals().panel_fill)); });
         if shown.is_empty() {
             ui.horizontal(|ui| {
                 ui.add_space(24.0);
-                ui.label(RichText::new(if projects.is_empty() { if viewer { tr("Положите файлы .genix в папку Genix в приложении «Файлы»") } else { tr("Пока нет проектов — создайте новый или откройте файл") } } else { tr("Ничего не найдено") }).color(muted(ui)));
+                ui.label(RichText::new(if visible.is_empty() { if viewer { tr("Положите файлы .genix в папку Genix в приложении «Файлы»") } else { tr("Пока нет проектов — создайте новый или откройте файл") } } else { tr("Ничего не найдено") }).color(muted(ui)));
             });
         }
         ui.horizontal_wrapped(|ui| {
@@ -753,6 +773,13 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, _st: &Settings, projects: &
                 }
                 r.context_menu(|ui| {
                     if cfg!(target_os="macos") && info.exists && crate::app::menu_item(ui, "search", tr("Показать в Finder")) {crate::desktop::reveal(std::path::Path::new(p)); ui.close_menu();}
+                    ui.menu_button(tr("Переместить в папку"), |ui| {
+                        if st.folders.is_empty() { ui.label(RichText::new(tr("Папок пока нет")).color(muted(ui))); }
+                        for (i, f) in st.folders.iter().enumerate() {
+                            if crate::app::menu_item(ui, "tree_folder", f.name.as_str()) { move_to = Some((p.clone(), Some(i))); ui.close_menu(); }
+                        }
+                    });
+                    if st.folder_of(p).is_some() && crate::app::menu_item(ui, "tree_folder_open", tr("Убрать из папки")) { move_to = Some((p.clone(), None)); ui.close_menu(); }
                     if crate::app::menu_item(ui, "close", tr("Убрать из списка")) {
                         action = HomeAction::Forget(p.clone());
                         ui.close_menu();
@@ -760,6 +787,7 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, _st: &Settings, projects: &
                 });
             }
         });
+        if folder_idx.is_some() { return; }
         ui.add_space(18.0);
         ui.horizontal(|ui| {
             ui.add_space(24.0);
@@ -774,7 +802,113 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, _st: &Settings, projects: &
             }
         });
     });
+    if let Some((path, to)) = move_to {
+        st.move_to_folder(&path, to);
+        action = HomeAction::SettingsChanged;
+    }
     action
+}
+
+/// Папки над списком моделей: карточки и создание новой.
+fn folders_section(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, action: &mut HomeAction) {
+    ui.horizontal(|ui| {
+        ui.add_space(24.0);
+        ui.label(RichText::new(tr("Папки")).size(16.0).strong().color(muted(ui)).background_color(ui.visuals().panel_fill));
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.add_space(24.0);
+        for f in &st.folders {
+            let pills: Vec<String> = f.projects.iter().filter_map(|p| h.infos.get(p).map(|info| info.name.clone())).take(3).collect();
+            if folder_card(ui, &f.name, &tf!("моделей: {}", f.projects.len()), &pills, f.auto_sync).clicked() {
+                h.open_folder = Some(f.name.clone());
+                h.folder_rename = f.name.clone();
+            }
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.add_space(24.0);
+        let field = ui.add(egui::TextEdit::singleline(&mut h.folder_draft).font(egui::FontId::proportional(15.0)).margin(egui::Margin::symmetric(12, 10)).hint_text(RichText::new(tr("Название новой папки")).color(muted(ui))).desired_width(220.0).char_limit(60));
+        let name = h.folder_draft.trim().to_string();
+        let free = !name.is_empty() && !st.folders.iter().any(|f| f.name == name);
+        let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if (ui.add_enabled(free, egui::Button::new(tr("Создать папку")).corner_radius(12).min_size(egui::vec2(130.0, 38.0))).clicked() || enter) && free {
+            st.folders.push(crate::settings::ProjectFolder { name, ..Default::default() });
+            h.folder_draft.clear();
+            *action = HomeAction::SettingsChanged;
+        }
+    });
+    ui.add_space(14.0);
+}
+
+/// Настройки открытой папки: автосохранение на сервер (демо), имя, удаление. Модели при удалении остаются.
+fn folder_settings(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, i: usize, action: &mut HomeAction) {
+    let server = st.server_active();
+    ui.horizontal(|ui| {
+        ui.add_space(24.0);
+        egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(20).inner_margin(16).show(ui, |ui| {
+            ui.set_max_width(560.0);
+            let mut sync = st.folders[i].auto_sync;
+            if crate::widgets::toggle(ui, &mut sync, tr("Автосохранение моделей на сервер")).changed() {
+                st.folders[i].auto_sync = sync;
+                *action = HomeAction::SettingsChanged;
+            }
+            let note = if server { tr("Подписка активна (демо): при сохранении модель отправляется в эту папку на сервере.") } else { tr("Нужна подписка на сервер (демо) — оформите её в разделе «Сервер». Пока сохранение только локальное.") };
+            ui.label(RichText::new(note).color(muted(ui)).small());
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut h.folder_rename).margin(egui::Margin::symmetric(12, 8)).desired_width(200.0).char_limit(60));
+                let name = h.folder_rename.trim().to_string();
+                let free = !name.is_empty() && name != st.folders[i].name && !st.folders.iter().any(|f| f.name == name);
+                if ui.add_enabled(free, egui::Button::new(tr("Переименовать")).corner_radius(12)).clicked() {
+                    st.folders[i].name = name.clone();
+                    h.open_folder = Some(name);
+                    *action = HomeAction::SettingsChanged;
+                }
+                if ui.add(egui::Button::new(tr("Удалить папку")).corner_radius(12)).on_hover_text(tr("Модели останутся в библиотеке")).clicked() {
+                    st.folders.remove(i);
+                    h.open_folder = None;
+                    *action = HomeAction::SettingsChanged;
+                }
+            });
+        });
+    });
+    ui.add_space(14.0);
+}
+
+/// Карточка-папка: при наведении створка приоткрывается и из неё выглядывают первые модели.
+fn folder_card(ui: &mut egui::Ui, name: &str, sub: &str, pills: &[String], sync: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(240.0, 160.0), egui::Sense::click());
+    let hover = crate::widgets::feedback(ui, resp.id.with("hover"), resp.hovered() && !ui.input(|i| i.any_touches()));
+    let press = crate::widgets::feedback(ui, resp.id.with("press"), resp.is_pointer_button_down_on());
+    let (accent, base) = (crate::theme::accent(), crate::theme::surface(ui));
+    let (back, front) = (base.lerp_to_gamma(accent, 0.22), base.lerp_to_gamma(accent, 0.10));
+    let p = ui.painter_at(rect);
+    p.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(96.0, 34.0)), egui::CornerRadius { nw: 14, ne: 14, sw: 0, se: 0 }, back);
+    p.rect_filled(egui::Rect::from_min_max(rect.min + egui::vec2(0.0, 18.0), rect.max), 20.0, back);
+    for (k, label) in pills.iter().enumerate() {
+        let rise = (hover * 1.5 - 0.15 * k as f32).clamp(0.0, 1.0);
+        let top = rect.top() + 76.0 + (24.0 + 17.0 * k as f32 - 76.0) * rise;
+        let slot = egui::Rect::from_min_max(egui::pos2(rect.left() + 18.0 + 6.0 * k as f32, top), egui::pos2(rect.right() - 18.0 - 6.0 * k as f32, top + 22.0));
+        p.rect_filled(slot, 11.0, ui.visuals().extreme_bg_color);
+        let mut job = egui::text::LayoutJob::simple(label.clone(), egui::FontId::proportional(12.0), ui.visuals().text_color(), slot.width() - 20.0);
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        let galley = p.layout_job(job);
+        p.galley(slot.left_center() + egui::vec2(10.0, -galley.size().y / 2.0), galley, ui.visuals().text_color());
+    }
+    let flap = egui::Rect::from_min_max(rect.min + egui::vec2(0.0, 70.0 + 6.0 * hover + 2.0 * press), rect.max);
+    p.rect_filled(flap, 20.0, front);
+    p.rect_stroke(flap, 20.0, egui::Stroke::new(1.0_f32, accent.gamma_multiply(0.25)), egui::StrokeKind::Inside);
+    let ink = ui.visuals().text_color();
+    p.text(flap.left_top() + egui::vec2(16.0, 18.0), egui::Align2::LEFT_CENTER, name, egui::FontId::proportional(15.0), ink);
+    p.text(flap.left_top() + egui::vec2(16.0, 40.0), egui::Align2::LEFT_CENTER, sub, egui::FontId::proportional(12.0), muted(ui));
+    if sync {
+        if let Some(icon) = crate::icons::icon("server", 16.0, accent) {
+            icon.paint_at(ui, egui::Rect::from_center_size(flap.right_top() + egui::vec2(-24.0, 18.0), egui::vec2(16.0, 16.0)));
+        }
+    }
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 fn new_project_button(ui: &mut egui::Ui, loading: bool) -> egui::Response {

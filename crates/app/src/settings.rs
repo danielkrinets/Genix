@@ -53,6 +53,15 @@ impl VisualStyle {
     }
 }
 
+/// Папка проектов в библиотеке. `auto_sync` — сохранять её модели на сервер подписки (пока демонстрация).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectFolder {
+    pub name: String,
+    pub projects: Vec<String>,
+    pub auto_sync: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -90,6 +99,7 @@ pub struct Settings {
     pub server_demo_account: Option<String>,
     /// Недавние проекты (полные пути), новые первыми.
     pub recent: Vec<String>,
+    pub folders: Vec<ProjectFolder>,
     pub show_left_panel: bool,
     pub show_right_panel: bool,
 }
@@ -120,6 +130,7 @@ impl Default for Settings {
             display_name: String::new(),
             server_demo_account: None,
             recent: Vec::new(),
+            folders: Vec::new(),
             show_left_panel: true,
             show_right_panel: true,
         }
@@ -127,6 +138,21 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// Подписка на сервер оформлена (пока локальная демонстрация).
+    pub fn server_active(&self) -> bool {
+        self.account.is_some() && self.server_demo_account == self.account
+    }
+
+    pub fn folder_of(&self, path: &str) -> Option<usize> {
+        self.folders.iter().position(|f| f.projects.iter().any(|p| p == path))
+    }
+
+    /// Положить проект в папку `to` (`None` — вынуть из папки); проект бывает только в одной папке.
+    pub fn move_to_folder(&mut self, path: &str, to: Option<usize>) {
+        for f in &mut self.folders { f.projects.retain(|p| p != path); }
+        if let Some(f) = to.and_then(|i| self.folders.get_mut(i)) { f.projects.push(path.to_string()); }
+    }
+
     pub fn path() -> Option<PathBuf> {
         if let Some(path) = std::env::var_os("GENIX_SETTINGS_PATH") { return Some(PathBuf::from(path)); }
         let home = std::env::var_os("HOME").map(PathBuf::from);
@@ -177,6 +203,19 @@ mod tests {
         assert!(old.show_grid);
         // мусор не роняет программу
         assert!(serde_json::from_str::<Settings>("{oops").is_err());
+    }
+
+    #[test]
+    fn a_project_lives_in_one_folder_and_old_files_have_none() {
+        let mut s = Settings::default();
+        s.folders = vec![ProjectFolder { name: "A".into(), ..Default::default() }, ProjectFolder { name: "B".into(), ..Default::default() }];
+        s.move_to_folder("/x.genix", Some(0));
+        s.move_to_folder("/x.genix", Some(1));
+        assert_eq!((s.folder_of("/x.genix"), s.folders[0].projects.len()), (Some(1), 0));
+        s.move_to_folder("/x.genix", None);
+        assert_eq!(s.folder_of("/x.genix"), None);
+        let old: Settings = serde_json::from_str(r#"{"lang":"En"}"#).unwrap();
+        assert!(old.folders.is_empty());
     }
 
     #[test]
