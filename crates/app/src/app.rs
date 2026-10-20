@@ -379,6 +379,11 @@ impl App {
         } else if std::env::var("GENIX_DEMO").is_ok() {
             app.load_doc(crate::examples::bracket(), None);
         }
+        // QA: start on a given library page or inside a folder without clicking (GENIX_PAGE=team|server|settings|updates|profile)
+        if let Ok(page) = std::env::var("GENIX_PAGE") {
+            if let Some(page) = crate::home::HomePage::from_name(&page) { app.home.navigate(page); }
+        }
+        if let Some(folder) = std::env::var("GENIX_FOLDER").ok().filter(|f| !f.is_empty()) { app.home.open_folder(&folder); }
         if std::env::var("GENIX_SKIP_LOGIN").is_ok() {
             app.settings.license.get_or_insert_with(|| "DEMO".into());
             app.settings.account_skipped = true;

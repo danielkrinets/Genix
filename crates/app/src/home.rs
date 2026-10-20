@@ -329,6 +329,13 @@ pub enum HomeAction {
 }
 
 impl HomeState {
+    /// Shows the inside of a folder (used by QA to open one without clicking).
+    pub fn open_folder(&mut self, name: &str) {
+        self.page = HomePage::Models;
+        self.open_folder = Some(name.to_string());
+        self.folder_rename = name.to_string();
+    }
+
     /// Opens the name prompt for a new folder or model (used by the «+» button and the File menu).
     pub fn open_name_dialog(&mut self, folder: bool) {
         self.page = HomePage::Models;
@@ -382,6 +389,18 @@ pub enum HomePage {
 }
 
 impl HomePage {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "models" => Self::Models,
+            "profile" => Self::Profile,
+            "team" => Self::Team,
+            "updates" => Self::Updates,
+            "server" => Self::Server,
+            "settings" => Self::Settings,
+            _ => return None,
+        })
+    }
+
     fn label(self) -> &'static str {
         match self {
             Self::Models => "Мои модели",
@@ -1265,16 +1284,20 @@ fn unused_folder_name(folders: &[crate::settings::ProjectFolder], base: &str) ->
 }
 
 /// Строка настроек: слева название и пояснение, справа элемент управления.
+/// The two columns get fixed widths: a wrapping label would otherwise take the whole row and squeeze the control to nothing.
 fn settings_row(ui: &mut egui::Ui, title: &str, note: Option<&str>, control: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new().inner_margin(egui::Margin::symmetric(20, 14)).show(ui, |ui| {
-        ui.set_min_height(36.0);
+        let total = ui.available_width();
+        let right = 260.0_f32.min(total * 0.45);
+        let left = total - right - 16.0;
         ui.horizontal(|ui| {
-            ui.vertical(|ui| {
+            ui.allocate_ui_with_layout(egui::vec2(left, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.set_width(left);
                 ui.spacing_mut().item_spacing.y = 2.0;
                 ui.label(RichText::new(title).size(15.0));
                 if let Some(note) = note { ui.add(egui::Label::new(RichText::new(note).color(muted(ui)).size(12.5)).wrap()); }
             });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), control);
+            ui.allocate_ui_with_layout(egui::vec2(right, 36.0), egui::Layout::right_to_left(egui::Align::Center), control);
         });
     });
 }
@@ -1284,7 +1307,7 @@ fn folder_settings(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, i: u
     let server = st.server_active();
     ui.horizontal(|ui| {
         ui.add_space(24.0);
-        egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(22).show(ui, |ui| {
+        egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(22).show(ui, |ui| ui.vertical(|ui| {
             ui.set_width(ui.available_width().min(620.0));
             settings_row(ui, tr("Название"), None, |ui| {
                 let field = ui.add(egui::TextEdit::singleline(&mut h.folder_rename).hint_text(RichText::new(tr("Название папки")).color(muted(ui))).margin(egui::Margin::symmetric(12, 8)).font(egui::FontId::proportional(15.0)).desired_width(240.0).char_limit(60));
@@ -1315,7 +1338,7 @@ fn folder_settings(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, i: u
                     *action = HomeAction::SettingsChanged;
                 }
             });
-        });
+        }));
     });
     ui.add_space(14.0);
 }
