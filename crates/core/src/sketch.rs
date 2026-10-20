@@ -718,9 +718,17 @@ impl Sketch {
         if curves.is_empty() {
             return Err("в чертеже пути нет линий или дуг".into());
         }
+        // Lines drawn one after another often get separate end points that only touch visually:
+        // points closer than 1 micron count as one, so such lines still form a chain.
+        let mut canon: Vec<usize> = (0..self.points.len()).collect();
+        for i in 0..self.points.len() {
+            if let Some(j) = (0..i).find(|&j| canon[j] == j && self.p(i).distance(self.p(j)) < 1e-3) {
+                canon[i] = j;
+            }
+        }
         let ends = |i: usize| match self.entities[i] {
-            Entity::Line { a, b, .. } => (a, b),
-            Entity::Arc { a, b, .. } => (a, b),
+            Entity::Line { a, b, .. } => (canon[a], canon[b]),
+            Entity::Arc { a, b, .. } => (canon[a], canon[b]),
             _ => unreachable!(),
         };
         let mut deg = std::collections::HashMap::<usize, usize>::new();
@@ -730,11 +738,14 @@ impl Sketch {
             *deg.entry(b).or_default() += 1;
         }
         if deg.values().any(|d| *d > 2) {
-            return Err("путь не должен ветвиться".into());
+            return Err("путь не должен ветвиться: в одной точке сходятся больше двух линий".into());
         }
         let starts: Vec<usize> = deg.iter().filter(|(_, d)| **d == 1).map(|(p, _)| *p).collect();
+        if starts.is_empty() {
+            return Err("путь замкнут: труба строится по открытой цепочке, удалите одну линию".into());
+        }
         if starts.len() != 2 {
-            return Err("путь должен быть одной незамкнутой цепочкой".into());
+            return Err(format!("линии пути не соединены концами: свободных концов {}, а должно быть 2 (начало и конец трубы)", starts.len()));
         }
         let mut cur = *starts.iter().min().unwrap();
         let mut used = vec![false; self.entities.len()];
@@ -1336,5 +1347,28 @@ mod tests {
         assert!((w.z - 5.0).abs() < 1e-12);
         let side = Plane::from_point_normal(DVec3::new(10.0, 0.0, 0.0), DVec3::X);
         assert!((side.normal() - DVec3::X).length() < 1e-12);
+    }
+
+    #[test]
+    fn chain_path_joins_lines_that_only_touch_and_explains_failures() {
+        // three separate lines with their own end points that coincide: one open chain
+        let mut s = Sketch::default();
+        s.add_line([0.0, 0.0], [10.0, 0.0]);
+        s.add_line([10.0, 0.0], [10.0, 10.0]);
+        s.add_line([10.0, 10.0], [20.0, 10.0]);
+        assert_eq!(s.chain_path().unwrap(), vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [20.0, 10.0]]);
+        // a gap in the middle leaves four free ends
+        let mut gap = Sketch::default();
+        gap.add_line([0.0, 0.0], [10.0, 0.0]);
+        gap.add_line([12.0, 0.0], [20.0, 0.0]);
+        assert!(gap.chain_path().unwrap_err().contains("свободных концов 4"));
+        // a closed square has no ends at all
+        let mut square = Sketch::default();
+        square.add_rect([0.0, 0.0], [10.0, 10.0]);
+        assert!(square.chain_path().unwrap_err().contains("замкнут"));
+        // three lines meeting in one point branch
+        let mut star = Sketch::default();
+        for end in [[10.0, 0.0], [0.0, 10.0], [-10.0, 0.0]] { star.add_line([0.0, 0.0], end); }
+        assert!(star.chain_path().unwrap_err().contains("ветвиться"));
     }
 }

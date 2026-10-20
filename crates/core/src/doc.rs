@@ -1254,6 +1254,19 @@ mod new_ops {
     }
 
     #[test]
+    fn pipe_follows_lines_drawn_one_by_one_whose_ends_only_touch() {
+        // the line tool snaps to the grid, so a line can start exactly where the previous one ended without sharing its end point
+        let mut d = Document::default();
+        let mut path = Sketch::default();
+        path.add_line([0.0, 0.0], [0.0, 30.0]);
+        path.add_line([0.0, 30.0], [30.0, 30.0]);
+        let ps = d.insert(FeatureKind::Sketch { plane: Plane::XZ, sketch: path });
+        d.insert(FeatureKind::Pipe { path: ps, outer: Expr::num(8.0), wall: Expr::num(1.0), op: Op::NewBody });
+        let v = run(&d).model().bodies[0].solid.volume();
+        assert!((v - std::f64::consts::PI * (16.0 - 9.0) * 60.0).abs() / v < 0.03, "{v}");
+    }
+
+    #[test]
     fn press_pull_pushes_and_pulls_a_planar_face_in_both_directions() {
         let top = Plane { origin: [0.0, 0.0, 10.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
         for (distance, expect) in [(5.0, 40.0 * 30.0 * 15.0), (-4.0, 40.0 * 30.0 * 6.0)] {
