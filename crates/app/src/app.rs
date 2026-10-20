@@ -907,6 +907,7 @@ impl App {
             ("fillet", tr("Скругление").to_string(), Start("fillet"), true),
             ("chamfer", tr("Фаска").to_string(), Start("chamfer"), true),
             ("press_pull", tr("Вытянуть грань").to_string(), Start("press_pull"), true),
+            ("align", tr("Поставить на плоскость").to_string(), Start("place"), true),
             ("move", tr("Переместить").to_string(), Start("move"), true),
             ("nav_fit", tr("Вписать модель").to_string(), Fit, true),
             ("file_save", tr("Сохранить").to_string(), Save, false),
@@ -1257,7 +1258,7 @@ impl App {
             self.toast(tr("Сначала создайте чертёж (кнопка «Новый чертёж»)"), true, now);
             return;
         }
-        if matches!(kind, "hole" | "press_pull" | "fillet" | "chamfer" | "scale" | "move" | "mirror" | "pattern" | "combine" | "remove") && model.bodies.is_empty() {
+        if matches!(kind, "hole" | "press_pull" | "place" | "fillet" | "chamfer" | "scale" | "move" | "mirror" | "pattern" | "combine" | "remove") && model.bodies.is_empty() {
             self.toast(tr("Сначала создайте тело"), true, now);
             return;
         }
@@ -1604,6 +1605,8 @@ impl App {
                     _ => None,
                 };
                 let ray = self.last_ray;
+                let face_pick = face;
+                let hit_body = match hit { Some(Hit::Body { slot, .. }) => model.bodies.get(slot).map(|b| b.id), _ => None };
                 let edge = self.hover_edge;
                 let user_planes = self.doc.offset_planes();
                 let Some(f) = self.doc.feature_mut(uid) else { return };
@@ -1626,6 +1629,14 @@ impl App {
                     (FeatureKind::Shell { plane, .. }, _, PickTarget::Face) => {
                         if let Some((pl, _)) = face {
                             *plane = pl;
+                            changed = true;
+                        }
+                    }
+                    (FeatureKind::PlaceOnPlane { body, face, seed, .. }, Some(Hit::Body { t, .. }), PickTarget::Face) => {
+                        if let (Some((pl, _)), Some(id)) = (face_pick, hit_body) {
+                            *face = pl;
+                            *seed = (ray.0 + ray.1 * t).to_array();
+                            *body = id;
                             changed = true;
                         }
                     }
@@ -2546,7 +2557,7 @@ impl App {
                     ui.close_menu();
                     self.start_sketch();
                 }
-                for (icon, label, kind) in [("extrude", "Выдавить", "extrude"), ("hole", "Отверстие", "hole"), ("fillet", "Скругление", "fillet"), ("chamfer", "Фаска", "chamfer"), ("press_pull", "Вытянуть грань", "press_pull")] {
+                for (icon, label, kind) in [("extrude", "Выдавить", "extrude"), ("hole", "Отверстие", "hole"), ("fillet", "Скругление", "fillet"), ("chamfer", "Фаска", "chamfer"), ("press_pull", "Вытянуть грань", "press_pull"), ("align", "Поставить на плоскость", "place")] {
                     if menu_item(ui, icon, tr(label)) {
                         ui.close_menu();
                         self.start_command(kind, now);
@@ -3504,6 +3515,7 @@ fn tool_id(kind: &FeatureKind) -> &'static str {
         FeatureKind::Loft { .. } => "loft",
         FeatureKind::Hole { .. } => "hole",
         FeatureKind::PressPull { .. } => "press_pull",
+        FeatureKind::PlaceOnPlane { .. } => "place",
         FeatureKind::Primitive { shape: Shape::Box { .. }, .. } => "box",
         FeatureKind::Primitive { shape: Shape::Cylinder { .. }, .. } => "cylinder",
         FeatureKind::Primitive { shape: Shape::Sphere { .. }, .. } => "sphere",
@@ -4060,6 +4072,19 @@ mod lifecycle_tests {
 
     fn app() -> App {
         App::from_settings(Settings::default(), Theme::Light)
+    }
+
+    #[test]
+    fn the_place_on_plane_command_starts_on_the_first_body_and_evaluates() {
+        use fusion_core::doc::Shape;
+        let mut app = app();
+        let n = Expr::num;
+        app.doc.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(40.0), d: n(30.0), h: n(10.0) }, at: [n(0.0), n(0.0), n(0.0)], op: fusion_core::Op::NewBody });
+        app.after_doc_change();
+        app.start_command("place", 0.0);
+        let uid = match &app.mode { Mode::Command(c) => c.uid, _ => panic!("the command did not start") };
+        assert!(matches!(app.doc.feature(uid).unwrap().kind, FeatureKind::PlaceOnPlane { .. }));
+        assert!(app.ev.error(uid).is_none(), "{:?}", app.ev.error(uid));
     }
 
     #[test]

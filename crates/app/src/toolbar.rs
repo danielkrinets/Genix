@@ -36,6 +36,7 @@ pub const CREATE: &[Item] = &[
 pub const MODIFY: &[Item] = &[
     it("move", "✚", "Переместить", "M", "Сдвиг/поворот/копирование тел"),
     it("press_pull", "⇅", "Вытянуть грань", "", "Вытянуть или вдавить плоскую грань тела в любую сторону"),
+    it("place", "⤓", "Поставить на плоскость", "", "Положить выбранную грань тела на плоскость: тело встанет на неё гранью"),
     it("scale", "⇲", "Масштаб", "", "Изменить размер тел"),
     it("fillet", "◠", "Скругление", "", "Скруглить прямые рёбра"),
     it("shell", "◰", "Оболочка", "", "Выдолбить тело, оставив стенки"),
@@ -50,7 +51,7 @@ pub const REFERENCE: &[Item] = &[it("plane", "▱", "Смещённая плос
 pub const INSPECT: &[Item] = &[it("measure", "↔", "Измерить", "", "Расстояние между двумя точками тела")];
 
 const QUICK_CREATE: &[&str] = &["sketch", "extrude", "revolve", "hole"];
-const QUICK_MODIFY: &[&str] = &["move", "fillet", "chamfer", "cutter"];
+const QUICK_MODIFY: &[&str] = &["move", "place", "fillet", "chamfer", "cutter"];
 
 /// Большая кнопка: значок над подписью.
 pub fn tool_button(ui: &mut egui::Ui, id: &str, icon: &str, label: &str, enabled: bool, selected: bool) -> Response {

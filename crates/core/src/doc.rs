@@ -165,6 +165,9 @@ pub enum FeatureKind {
     Fillet { body: u64, edges: Vec<EdgeRef>, radius: Expr },
     /// Вспомогательная плоскость на расстоянии от другой плоскости (вдоль её нормали).
     OffsetPlane { base: Plane, offset: Expr },
+    /// Поставить тело на плоскость: грань `face` (нормаль наружу, `seed` — точка на ней) ложится на плоскость `target`,
+    /// тело оказывается по ту сторону плоскости, куда смотрит её нормаль. Положение вдоль плоскости сохраняется.
+    PlaceOnPlane { body: u64, face: Plane, seed: [f64; 3], target: Plane },
     /// Вытягивание плоской грани тела: `plane` — плоскость грани (нормаль наружу), `seed` — точка на грани, `distance` > 0 добавляет материал, < 0 вырезает.
     PressPull { plane: Plane, seed: [f64; 3], distance: Expr },
     /// Оболочка: стенки толщиной `thickness`; грань на плоскости `plane` остаётся открытой (если `open`).
@@ -183,6 +186,7 @@ impl FeatureKind {
             FeatureKind::Primitive { shape: Shape::Torus { .. }, .. } => "Тор",
             FeatureKind::Hole { .. } => "Отверстие",
             FeatureKind::PressPull { .. } => "Вытягивание грани",
+            FeatureKind::PlaceOnPlane { .. } => "Поставить на плоскость",
             FeatureKind::Coil { .. } => "Спираль",
             FeatureKind::Pipe { .. } => "Труба",
             FeatureKind::Sweep { .. } => "По траектории",
@@ -800,6 +804,19 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             apply_op(&mut m, tool, Op::Cut, id_base)?;
             Ok((Arc::new(m), None))
         }
+        FeatureKind::PlaceOnPlane { body, face, seed, target } => {
+            let sel = bodies_by_id(prev, &[*body])?;
+            let (from, to) = (face.normal().normalize(), target.normal().normalize());
+            // the face normal must end up opposite to the plane normal: the face lies on the plane, the body stands on top of it
+            let q = DQuat::from_rotation_arc(from, -to);
+            let pivot = DVec3::from(*seed);
+            let lift = (target.o() - pivot).dot(to);
+            let mat = DMat4::from_translation(to * lift) * DMat4::from_translation(pivot) * DMat4::from_quat(q) * DMat4::from_translation(-pivot);
+            let moved = sel[0].solid.transformed(&mat);
+            let mut m = (**prev).clone();
+            if let Some(b) = m.bodies.iter_mut().find(|b| b.id == *body) { b.solid = Arc::new(moved); }
+            Ok((Arc::new(m), None))
+        }
         FeatureKind::PressPull { plane, seed, distance } => {
             let d = distance.eval(p)?;
             if d.abs() < 1e-9 {
@@ -1250,6 +1267,30 @@ mod new_ops {
             let ev = run(&d);
             let v = ev.model().bodies[0].solid.volume();
             assert!(v < 12000.0 - 100.0 && v > 12000.0 - 1500.0 && v >= expect_min - 80.0, "{v} {expect_min}");
+        }
+    }
+
+    #[test]
+    fn a_face_can_be_put_on_a_plane_from_any_side() {
+        // 40 x 30 x 10 plate. Put its x = 40 end face on the floor (XY), then the same face on the XZ wall.
+        let end = Plane { origin: [40.0, 0.0, 0.0], x: [0.0, 1.0, 0.0], y: [0.0, 0.0, 1.0] };
+        assert!((end.normal() - DVec3::X).length() < 1e-12);
+        for (target, axis) in [(Plane::XY, 2), (Plane { origin: [0.0, 5.0, 0.0], ..Plane::XZ }.flipped(), 1)] {
+            let (mut d, body) = plate();
+            d.insert(FeatureKind::PlaceOnPlane { body, face: end, seed: [40.0, 15.0, 5.0], target });
+            let ev = run(&d);
+            assert_eq!(ev.model().bodies.len(), 1);
+            let b = &ev.model().bodies[0];
+            assert!((b.solid.volume() - 12000.0).abs() < 1.0, "a rigid move must keep the volume");
+            let (lo, hi) = b.mesh().bounds().unwrap();
+            let (min, max) = (lo.to_array()[axis], hi.to_array()[axis]);
+            if axis == 2 {
+                assert!(min.abs() < 1e-6, "the face must touch the floor, lowest point {min}");
+                assert!((max - 40.0).abs() < 1e-6, "the plate is 40 long, so it now stands 40 high, got {max}");
+            } else {
+                // XZ flipped has its normal along +Y at y = 5: the body stands on the +Y side
+                assert!((min - 5.0).abs() < 1e-6 && (max - 45.0).abs() < 1e-6, "{min}..{max}");
+            }
         }
     }
 

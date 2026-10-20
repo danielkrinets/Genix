@@ -46,7 +46,7 @@ impl Command {
         match kind {
             FeatureKind::Extrude { .. } | FeatureKind::Revolve { .. } | FeatureKind::Sweep { .. } | FeatureKind::Loft { .. } => PickTarget::Profiles,
             FeatureKind::Move { .. } | FeatureKind::Mirror { .. } | FeatureKind::Pattern { .. } | FeatureKind::Remove { .. } | FeatureKind::Scale { .. } => PickTarget::Bodies,
-            FeatureKind::Hole { .. } | FeatureKind::OffsetPlane { .. } | FeatureKind::Shell { .. } | FeatureKind::PressPull { .. } => PickTarget::Face,
+            FeatureKind::Hole { .. } | FeatureKind::OffsetPlane { .. } | FeatureKind::Shell { .. } | FeatureKind::PressPull { .. } | FeatureKind::PlaceOnPlane { .. } => PickTarget::Face,
             FeatureKind::Chamfer { .. } | FeatureKind::Fillet { .. } => PickTarget::Edges,
             FeatureKind::Combine { .. } => PickTarget::CombineTarget,
             _ => PickTarget::None,
@@ -328,6 +328,31 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
             changed |= crate::widgets::checkbox(ui, keep_tools, tr("Сохранить инструменты")).changed();
         }
         FeatureKind::Remove { bodies } => bodies_ui(ui, bodies, body_name, &mut changed),
+        FeatureKind::PlaceOnPlane { target, .. } => {
+            section(ui, tr("ГРАНЬ"));
+            ui.label(RichText::new(tr("Щёлкните плоскую грань тела: она ляжет на выбранную плоскость")).weak());
+            section(ui, tr("ПЛОСКОСТЬ"));
+            let floors = [(tr("XY (пол)"), fusion_core::Plane::XY), (tr("XZ (перед)"), fusion_core::Plane::XZ), (tr("YZ (право)"), fusion_core::Plane::YZ)];
+            // which of the three origin planes the target is on (sign of its normal does not matter here)
+            let n = target.normal();
+            let current = (0..3).find(|&i| n.dot(floors[i].1.normal()).abs() > 0.99).unwrap_or(0);
+            let flipped = n.dot(floors[current].1.normal()) < 0.0;
+            let mut pick = current;
+            changed |= row(ui, tr("Плоскость"), |ui| {
+                let mut c = false;
+                egui::ComboBox::from_id_salt("place_plane").selected_text(floors[current].0).show_ui(ui, |ui| {
+                    for (i, (name, _)) in floors.iter().enumerate() { c |= ui.selectable_value(&mut pick, i, *name).changed(); }
+                });
+                c
+            });
+            let mut flip = flipped;
+            changed |= crate::widgets::checkbox(ui, &mut flip, tr("С обратной стороны плоскости")).changed();
+            if pick != current || flip != flipped {
+                let base = floors[pick].1;
+                *target = if flip { base.flipped() } else { base };
+            }
+            ui.label(RichText::new(tr("Положение вдоль плоскости сохраняется, тело встаёт на неё гранью")).weak().small());
+        }
         FeatureKind::PressPull { distance, .. } => {
             section(ui, tr("ГРАНЬ"));
             ui.label(RichText::new(tr("Щёлкните плоскую грань тела")).weak());
@@ -643,6 +668,10 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
         "hole" => {
             let (plane, at) = c.top_face.unwrap_or((fusion_core::Plane::XY, [0.0, 0.0]));
             FeatureKind::Hole { plane, at: [num(at[0].round()), num(at[1].round())], dia: num(8.0), depth: None, kind: HoleKind::Simple }
+        }
+        "place" => {
+            let (face, at) = c.top_face.unwrap_or((fusion_core::Plane::XY, [0.0, 0.0]));
+            FeatureKind::PlaceOnPlane { body: selected.first().copied().or(c.first_body).unwrap_or(0), face, seed: face.to_world(at).to_array(), target: fusion_core::Plane::XY }
         }
         "press_pull" => {
             let (plane, at) = c.top_face.unwrap_or((fusion_core::Plane::XY, [0.0, 0.0]));

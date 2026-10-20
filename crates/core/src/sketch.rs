@@ -34,6 +34,11 @@ impl Plane {
         self.xa().cross(self.ya())
     }
 
+    /// Same plane seen from the other side: the normal points the opposite way.
+    pub fn flipped(&self) -> Plane {
+        Plane { origin: self.origin, x: self.y, y: self.x }
+    }
+
     pub fn to_world(&self, p: P2) -> DVec3 {
         self.o() + self.xa() * p[0] + self.ya() * p[1]
     }
