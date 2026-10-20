@@ -1506,7 +1506,7 @@ impl SketchSession {
                 };
                 let g = painter.layout_no_wrap(label, font.clone(), Color32::WHITE);
                 let r = Rect::from_min_size(m + egui::vec2(16.0, 14.0), g.size() + egui::vec2(10.0, 6.0));
-                painter.rect_filled(r, 4.0, Color32::from_rgba_unmultiplied(20, 40, 70, 220));
+                painter.rect_filled(r, 8.0, Color32::from_rgb(37, 99, 176));
                 painter.galley(r.min + egui::vec2(5.0, 3.0), g, Color32::WHITE);
             }
         }
@@ -1517,7 +1517,10 @@ impl SketchSession {
             let mut keep = true;
             let mut apply = false;
             egui::Area::new(egui::Id::new("dim_editor")).fixed_pos(pos - egui::vec2(60.0, 12.0)).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                egui::Frame::new().fill(Color32::from_rgb(37, 99, 176)).corner_radius(10).inner_margin(egui::Margin::symmetric(10, 5)).show(ui, |ui| {
+                    let v = ui.visuals_mut();
+                    v.override_text_color = Some(Color32::WHITE);
+                    v.extreme_bg_color = Color32::from_rgb(20, 66, 128);
                     ui.horizontal(|ui| {
                         let ok = params.eval(&text).map(|v| v > 0.0).unwrap_or(false);
                         let mut te = egui::TextEdit::singleline(&mut text).desired_width(110.0);

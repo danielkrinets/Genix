@@ -22,6 +22,8 @@ pub enum PickTarget {
     Face,
     /// Прямые рёбра тела (для фаски и скругления).
     Edges,
+    /// Линия чертежа для пути трубы.
+    Path,
 }
 
 pub struct Command {
@@ -48,6 +50,7 @@ impl Command {
             FeatureKind::Move { .. } | FeatureKind::Mirror { .. } | FeatureKind::Pattern { .. } | FeatureKind::Remove { .. } | FeatureKind::Scale { .. } => PickTarget::Bodies,
             FeatureKind::Hole { .. } | FeatureKind::OffsetPlane { .. } | FeatureKind::Shell { .. } | FeatureKind::PressPull { .. } | FeatureKind::PlaceOnPlane { .. } => PickTarget::Face,
             FeatureKind::Chamfer { .. } | FeatureKind::Fillet { .. } => PickTarget::Edges,
+            FeatureKind::Pipe { .. } => PickTarget::Path,
             FeatureKind::Combine { .. } => PickTarget::CombineTarget,
             _ => PickTarget::None,
         }
@@ -61,6 +64,7 @@ impl Command {
             PickTarget::CombineTools => tr("Щёлкните тела-инструменты"),
             PickTarget::Face => tr("Щёлкните плоскую грань тела (для плоскости — ещё и плоскость начала координат)"),
             PickTarget::Edges => tr("Щёлкните прямые рёбра или дуги; повторный щелчок снимает выбор"),
+            PickTarget::Path => tr("Щёлкните линию чертежа — путь трубы"),
             PickTarget::None => tr("Задайте размеры и положение"),
         }
     }
@@ -474,6 +478,9 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
         }
         FeatureKind::Pipe { path, outer, wall, op } => {
             section(ui, tr("ПУТЬ"));
+            if *path == 0 {
+                ui.label(RichText::new(tr("Не выбрано — щёлкните линию чертежа")).color(Color32::from_rgb(200, 120, 0)));
+            }
             changed |= sketch_combo(ui, "pipe_path", path, sketches, None);
             section(ui, tr("РАЗМЕРЫ"));
             changed |= row(ui, tr("Внешний диаметр"), |ui| expr_field(ui, ("pipe", uid, 0), outer, p, "мм"));
@@ -631,10 +638,8 @@ pub struct Ctx {
     pub has_bodies: bool,
     pub selected: Vec<u64>,
     pub last_sketch: Option<(u64, Vec<fusion_core::sketch::ProfileRef>)>,
-    pub sketches: Vec<u64>,
     /// Верхняя грань первого тела и центр на ней (для заготовки отверстия).
     pub top_face: Option<(fusion_core::Plane, [f64; 2])>,
-    pub first_body: Option<u64>,
 }
 
 /// Шаг по умолчанию для новой команды.
@@ -653,13 +658,12 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
         }
         "sweep" => {
             let (sketch, profiles) = c.last_sketch.clone().unwrap_or((0, vec![]));
-            let path = c.sketches.iter().rev().find(|u| *u != &sketch).copied().unwrap_or(0);
-            FeatureKind::Sweep { sketch, profiles, path, op }
+            FeatureKind::Sweep { sketch, profiles, path: 0, op }
         }
         "shell" => FeatureKind::Shell { plane: c.top_face.map(|f| f.0).unwrap_or(fusion_core::Plane::XY), thickness: num(2.0), open: true },
         "plane" => FeatureKind::OffsetPlane { base: fusion_core::Plane::XY, offset: num(10.0) },
         "loft" => FeatureKind::Loft { profiles: vec![], op },
-        "pipe" => FeatureKind::Pipe { path: c.sketches.last().copied().unwrap_or(0), outer: num(10.0), wall: num(1.5), op: if c.has_bodies { Op::NewBody } else { Op::NewBody } },
+        "pipe" => FeatureKind::Pipe { path: 0, outer: num(10.0), wall: num(1.5), op: if c.has_bodies { Op::NewBody } else { Op::NewBody } },
         "box" => FeatureKind::Primitive { shape: Shape::Box { w: num(20.0), d: num(20.0), h: num(20.0) }, at: zero(), op },
         "cylinder" => FeatureKind::Primitive { shape: Shape::Cylinder { r: num(10.0), h: num(20.0) }, at: zero(), op },
         "sphere" => FeatureKind::Primitive { shape: Shape::Sphere { r: num(10.0) }, at: zero(), op },
@@ -671,7 +675,7 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
         }
         "place" => {
             let (face, at) = c.top_face.unwrap_or((fusion_core::Plane::XY, [0.0, 0.0]));
-            FeatureKind::PlaceOnPlane { body: selected.first().copied().or(c.first_body).unwrap_or(0), face, seed: face.to_world(at).to_array(), target: fusion_core::Plane::XY }
+            FeatureKind::PlaceOnPlane { body: selected.first().copied().unwrap_or(0), face, seed: face.to_world(at).to_array(), target: fusion_core::Plane::XY }
         }
         "press_pull" => {
             let (plane, at) = c.top_face.unwrap_or((fusion_core::Plane::XY, [0.0, 0.0]));
@@ -681,8 +685,8 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
         "scale" => FeatureKind::Scale { bodies: selected.to_vec(), factor: [num(2.0), num(1.0), num(1.0)], uniform: true },
         "mirror" => FeatureKind::Mirror { bodies: selected.to_vec(), normal: Axis3::X, join: false },
         "pattern" => FeatureKind::Pattern { bodies: selected.to_vec(), kind: PatternKind::Rect { nx: num(3.0), dx: num(30.0), ny: num(1.0), dy: num(30.0) } },
-        "chamfer" => FeatureKind::Chamfer { body: selected.first().copied().or(c.first_body).unwrap_or(0), edges: vec![], dist: num(1.0) },
-        "fillet" => FeatureKind::Fillet { body: selected.first().copied().or(c.first_body).unwrap_or(0), edges: vec![], radius: num(2.0) },
+        "chamfer" => FeatureKind::Chamfer { body: selected.first().copied().unwrap_or(0), edges: vec![], dist: num(1.0) },
+        "fillet" => FeatureKind::Fillet { body: selected.first().copied().unwrap_or(0), edges: vec![], radius: num(2.0) },
         "combine" => FeatureKind::Combine {
             target: selected.first().copied().unwrap_or(0),
             tools: selected.iter().skip(1).copied().collect(),

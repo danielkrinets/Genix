@@ -770,9 +770,7 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
                     h.new_project_started = Some(ui.input(|i| i.time));
                     ui.ctx().request_repaint();
                 }
-                if !cfg!(target_os = "ios") && crate::ui_kit::b02(ui, tr("Открыть файл…")).clicked() {
-                    action = HomeAction::Open;
-                }
+                plus_button(ui, h);
             }
         });
         ui.add_space(16.0);
@@ -860,24 +858,28 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
                 rect.translate(egui::vec2((t * 28.0 + phase).sin() * 1.1, (t * 31.0 + phase * 1.7).cos() * 0.9))
             } else { rect };
             let v = ui.visuals();
-            let hover = resp.hovered() && !ui.input(|i| i.any_touches());
+            let hover = crate::widgets::feedback(ui, resp.id.with("hover"), resp.hovered() && !ui.input(|i| i.any_touches()));
             let press = crate::widgets::feedback(ui, resp.id.with("press"), resp.is_pointer_button_down_on());
-            let fill = crate::theme::surface(ui).lerp_to_gamma(v.widgets.hovered.weak_bg_fill, press * 0.35);
-            let p = ui.painter_at(rect);
-            p.rect_filled(rect, 20.0, fill);
-            if hover || resp.has_focus() { p.rect_stroke(rect, 20.0, egui::Stroke::new(1.5_f32, crate::theme::tint(150)), egui::StrokeKind::Inside); }
-            let area = egui::Rect::from_min_size(rect.min + egui::vec2(8.0, 8.0), egui::vec2(rect.width() - 16.0, 94.0));
-            p.rect_filled(area, 14.0, ui.visuals().extreme_bg_color);
+            let (base, accent) = (crate::theme::surface(ui), crate::theme::accent());
+            let rect = rect.translate(egui::vec2(0.0, -2.0 * hover + 1.0 * press));
+            let p = ui.painter().with_clip_rect(rect.expand(8.0));
+            // a soft shadow lifts the card on hover instead of an outline
+            p.rect_filled(rect.translate(egui::vec2(0.0, 4.0)).expand(1.0), 24.0, Color32::from_black_alpha((38.0 * hover) as u8));
+            let body = base.lerp_to_gamma(ui.visuals().extreme_bg_color, 0.55);
+            p.rect_filled(rect, 24.0, body);
+            p.rect_stroke(rect, 24.0, egui::Stroke::new(1.0_f32, crate::theme::tint(30)), egui::StrokeKind::Inside);
+            let area = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), 106.0));
+            p.rect_filled(area, egui::CornerRadius { nw: 24, ne: 24, sw: 0, se: 0 }, body.lerp_to_gamma(accent, 0.10 + 0.04 * hover));
             if let Some(t) = thumbs.get(tex_key) {
                 let s = t.size_vec2();
-                let k = (area.width() / s.x).min(area.height() / s.y);
+                let k = ((area.width() - 28.0) / s.x).min((area.height() - 16.0) / s.y);
                 let r = egui::Rect::from_center_size(area.center(), s * k);
                 p.image(t.id(), r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
             } else {
                 p.text(area.center(), egui::Align2::CENTER_CENTER, if h.completed.contains(key) { tr("Предпросмотр недоступен") } else { tr("Предпросмотр…") }, egui::FontId::proportional(12.0), muted(ui));
             }
             if people > 0 {
-                let chip = egui::Rect::from_min_size(area.right_top() + egui::vec2(-48.0, 6.0), egui::vec2(42.0, 20.0));
+                let chip = egui::Rect::from_min_size(area.right_top() + egui::vec2(-52.0, 10.0), egui::vec2(42.0, 20.0));
                 p.rect_filled(chip, 10.0, crate::theme::accent());
                 if let Some(icon) = crate::icons::icon("profile", 13.0, crate::theme::on_accent()) {
                     icon.paint_at(ui, egui::Rect::from_center_size(chip.left_center() + egui::vec2(11.0, 0.0), egui::vec2(13.0, 13.0)));
@@ -889,10 +891,10 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
                 job.wrap.max_rows = 1;
                 job.wrap.break_anywhere = true;
                 let galley = p.layout_job(job);
-                p.galley(rect.left_top() + egui::vec2(12.0, y), galley, color);
+                p.galley(rect.left_top() + egui::vec2(16.0, y), galley, color);
             };
-            text(title, 112.0, 14.0, v.text_color());
-            text(sub, 134.0, 11.5, muted(ui));
+            text(title, 114.0, 15.0, v.text_color());
+            text(sub, 135.0, 11.5, muted(ui));
             if edit {
                 let dot = rect.left_top() + egui::vec2(24.0, 24.0);
                 p.circle_filled(dot, 11.0, if checked { crate::theme::accent() } else { Color32::from_black_alpha(110) });
@@ -925,7 +927,8 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
             });
         }
         ui.horizontal_wrapped(|ui| {
-            ui.add_space(24.0);
+            ui.spacing_mut().item_spacing = egui::vec2(16.0, 16.0);
+            ui.add_space(22.0);
             for p in shown {
                 let Some(info) = h.infos.get(p).cloned() else { continue };
                 let sub = if info.exists { format!("{} · {}", info.time, info.steps.map(|n| tf!("шагов: {}", n)).unwrap_or_else(|| tr("не читается").into())) } else { tr("файл не найден").into() };
@@ -969,7 +972,8 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
             ui.label(RichText::new(tr("Начните с примера")).size(16.0).strong().color(muted(ui)).background_color(ui.visuals().panel_fill));
         });
         ui.horizontal_wrapped(|ui| {
-            ui.add_space(24.0);
+            ui.spacing_mut().item_spacing = egui::vec2(16.0, 16.0);
+            ui.add_space(22.0);
             for (i, (name, sub)) in [(tr("Кронштейн (параметрический)"), tr("пластина с отверстиями и стойка")), (tr("Втулка (вращение)"), tr("деталь вращения"))].into_iter().enumerate() {
                 let key = format!("ex:{i}");
                 let spinning = h.hover_since.as_ref().filter(|(k, t0)| *k == key && now_t - t0 >= 3.0).map(|(_, t0)| now_t - t0 - 3.0);
@@ -1029,7 +1033,6 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
     }
     share_dialog(ui.ctx(), h, st, &mut action);
     if !viewer {
-        library_fab(ui.ctx(), h);
         name_dialog(ui.ctx(), h, st, &mut action);
     }
     action
@@ -1088,44 +1091,45 @@ fn person_row(ui: &mut egui::Ui, email: &str, role: &str) {
 }
 
 /// Big round «+» on the library background: opens the choice «new model / new folder», each asks for a name.
-fn library_fab(ctx: &egui::Context, h: &mut HomeState) {
-    let fab = egui::Area::new(egui::Id::new("library-fab")).order(egui::Order::Foreground).anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-32.0, -32.0)).show(ctx, |ui| {
-        let (rect, response) = ui.allocate_exact_size(egui::vec2(60.0, 60.0), egui::Sense::click());
-        let open = crate::widgets::feedback(ui, response.id.with("open"), h.fab_open);
-        let hover = crate::widgets::feedback(ui, response.id.with("hover"), response.hovered());
-        let press = crate::widgets::feedback(ui, response.id.with("press"), response.is_pointer_button_down_on());
-        crate::ui_kit::pill_fill(ui, rect.shrink(press * 1.5), 30.0, hover, press);
-        let (c, k, turn) = (rect.center(), 11.0, open * std::f32::consts::FRAC_PI_4);
-        let stroke = egui::Stroke::new(3.0_f32, crate::theme::on_accent());
-        for a in [turn, turn + std::f32::consts::FRAC_PI_2] {
-            let d = egui::vec2(a.cos(), a.sin()) * k;
-            ui.painter().line_segment([c - d, c + d], stroke);
-        }
-        // one physical click can arrive twice within a few frames; a short lock keeps the menu from opening and closing at once
-        let now = ui.input(|i| i.time);
-        if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && now - h.fab_toggled_at > 0.35 {
-            h.fab_open = !h.fab_open;
-            h.fab_toggled_at = now;
-        }
-    }).response.rect;
-    if h.fab_open {
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) { h.fab_open = false; }
-        let menu = egui::Area::new(egui::Id::new("library-fab-menu")).order(egui::Order::Foreground).anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-32.0, -104.0)).show(ctx, |ui| {
-            egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(22).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
-                for (icon, label, folder) in [("add", tr("Новая модель"), false), ("tree_folder", tr("Новая папка"), true)] {
-                    let (rect, row) = ui.allocate_exact_size(egui::vec2(230.0, 48.0), egui::Sense::click());
-                    if row.hovered() { ui.painter().rect_filled(rect, 14.0, crate::theme::tint(30)); }
-                    if let Some(img) = crate::icons::icon(icon, 22.0, crate::theme::accent()) { img.paint_at(ui, egui::Rect::from_center_size(rect.left_center() + egui::vec2(26.0, 0.0), egui::vec2(22.0, 22.0))); }
-                    ui.painter().text(rect.left_center() + egui::vec2(52.0, 0.0), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(16.0), ui.visuals().text_color());
-                    if row.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                        h.name_dialog = Some(NameDialog { folder, text: String::new() });
-                        h.fab_open = false;
-                    }
-                }
-            });
-        }).response.rect;
-        if ctx.input(|i| i.pointer.any_pressed()) && ctx.input(|i| i.pointer.interact_pos()).is_some_and(|at| !fab.contains(at) && !menu.contains(at)) { h.fab_open = false; }
+/// «+» next to «Новый проект»: round 48 px button, opens a small menu with a new model or a new folder.
+fn plus_button(ui: &mut egui::Ui, h: &mut HomeState) {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(48.0, 48.0), egui::Sense::click());
+    let open = crate::widgets::feedback(ui, response.id.with("open"), h.fab_open);
+    let hover = crate::widgets::feedback(ui, response.id.with("hover"), response.hovered());
+    let press = crate::widgets::feedback(ui, response.id.with("press"), response.is_pointer_button_down_on());
+    let (base, accent) = (crate::theme::surface(ui), crate::theme::accent());
+    ui.painter().circle_filled(rect.center(), 24.0 - press, base.lerp_to_gamma(accent, 0.16 + 0.10 * hover));
+    let (c, k, turn) = (rect.center(), 8.5, open * std::f32::consts::FRAC_PI_4);
+    let stroke = egui::Stroke::new(2.4_f32, accent);
+    for a in [turn, turn + std::f32::consts::FRAC_PI_2] {
+        let d = egui::vec2(a.cos(), a.sin()) * k;
+        ui.painter().line_segment([c - d, c + d], stroke);
     }
+    // one physical click can arrive twice within a few frames; a short lock keeps the menu from opening and closing at once
+    let now = ui.input(|i| i.time);
+    let tip = tr("Новая модель или папка");
+    if response.clone().on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() && now - h.fab_toggled_at > 0.35 {
+        h.fab_open = !h.fab_open;
+        h.fab_toggled_at = now;
+    }
+    if !h.fab_open { return; }
+    let ctx = ui.ctx().clone();
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) { h.fab_open = false; }
+    let menu = egui::Area::new(egui::Id::new("library-fab-menu")).order(egui::Order::Foreground).fixed_pos(rect.left_bottom() + egui::vec2(0.0, 8.0)).show(&ctx, |ui| {
+        egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(22).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
+            for (icon, label, folder) in [("add", tr("Новая модель"), false), ("tree_folder", tr("Новая папка"), true)] {
+                let (rect, row) = ui.allocate_exact_size(egui::vec2(230.0, 48.0), egui::Sense::click());
+                if row.hovered() { ui.painter().rect_filled(rect, 14.0, crate::theme::tint(30)); }
+                if let Some(img) = crate::icons::icon(icon, 22.0, crate::theme::accent()) { img.paint_at(ui, egui::Rect::from_center_size(rect.left_center() + egui::vec2(26.0, 0.0), egui::vec2(22.0, 22.0))); }
+                ui.painter().text(rect.left_center() + egui::vec2(52.0, 0.0), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(16.0), ui.visuals().text_color());
+                if row.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    h.name_dialog = Some(NameDialog { folder, text: String::new() });
+                    h.fab_open = false;
+                }
+            }
+        });
+    }).response.rect;
+    if ctx.input(|i| i.pointer.any_pressed()) && ctx.input(|i| i.pointer.interact_pos()).is_some_and(|at| !rect.contains(at) && !menu.contains(at)) { h.fab_open = false; }
 }
 
 /// Name prompt for a new model or folder. Empty name gives a default one; a model made inside an open folder goes into it.
@@ -1237,7 +1241,8 @@ fn folders_section(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, acti
         ui.label(RichText::new(tr("Папки")).size(16.0).strong().color(muted(ui)).background_color(ui.visuals().panel_fill));
     });
     ui.horizontal_wrapped(|ui| {
-        ui.add_space(24.0);
+        ui.spacing_mut().item_spacing = egui::vec2(16.0, 16.0);
+        ui.add_space(22.0);
         let mut dropped: Option<(usize, Vec<String>)> = None;
         let mut deleted: Option<usize> = None;
         for (i, f) in st.folders.iter().enumerate() {

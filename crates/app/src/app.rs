@@ -252,7 +252,7 @@ pub struct App {
 
 /// Кнопка со значком из набора (нет значка — текстовый символ).
 fn icon_button(ui: &mut egui::Ui, id: &str, fallback: &str, selected: bool, tip: &str, min: egui::Vec2) -> bool {
-    let main = if selected { crate::theme::accent() } else { ui.visuals().text_color() };
+    let main = if selected { crate::theme::on_accent() } else { ui.visuals().text_color() };
     let btn = match crate::icons::icon(id, 22.0, main) {
         Some(img) => egui::Button::image(img),
         None => egui::Button::new(RichText::new(fallback).size(16.0)),
@@ -262,7 +262,7 @@ fn icon_button(ui: &mut egui::Ui, id: &str, fallback: &str, selected: bool, tip:
     crate::widgets::warm_tooltip(&response, tip);
     let hover = response.hovered() && !ui.input(|i| i.any_touches());
     if selected || hover {
-        ui.painter().set(background, egui::Shape::rect_filled(response.rect, 12.0, crate::theme::tint(if selected { 46 } else { 20 })));
+        ui.painter().set(background, egui::Shape::rect_filled(response.rect, 12.0, if selected { crate::theme::accent() } else { crate::theme::tint(20) }));
     }
     response.clicked()
 }
@@ -1075,7 +1075,7 @@ impl App {
     }
 
     fn tab_bar(&mut self, ui: &mut egui::Ui) {
-        enum Act { NewGroup(usize), Join(usize, u32), Leave(usize), Fold(u32), Rename(u32, String), Color(u32, Color32), Ungroup(u32) }
+        enum Act { NewGroup(usize), Join(usize, u32), Leave(usize), Fold(u32), Rename(u32, String), Color(u32, Color32), Ungroup(u32), Name(usize, String), Save(usize), Duplicate(usize) }
         let idle = matches!(self.mode, Mode::Idle);
         let titles: Vec<(String, bool)> = (0..self.tabs.len()).map(|i| self.tab_title(i)).collect();
         let order = self.tab_order();
@@ -1117,6 +1117,13 @@ impl App {
                         if hit.tab.clicked() { go = Some(i); }
                         if hit.tab.middle_clicked() || hit.close { close = Some(i); }
                         hit.tab.context_menu(|ui| {
+                            let mut name = if i == self.active { self.suggested.clone() } else { self.tabs[i].suggested.clone() }.unwrap_or_else(|| titles[i].0.clone());
+                            ui.label(RichText::new(tr("НАЗВАНИЕ")).small().weak());
+                            if ui.add(egui::TextEdit::singleline(&mut name).desired_width(170.0).margin(egui::Margin::symmetric(10, 8))).changed() { act = Some(Act::Name(i, name)); }
+                            ui.separator();
+                            if menu_item(ui, "file_save", tr("Сохранить")) { act = Some(Act::Save(i)); ui.close_menu(); }
+                            if menu_item(ui, "add", tr("Дублировать")) { act = Some(Act::Duplicate(i)); ui.close_menu(); }
+                            ui.separator();
                             if menu_item(ui, "add", tr("В новую группу")) { act = Some(Act::NewGroup(i)); ui.close_menu(); }
                             for g in &self.tab_groups {
                                 if self.group_of(i) != Some(g.id) && menu_item(ui, "tree_folder", &format!("{} «{}»", tr("В группу"), g.name)) { act = Some(Act::Join(i, g.id)); ui.close_menu(); }
@@ -1126,7 +1133,7 @@ impl App {
                         });
                         ui.add_space(4.0);
                     }
-                    if ui.add(egui::Button::new(RichText::new("+").size(17.0)).frame(false)).on_hover_text(tr("Новая вкладка")).clicked() {
+                    if ui.add(egui::Button::new(RichText::new("+").size(17.0)).frame(false).min_size(egui::vec2(26.0, 26.0))).on_hover_text(tr("Новая вкладка")).clicked() {
                         add = true;
                     }
                 });
@@ -1140,6 +1147,24 @@ impl App {
             Some(Act::Rename(id, name)) => if let Some(g) = self.tab_groups.iter_mut().find(|g| g.id == id) { g.name = name },
             Some(Act::Color(id, c)) => if let Some(g) = self.tab_groups.iter_mut().find(|g| g.id == id) { g.color = c },
             Some(Act::Ungroup(id)) => (0..self.tabs.len()).for_each(|i| if self.group_of(i) == Some(id) { self.set_group(i, None) }),
+            Some(Act::Name(i, name)) => {
+                let name = if name.trim().is_empty() { None } else { Some(name) };
+                if i == self.active { self.suggested = name; } else { self.tabs[i].suggested = name; }
+            }
+            Some(Act::Save(i)) => {
+                self.home_active = false;
+                self.switch_tab(i);
+                if i == self.active { self.save(false, self.now); }
+            }
+            Some(Act::Duplicate(i)) => {
+                self.home_active = false;
+                self.switch_tab(i);
+                if i == self.active {
+                    let (doc, name) = (self.doc.clone(), self.tab_title(i).0);
+                    self.open_in_tab(doc, None);
+                    self.suggested = Some(format!("{} {}", name, tr("копия")));
+                }
+            }
             None => {}
         }
         let used: Vec<Option<u32>> = (0..self.tabs.len()).map(|i| self.group_of(i)).collect();
@@ -1251,10 +1276,10 @@ impl App {
             .take(self.doc.rollback)
             .rev()
             .filter(|f| matches!(f.kind, FeatureKind::Sketch { .. }) && self.doc.visible_sketches.contains(&f.uid))
-            .find_map(|f| self.ev.sketch(f.uid).map(|s| (f.uid, s)))
-            .map(|(uid, s)| (uid, if s.regions.len() == 1 { vec![ProfileRef::of(&s.regions[0])] } else { vec![] }));
-        let sketches: Vec<u64> = self.doc.features.iter().take(self.doc.rollback).filter(|f| matches!(f.kind, FeatureKind::Sketch { .. })).map(|f| f.uid).collect();
-        if matches!(kind, "extrude" | "revolve" | "sweep" | "loft" | "pipe") && sketches.is_empty() {
+            .next()
+            .map(|f| (f.uid, vec![]));
+        let has_sketch = self.doc.features.iter().take(self.doc.rollback).any(|f| matches!(f.kind, FeatureKind::Sketch { .. }));
+        if matches!(kind, "extrude" | "revolve" | "sweep" | "loft" | "pipe") && !has_sketch {
             self.toast(tr("Сначала создайте чертёж (кнопка «Новый чертёж»)"), true, now);
             return;
         }
@@ -1271,9 +1296,7 @@ impl App {
             has_bodies: !model.bodies.is_empty(),
             selected: self.selection.clone(),
             last_sketch,
-            sketches,
             top_face,
-            first_body: model.bodies.first().map(|b| b.id),
         };
         let feature = commands::default_feature(kind, &ctx);
         let before = self.doc.clone();
@@ -1495,6 +1518,25 @@ impl App {
         v
     }
 
+    /// Чертёж, линия которого ближе всего к лучу щелчка (для пути трубы).
+    fn nearest_sketch_line(&self, (o, d): (DVec3, DVec3)) -> Option<u64> {
+        let tol = self.cam.world_per_pixel(self.viewport) * 10.0;
+        let mut best: Option<(f64, u64)> = None;
+        for uid in self.sketches_to_show() {
+            let Some(sk) = self.ev.sketch(uid) else { continue };
+            for i in 0..sk.sketch.entities.len() {
+                let pts: Vec<DVec3> = sk.sketch.tessellate(i).iter().map(|p| sk.plane.to_world(*p)).collect();
+                for w in pts.windows(2) {
+                    let dist = ray_segment_distance(o, d, w[0], w[1]);
+                    if dist < tol && best.map_or(true, |(b, _)| dist < b) {
+                        best = Some((dist, uid));
+                    }
+                }
+            }
+        }
+        best.map(|(_, u)| u)
+    }
+
     /// Плоскость грани тела в точке попадания.
     fn face_plane(&self, model: &Model, slot: usize, tri: usize) -> Option<(Plane, Vec<usize>)> {
         let b = model.bodies.get(slot)?;
@@ -1608,6 +1650,7 @@ impl App {
                 let face_pick = face;
                 let hit_body = match hit { Some(Hit::Body { slot, .. }) => model.bodies.get(slot).map(|b| b.id), _ => None };
                 let edge = self.hover_edge;
+                let path_pick = if pick == PickTarget::Path { self.nearest_sketch_line(self.last_ray) } else { None };
                 let user_planes = self.doc.offset_planes();
                 let Some(f) = self.doc.feature_mut(uid) else { return };
                 let mut changed = false;
@@ -1663,6 +1706,12 @@ impl App {
                             } else {
                                 edges.push(e);
                             }
+                            changed = true;
+                        }
+                    }
+                    (FeatureKind::Pipe { path, .. }, _, PickTarget::Path) => {
+                        if let Some(u) = path_pick {
+                            *path = u;
                             changed = true;
                         }
                     }
@@ -1884,6 +1933,8 @@ impl App {
 
     fn header_bar(&mut self, ui: &mut egui::Ui, now: f64) {
         ui.horizontal_centered(|ui| {
+            // one row height for menus, undo/redo, tabs and «+», so everything shares the same centre line
+            ui.spacing_mut().interact_size.y = 26.0;
             let width = ui.data(|d| d.get_temp::<f32>(egui::Id::new("menu-width"))).unwrap_or(330.0) + 6.0;
             ui.allocate_ui_with_layout(egui::vec2(width, 28.0), egui::Layout::left_to_right(egui::Align::Center), |ui| self.menu_bar(ui, now));
             ui.separator();
@@ -2952,16 +3003,6 @@ impl App {
                 }
             }
         }
-        // значение у стрелки выдавливания
-        if let Some((base, dir, dist)) = self.extrude_handle() {
-            if let Some(p) = self.cam.project(rect, base + dir * dist) {
-                let text = format!("{} {}", format_num((dist.abs() * 100.0).round() / 100.0), tr("мм"));
-                let g = painter.layout_no_wrap(text, egui::FontId::proportional(13.0), Color32::WHITE);
-                let r = Rect::from_min_size(p + egui::vec2(14.0, -26.0), g.size() + egui::vec2(12.0, 6.0));
-                painter.rect_filled(r, 4.0, Color32::from_rgba_unmultiplied(20, 90, 160, 235));
-                painter.galley(r.min + egui::vec2(6.0, 3.0), g, Color32::WHITE);
-            }
-        }
         // подписи плоскостей
         if self.show_origin_planes() {
             let s = self.origin_plane_size();
@@ -2972,6 +3013,16 @@ impl App {
             }
         }
     }
+}
+
+/// Расстояние от луча (o, d) до отрезка a–b.
+fn ray_segment_distance(o: DVec3, d: DVec3, a: DVec3, b: DVec3) -> f64 {
+    let (v, w) = (b - a, o - a);
+    let (aa, bb, cc, dd, ee) = (d.dot(d), d.dot(v), v.dot(v), d.dot(w), v.dot(w));
+    let den = aa * cc - bb * bb;
+    let t = if den < 1e-12 { 0.0 } else { ((aa * ee - bb * dd) / den).clamp(0.0, 1.0) };
+    let s = ((bb * t - dd) / aa).max(0.0);
+    (o + d * s - (a + v * t)).length()
 }
 
 fn marker(ui: &mut egui::Ui) {
@@ -3802,6 +3853,7 @@ impl App {
         use fusion_core::doc::{Extent, PatternKind, Shape};
         let Mode::Command(cmd) = &self.mode else { return };
         let uid = cmd.uid;
+        let anchor = self.extrude_handle().and_then(|(b, d, l)| self.cam.project(rect, b + d * l));
         let params = self.doc.params.clone();
         let Some(f) = self.doc.feature_mut(uid) else { return };
         let mut fields: Vec<(&str, &'static str, &mut Expr)> = match &mut f.kind {
@@ -3836,16 +3888,28 @@ impl App {
             _ => return,
         };
         let mut changed = false;
-        egui::Area::new(egui::Id::new("value_box")).fixed_pos(Pos2::new(rect.center().x, rect.top() + 14.0)).pivot(egui::Align2::CENTER_TOP).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
-            egui::Frame::popup(ui.style()).corner_radius(18).inner_margin(egui::Margin::symmetric(14, 8)).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    for (i, (label, unit, expr)) in fields.iter_mut().enumerate() {
-                        if i > 0 { ui.add_space(10.0); }
-                        ui.label(RichText::new(tr(label)).strong());
-                        changed |= crate::widgets::expr_field(ui, ("value_box", uid, i), expr, &params, unit);
-                    }
-                });
+        // синие плашки: у ручки выдавливания, иначе сверху по центру
+        let (pos, pivot) = match anchor {
+            Some(p) => (p + egui::vec2(16.0, -16.0), egui::Align2::LEFT_BOTTOM),
+            None => (Pos2::new(rect.center().x, rect.top() + 14.0), egui::Align2::CENTER_TOP),
+        };
+        let blue = Color32::from_rgb(37, 99, 176);
+        egui::Area::new(egui::Id::new("value_box")).fixed_pos(pos).pivot(pivot).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                for (i, (label, unit, expr)) in fields.iter_mut().enumerate() {
+                    egui::Frame::new().fill(blue).corner_radius(10).inner_margin(egui::Margin::symmetric(10, 5)).show(ui, |ui| {
+                        let v = ui.visuals_mut();
+                        v.override_text_color = Some(Color32::WHITE);
+                        v.extreme_bg_color = Color32::from_rgb(20, 66, 128);
+                        v.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            ui.label(RichText::new(tr(label)).size(12.0));
+                            changed |= crate::widgets::expr_field(ui, ("value_box", uid, i), expr, &params, unit);
+                        });
+                    });
+                }
             });
         });
         if changed {
@@ -4075,7 +4139,7 @@ mod lifecycle_tests {
     }
 
     #[test]
-    fn the_place_on_plane_command_starts_on_the_first_body_and_evaluates() {
+    fn the_place_on_plane_command_waits_for_the_user_to_pick_a_face() {
         use fusion_core::doc::Shape;
         let mut app = app();
         let n = Expr::num;
@@ -4084,7 +4148,26 @@ mod lifecycle_tests {
         app.start_command("place", 0.0);
         let uid = match &app.mode { Mode::Command(c) => c.uid, _ => panic!("the command did not start") };
         assert!(matches!(app.doc.feature(uid).unwrap().kind, FeatureKind::PlaceOnPlane { .. }));
-        assert!(app.ev.error(uid).is_none(), "{:?}", app.ev.error(uid));
+        assert!(matches!(app.doc.feature(uid).unwrap().kind, FeatureKind::PlaceOnPlane { body: 0, .. }), "no body may be chosen for the user");
+    }
+
+    #[test]
+    fn the_pipe_command_does_not_pick_a_sketch_by_itself() {
+        let mut app = app();
+        app.doc.insert(FeatureKind::Sketch { plane: Plane::XZ, sketch: Default::default() });
+        app.after_doc_change();
+        app.start_command("pipe", 0.0);
+        let Mode::Command(c) = &app.mode else { panic!("the command did not start") };
+        assert!(c.pick == PickTarget::Path);
+        assert!(matches!(app.doc.feature(c.uid).unwrap().kind, FeatureKind::Pipe { path: 0, .. }));
+    }
+
+    #[test]
+    fn a_click_ray_finds_the_nearest_segment() {
+        let (a, b) = (DVec3::new(0.0, 0.0, 0.0), DVec3::new(10.0, 0.0, 0.0));
+        let d = ray_segment_distance(DVec3::new(5.0, 3.0, 10.0), DVec3::new(0.0, 0.0, -1.0), a, b);
+        assert!((d - 3.0).abs() < 1e-9, "{d}");
+        assert!((ray_segment_distance(DVec3::new(15.0, 0.0, 10.0), DVec3::new(0.0, 0.0, -1.0), a, b) - 5.0).abs() < 1e-9);
     }
 
     #[test]

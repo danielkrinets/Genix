@@ -823,4 +823,10 @@ pub const EN: &[(&str, &str)] = &[
     ("Оранжевый", "Orange"),
     ("Розовый", "Rose"),
     ("Подготавливаем предпросмотр…", "Preparing previews…"),
+    ("НАЗВАНИЕ", "NAME"),
+    ("Дублировать", "Duplicate"),
+    ("копия", "copy"),
+    ("Не выбрано — щёлкните линию чертежа", "Nothing picked: click a sketch line"),
+    ("Щёлкните линию чертежа — путь трубы", "Click a sketch line: the pipe path"),
+    ("Новая модель или папка", "New model or folder"),
 ];

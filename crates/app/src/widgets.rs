@@ -276,8 +276,8 @@ pub fn accent_swatch(ui: &mut egui::Ui, color: crate::theme::Accent, selected: b
 
 pub fn navigation_button_mode(ui: &mut egui::Ui, label: &str, icon: &str, selected: bool, expanded: bool) -> egui::Response {
     let text_width = ui.painter().layout_no_wrap(label.into(), egui::FontId::proportional(14.0), ui.visuals().text_color()).size().x;
-    let width = if ui.layout().main_dir().is_vertical() { ui.available_width() } else if expanded { text_width + 56.0 } else { 48.0 };
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 42.0), egui::Sense::click());
+    let width = if ui.layout().main_dir().is_vertical() { ui.available_width() } else if expanded { text_width + 60.0 } else { 48.0 };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 46.0), egui::Sense::click());
     let hover = response.hovered() && !ui.input(|i| i.any_touches());
     let t = feedback(ui, response.id.with("selected"), selected);
     let press = feedback(ui, response.id.with("press"), response.is_pointer_button_down_on());
@@ -285,11 +285,11 @@ pub fn navigation_button_mode(ui: &mut egui::Ui, label: &str, icon: &str, select
     if hover && !selected { ui.painter().rect_filled(rect, 14.0, crate::theme::tint(18)); }
     if response.has_focus() { ui.painter().rect_stroke(rect, 14.0, egui::Stroke::new(1.5_f32, crate::theme::accent()), egui::StrokeKind::Inside); }
     let color = if selected { crate::theme::on_accent() } else { ui.visuals().text_color() };
-    if let Some(img) = crate::icons::icon(icon, 20.0, color) {
-        let center = if expanded { rect.left_center() + egui::vec2(23.0, 0.0) } else { rect.center() };
-        img.paint_at(ui, egui::Rect::from_center_size(center, egui::vec2(20.0, 20.0) * (1.0 - press * 0.10)));
+    if let Some(img) = crate::icons::icon(icon, 25.0, color) {
+        let center = if expanded { rect.left_center() + egui::vec2(24.0, 0.0) } else { rect.center() };
+        img.paint_at(ui, egui::Rect::from_center_size(center, egui::vec2(25.0, 25.0) * (1.0 - press * 0.10)));
     }
-    if expanded { ui.painter().text(rect.left_center() + egui::vec2(44.0, 0.0), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(14.0), color); }
+    if expanded { ui.painter().text(rect.left_center() + egui::vec2(48.0, 0.0), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(14.0), color); }
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label));
     if expanded { response } else { response.on_hover_text(label) }
 }
