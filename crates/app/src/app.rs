@@ -230,7 +230,8 @@ pub struct App {
     playing: bool,
     last_play: f64,
     new_view_name: String,
-    hover_edge: Option<EdgeRef>,
+    /// Ребро под курсором и тело, которому оно принадлежит.
+    hover_edge: Option<(EdgeRef, u64)>,
     edge_cache: std::cell::RefCell<std::collections::HashMap<usize, (Arc<fusion_core::csg::Solid>, Arc<Vec<EdgeRef>>)>>,
     toast: Option<(String, f64, bool)>,
     rename_body: Option<(u64, String)>,
@@ -918,6 +919,12 @@ impl App {
             ("add", tr("Новая вкладка").to_string(), NewTab, false),
             ("nav_grid", tr("Сетка").to_string(), Grid, false),
         ];
+        // every toolbar tool is searchable too, so nothing hides behind a group dropdown
+        for item in [crate::toolbar::CREATE, crate::toolbar::MODIFY, crate::toolbar::REFERENCE, crate::toolbar::INSPECT].into_iter().flatten() {
+            if !v.iter().any(|(_, _, c, _)| matches!(c, Start(k) if *k == item.id)) && item.id != "sketch" {
+                v.push((item.id, tr(item.label).to_string(), Start(item.id), false));
+            }
+        }
         for (i, s) in crate::slicers::SLICERS.iter().enumerate() {
             if crate::slicers::installed(s).is_some() { v.push(("file_export_stl", format!("{} {}", tr("Открыть в слайсере"), s.name), Slicer(i), true)); }
         }
@@ -964,7 +971,7 @@ impl App {
             use PaletteCmd::*;
             match cmd {
                 Sketch => self.start_sketch(),
-                Start(kind) => self.start_command(kind, now),
+                Start(kind) => self.run_tool(kind, now),
                 Fit => self.need_fit = true,
                 Save => { self.save(false, now); }
                 Export(fmt) => self.export(fmt, now),
@@ -1083,9 +1090,8 @@ impl App {
         ui.add_enabled_ui(idle, |ui| {
             egui::ScrollArea::horizontal().auto_shrink([false, true]).show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
+                    ui.spacing_mut().item_spacing.x = 6.0;
                     if crate::ui_kit::b14(ui, tr("Главная"), self.home_active, None, false).tab.clicked() { home = true; }
-                    ui.add_space(6.0);
                     let mut shown_chip: Option<u32> = None;
                     for &i in &order {
                         let group = self.group_of(i).and_then(|g| self.tab_groups.iter().find(|x| x.id == g).cloned());
@@ -1108,7 +1114,6 @@ impl App {
                                     });
                                     if menu_item(ui, "close", tr("Разгруппировать")) { act = Some(Act::Ungroup(g.id)); ui.close_menu(); }
                                 });
-                                ui.add_space(2.0);
                             }
                             if g.collapsed && i != self.active { continue; }
                         }
@@ -1131,7 +1136,6 @@ impl App {
                             if self.group_of(i).is_some() && menu_item(ui, "tree_folder_open", tr("Убрать из группы")) { act = Some(Act::Leave(i)); ui.close_menu(); }
                             if menu_item(ui, "close", tr("Закрыть вкладку")) { close = Some(i); ui.close_menu(); }
                         });
-                        ui.add_space(4.0);
                     }
                     if ui.add(egui::Button::new(RichText::new("+").size(17.0)).frame(false).min_size(egui::vec2(26.0, 26.0))).on_hover_text(tr("Новая вкладка")).clicked() {
                         add = true;
@@ -1268,7 +1272,7 @@ impl App {
     fn start_command(&mut self, kind: &str, now: f64) {
         self.cancel_mode();
         let model = self.ev.model();
-        // последний видимый чертёж с одним профилем — выбираем сразу
+        // как в Fusion: если в последнем видимом чертеже ровно один контур, он выбран сразу; иначе ждём щелчка
         let last_sketch = self
             .doc
             .features
@@ -1276,8 +1280,9 @@ impl App {
             .take(self.doc.rollback)
             .rev()
             .filter(|f| matches!(f.kind, FeatureKind::Sketch { .. }) && self.doc.visible_sketches.contains(&f.uid))
-            .next()
-            .map(|f| (f.uid, vec![]));
+            .find_map(|f| self.ev.sketch(f.uid).map(|s| (f.uid, s)))
+            .filter(|(_, s)| s.regions.len() == 1)
+            .map(|(uid, s)| (uid, vec![ProfileRef::of(&s.regions[0])]));
         let has_sketch = self.doc.features.iter().take(self.doc.rollback).any(|f| matches!(f.kind, FeatureKind::Sketch { .. }));
         if matches!(kind, "extrude" | "revolve" | "sweep" | "loft" | "pipe") && !has_sketch {
             self.toast(tr("Сначала создайте чертёж (кнопка «Новый чертёж»)"), true, now);
@@ -1500,7 +1505,7 @@ impl App {
         let mut v: Vec<u64> = self.doc.features.iter().take(self.doc.rollback).filter(|f| self.doc.visible_sketches.contains(&f.uid)).map(|f| f.uid).collect();
         if let Mode::Command(c) = &self.mode {
             if let Some(kind) = self.doc.feature(c.uid).map(|f| &f.kind) {
-                let all = matches!(kind, FeatureKind::Loft { .. } | FeatureKind::Sweep { .. } | FeatureKind::Pipe { .. });
+                let all = matches!(kind, FeatureKind::Extrude { .. } | FeatureKind::Revolve { .. } | FeatureKind::Loft { .. } | FeatureKind::Sweep { .. } | FeatureKind::Pipe { .. });
                 if all {
                     for f in self.doc.features.iter().take(self.doc.rollback).filter(|f| matches!(f.kind, FeatureKind::Sketch { .. })) {
                         if !v.contains(&f.uid) {
@@ -1698,8 +1703,10 @@ impl App {
                             changed = true;
                         }
                     }
-                    (FeatureKind::Chamfer { edges, .. } | FeatureKind::Fillet { edges, .. }, _, PickTarget::Edges) => {
-                        if let Some(e) = edge {
+                    (FeatureKind::Chamfer { body, edges, .. } | FeatureKind::Fillet { body, edges, .. }, _, PickTarget::Edges) => {
+                        // the first picked edge chooses the body; later edges come only from it
+                        if let Some((e, owner)) = edge.filter(|(_, owner)| *body == 0 || *body == *owner) {
+                            *body = owner;
                             let same = |x: &EdgeRef| x.circle == e.circle && (DVec3::from(x.a) - DVec3::from(e.a)).length() < 1e-6 && (DVec3::from(x.b) - DVec3::from(e.b)).length() < 1e-6;
                             if let Some(i) = edges.iter().position(same) {
                                 edges.remove(i);
@@ -2169,8 +2176,9 @@ impl App {
                             marker(ui);
                         }
                         let active = i < self.doc.rollback;
-                        let err = self.ev.error(uid).map(|s| s.to_string());
                         let editing = matches!(&self.mode, Mode::Command(c) if c.uid == uid) || matches!(&self.mode, Mode::Sketch(s) if s.uid == Some(uid));
+                        let waiting = editing && self.doc.feature(uid).is_some_and(|f| commands::awaiting_pick(&f.kind));
+                        let err = self.ev.error(uid).filter(|_| !waiting).map(|s| s.to_string());
                         let icon = match typ {
                             "Чертёж" => "✏",
                             "Выдавливание" => "⬆",
@@ -2857,7 +2865,7 @@ impl App {
                     }
                 }
             }
-            if let (PickTarget::Edges, Some(e)) = (cm.pick, self.hover_edge) {
+            if let (PickTarget::Edges, Some((e, _))) = (cm.pick, self.hover_edge) {
                 for w in e.polyline().windows(2) {
                     ov.lines_top.push(render::line(w[0], w[1], c.sketch_hover, 4.0));
                 }
@@ -3610,11 +3618,11 @@ impl App {
     }
 
     /// Ребро под курсором: ближайшее к точке экрана и не закрытое телом.
-    fn pick_edge(&self, model: &Model, rect: Rect, mouse: Pos2) -> Option<EdgeRef> {
+    fn pick_edge(&self, model: &Model, rect: Rect, mouse: Pos2) -> Option<(EdgeRef, u64)> {
         let eye = self.cam.eye();
         let target_body = match &self.mode {
             Mode::Command(c) => match self.doc.feature(c.uid).map(|f| &f.kind) {
-                Some(FeatureKind::Chamfer { body, .. } | FeatureKind::Fillet { body, .. }) => Some(*body),
+                Some(FeatureKind::Chamfer { body, .. } | FeatureKind::Fillet { body, .. }) if *body != 0 => Some(*body),
                 _ => None,
             },
             _ => None,
@@ -3649,7 +3657,7 @@ impl App {
             let dist = to.length();
             let blocked = b.mesh().raycast(eye, to / dist).is_some_and(|(h, _)| h < dist - 2e-3 * dist.max(1.0));
             if !blocked {
-                return Some(e);
+                return Some((e, b.id));
             }
         }
         None
@@ -3856,6 +3864,8 @@ impl App {
         let anchor = self.extrude_handle().and_then(|(b, d, l)| self.cam.project(rect, b + d * l));
         let params = self.doc.params.clone();
         let Some(f) = self.doc.feature_mut(uid) else { return };
+        // поля появляются после выбора, как в Fusion: до щелчка они только мешают
+        if commands::awaiting_pick(&f.kind) { return; }
         let mut fields: Vec<(&str, &'static str, &mut Expr)> = match &mut f.kind {
             FeatureKind::Extrude { extent: Extent::OneSide(e) | Extent::Symmetric(e), .. } => vec![("Расстояние", "мм", e)],
             FeatureKind::Extrude { extent: Extent::TwoSides(a, b), .. } => vec![("Вперёд", "мм", a), ("Назад", "мм", b)],
@@ -3903,9 +3913,12 @@ impl App {
                         v.override_text_color = Some(Color32::WHITE);
                         v.extreme_bg_color = Color32::from_rgb(20, 66, 128);
                         v.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                        // weak text (the unit) fades towards this colour; keep it readable on blue
+                        v.widgets.noninteractive.weak_bg_fill = blue;
+                        ui.spacing_mut().text_edit_width = 60.0;
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
-                            ui.label(RichText::new(tr(label)).size(12.0));
+                            ui.label(RichText::new(tr(label)).size(13.0));
                             changed |= crate::widgets::expr_field(ui, ("value_box", uid, i), expr, &params, unit);
                         });
                     });
@@ -4149,6 +4162,17 @@ mod lifecycle_tests {
         let uid = match &app.mode { Mode::Command(c) => c.uid, _ => panic!("the command did not start") };
         assert!(matches!(app.doc.feature(uid).unwrap().kind, FeatureKind::PlaceOnPlane { .. }));
         assert!(matches!(app.doc.feature(uid).unwrap().kind, FeatureKind::PlaceOnPlane { body: 0, .. }), "no body may be chosen for the user");
+    }
+
+    #[test]
+    fn a_fillet_waits_for_an_edge_and_takes_its_body_from_it() {
+        let mut app = app();
+        app.load_doc(crate::examples::bracket(), None);
+        app.start_command("fillet", 0.0);
+        let Mode::Command(c) = &app.mode else { panic!("the command did not start") };
+        let kind = app.doc.feature(c.uid).unwrap().kind.clone();
+        assert!(matches!(kind, FeatureKind::Fillet { body: 0, .. }));
+        assert!(commands::awaiting_pick(&kind), "no red error before the first pick");
     }
 
     #[test]

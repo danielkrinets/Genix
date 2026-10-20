@@ -108,8 +108,12 @@ pub fn group(ui: &mut egui::Ui, title: &'static str, quick: &[&str], all: &'stat
         let rot = egui::emath::Rot2::from_angle(std::f32::consts::PI * turn);
         let points = [egui::vec2(-5.0, -2.0), egui::vec2(0.0, 3.0), egui::vec2(5.0, -2.0)].map(|p| center + rot * p);
         ui.painter().line(points.to_vec(), Stroke::new(2.0_f32, col));
-        if title_resp.clicked() {
+        // one physical click can arrive twice within a few frames; a short lock keeps the list from opening and closing at once
+        let now = ui.input(|i| i.time);
+        let last = ui.data(|d| d.get_temp::<f64>(popup_id.with("toggled"))).unwrap_or(f64::NEG_INFINITY);
+        if title_resp.clicked() && now - last > 0.35 {
             ui.memory_mut(|m| m.toggle_popup(popup_id));
+            ui.data_mut(|d| d.insert_temp(popup_id.with("toggled"), now));
         }
         egui::popup::popup_below_widget(ui, popup_id, &title_resp, egui::popup::PopupCloseBehavior::CloseOnClick, |ui| {
             ui.set_min_width(250.0);

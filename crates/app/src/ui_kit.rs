@@ -87,15 +87,17 @@ pub struct TabHit {
 
 /// B14 — document tab, 26 px. Selected = solid accent; a group colour shows as a thin bar under the label.
 pub fn b14(ui: &mut Ui, text: &str, selected: bool, group: Option<Color32>, closable: bool) -> TabHit {
-    let width = tr_width(ui, text, 13.0) + 28.0 + if closable { 18.0 } else { 0.0 };
+    // only the active tab carries a close cross, so every other pill has its text exactly in the middle
+    let close = closable && selected;
+    let width = tr_width(ui, text, 13.0) + 28.0 + if close { 20.0 } else { 0.0 };
     let (rect, tab) = ui.allocate_exact_size(Vec2::new(width, 26.0), Sense::click());
     let hover = crate::widgets::feedback(ui, tab.id.with("hover"), tab.hovered() && !ui.input(|i| i.any_touches()));
-    let close_rect = Rect::from_center_size(egui::pos2(rect.right() - 14.0, rect.center().y), Vec2::splat(18.0));
-    let close = closable && (selected || tab.hovered());
+    let close_rect = Rect::from_center_size(egui::pos2(rect.right() - 15.0, rect.center().y), Vec2::splat(18.0));
     let close_resp = if close { Some(ui.interact(close_rect, tab.id.with("close"), Sense::click())) } else { None };
     let (ink, fill) = if selected { (crate::theme::on_accent(), crate::theme::accent()) } else { (ui.visuals().text_color(), ui.visuals().text_color().gamma_multiply(0.09 * hover)) };
     ui.painter().rect_filled(rect, 13.0, fill);
-    ui.painter().text(egui::pos2(rect.left() + 14.0, rect.center().y), egui::Align2::LEFT_CENTER, text, egui::FontId::proportional(13.0), ink);
+    let text_center = egui::pos2(rect.center().x - if close { 10.0 } else { 0.0 }, rect.center().y);
+    ui.painter().text(text_center, egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(13.0), ink);
     if let Some(color) = group { ui.painter().rect_filled(Rect::from_min_size(egui::pos2(rect.left() + 10.0, rect.bottom() - 3.0), Vec2::new(rect.width() - 20.0, 2.0)), 1.0, color); }
     let mut pressed = false;
     if let Some(x) = close_resp {
@@ -115,4 +117,19 @@ pub fn group_chip(ui: &mut Ui, text: &str, color: Color32) -> Response {
         ui.painter().rect_filled(rect, 11.0, color.lerp_to_gamma(Color32::WHITE, 0.12 * hover));
         label(ui, rect, text, 12.5, Color32::WHITE);
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tab_text_sits_in_the_middle_of_its_pill() {
+        let ctx = egui::Context::default();
+        let out = ctx.run(egui::RawInput::default(), |ctx| { egui::CentralPanel::default().show(ctx, |ui| { b14(ui, "Без имени", false, None, true); }); });
+        let pill = out.shapes.iter().filter_map(|s| if let egui::Shape::Rect(r) = &s.shape { Some(r.rect) } else { None }).find(|r| r.width() < 500.0).expect("pill");
+        let text = out.shapes.iter().find_map(|s| if let egui::Shape::Text(t) = &s.shape { Some(Rect::from_min_size(t.pos, t.galley.size())) } else { None }).expect("text");
+        assert!((pill.center().x - text.center().x).abs() < 0.5, "{pill:?} {text:?}");
+        assert!((pill.center().y - text.center().y).abs() < 1.5, "{pill:?} {text:?}");
+    }
 }

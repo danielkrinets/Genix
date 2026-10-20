@@ -919,7 +919,7 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
             let (a,b) = (&h.infos[*a], &h.infos[*b]);
             match h.filters.sort { 1 => b.modified.cmp(&a.modified), 2 => a.name.to_lowercase().cmp(&b.name.to_lowercase()), 3 => b.steps.cmp(&a.steps), _ => std::cmp::Ordering::Equal }
         });
-        ui.horizontal(|ui| { ui.add_space(24.0); ui.label(RichText::new(tf!("Найдено: {} из {}", shown.len(), visible.len())).size(14.0).color(muted(ui)).background_color(ui.visuals().panel_fill)); });
+        if !visible.is_empty() { ui.horizontal(|ui| { ui.add_space(24.0); ui.label(RichText::new(tf!("Найдено: {} из {}", shown.len(), visible.len())).size(14.0).color(muted(ui)).background_color(ui.visuals().panel_fill)); }); }
         if shown.is_empty() {
             ui.horizontal(|ui| {
                 ui.add_space(24.0);

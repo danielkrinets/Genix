@@ -578,7 +578,7 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
         FeatureKind::Sketch { .. } => {}
     }
 
-    if let Some(err) = ev.error(uid) {
+    if let Some(err) = ev.error(uid).filter(|_| !awaiting_pick(&f.kind)) {
         ui.add_space(4.0);
         ui.label(RichText::new(format!("⚠ {}", tr_dyn(err))).color(Color32::from_rgb(200, 40, 40)));
     }
@@ -631,6 +631,21 @@ fn sketch_combo(ui: &mut egui::Ui, id: &str, current: &mut u64, sketches: &[(u64
         });
     });
     changed
+}
+
+/// Пользователь ещё не выбрал то, без чего операция не строится: ошибку не показываем, ждём щелчка.
+pub fn awaiting_pick(kind: &FeatureKind) -> bool {
+    match kind {
+        FeatureKind::Extrude { profiles, .. } | FeatureKind::Revolve { profiles, .. } => profiles.is_empty(),
+        FeatureKind::Sweep { profiles, path, .. } => profiles.is_empty() || *path == 0,
+        FeatureKind::Pipe { path, .. } => *path == 0,
+        FeatureKind::Loft { profiles, .. } => profiles.len() < 2,
+        FeatureKind::Chamfer { edges, .. } | FeatureKind::Fillet { edges, .. } => edges.is_empty(),
+        FeatureKind::PlaceOnPlane { body, .. } => *body == 0,
+        FeatureKind::Move { bodies, .. } | FeatureKind::Mirror { bodies, .. } | FeatureKind::Pattern { bodies, .. } | FeatureKind::Scale { bodies, .. } | FeatureKind::Remove { bodies } => bodies.is_empty(),
+        FeatureKind::Combine { target, tools, .. } => *target == 0 || tools.is_empty(),
+        _ => false,
+    }
 }
 
 /// Сведения о документе для заготовки новой операции.

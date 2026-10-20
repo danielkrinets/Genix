@@ -19,7 +19,7 @@ pub fn expr_field(ui: &mut egui::Ui, id: impl std::hash::Hash, e: &mut Expr, par
     let ok = result.is_ok();
     let mut changed = false;
     ui.horizontal(|ui| {
-        let mut te = egui::TextEdit::singleline(&mut text).id(id).desired_width(90.0);
+        let mut te = egui::TextEdit::singleline(&mut text).id(id).desired_width(ui.spacing().text_edit_width.min(90.0));
         if !ok {
             te = te.background_color(Color32::from_rgb(255, 225, 225)).text_color(Color32::from_rgb(160, 0, 0));
         }
