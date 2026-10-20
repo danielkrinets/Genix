@@ -41,7 +41,7 @@ pub fn bracket() -> Document {
     }
     let p1 = profile(&s, [40.0, 25.0]);
     let sk = d.insert(FeatureKind::Sketch { plane: Plane::XY, sketch: s });
-    d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![p1], extent: Extent::OneSide(Expr::from("толщина")), op: Op::NewBody });
+    d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![p1], extent: Extent::OneSide(Expr::from("толщина")), op: Op::NewBody, face: None });
 
     // стойка по центру задней кромки (чертёж во фронтальной плоскости, выдавливание симметрично)
     let mut s2 = Sketch::default();
@@ -70,7 +70,7 @@ pub fn bracket() -> Document {
     plane.origin = [0.0, 45.0, 0.0];
     let p2 = profile(&s2, [27.0, 10.0]);
     let sk2 = d.insert(FeatureKind::Sketch { plane, sketch: s2 });
-    d.insert(FeatureKind::Extrude { sketch: sk2, profiles: vec![p2], extent: Extent::Symmetric(Expr::num(10.0)), op: Op::Join });
+    d.insert(FeatureKind::Extrude { sketch: sk2, profiles: vec![p2], extent: Extent::Symmetric(Expr::num(10.0)), op: Op::Join, face: None });
     d.visible_sketches.clear();
     d
 }

@@ -138,11 +138,26 @@ pub enum PatternKind {
     Circular { count: Expr, axis: Axis3, angle: Expr },
 }
 
+/// A flat face of a body, found again by its plane and a point on it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FaceRef {
+    pub plane: Plane,
+    pub seed: [f64; 3],
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FeatureKind {
     Sketch { plane: Plane, sketch: Sketch },
     /// `profiles` — выбранные области чертежа (узнаются по кривым границы и после правки размеров).
-    Extrude { sketch: u64, profiles: Vec<ProfileRef>, extent: Extent, op: Op },
+    /// `face` is set when the body face itself is the profile (as in Fusion); then `sketch` and `profiles` are not used.
+    Extrude {
+        sketch: u64,
+        profiles: Vec<ProfileRef>,
+        extent: Extent,
+        op: Op,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        face: Option<FaceRef>,
+    },
     Revolve { sketch: u64, profiles: Vec<ProfileRef>, axis: RevolveAxis, angle: Expr, op: Op },
     Primitive { shape: Shape, at: [Expr; 3], op: Op },
     Move { bodies: Vec<u64>, translate: [Expr; 3], rotate: [Expr; 3], copy: bool },
@@ -605,7 +620,29 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             let regions = s.regions();
             Ok((prev.clone(), Some(SketchResult { plane: *plane, sketch: s, regions, status })))
         }
-        FeatureKind::Extrude { sketch, profiles, extent, op } => {
+        FeatureKind::Extrude { face: Some(f), extent, .. } => {
+            // same rule as press-pull: a positive distance adds material, a negative one cuts; symmetric adds
+            let (z0, z1, op) = match extent {
+                Extent::OneSide(d) => {
+                    let d = d.eval(p)?;
+                    if d.abs() < 1e-9 {
+                        return Err("расстояние не может быть нулевым".into());
+                    }
+                    if d > 0.0 { (-0.01, d, Op::Join) } else { (d, 0.01, Op::Cut) }
+                }
+                Extent::Symmetric(d) => {
+                    let d = d.eval(p)?.abs();
+                    (-d / 2.0, d / 2.0, Op::Join)
+                }
+                Extent::TwoSides(..) => return Err("для грани задайте одно расстояние или симметрично".into()),
+            };
+            let region = prev.bodies.iter().find_map(|b| geom::face_region(b.mesh(), &f.plane, DVec3::from(f.seed))).ok_or("грань не найдена: тело изменилось")?;
+            let tool = Solid::from_mesh(&geom::extrude_region(&f.plane, &region, z0, z1).ok_or("не удалось построить грань")?)?;
+            let mut m = (**prev).clone();
+            apply_op(&mut m, tool, op, id_base)?;
+            Ok((Arc::new(m), None))
+        }
+        FeatureKind::Extrude { sketch, profiles, extent, op, .. } => {
             let sk = find_sketch(*sketch, steps, feats)?;
             let regions = pick_regions(&sk, profiles)?;
             let (z0, z1) = match extent {
@@ -1056,8 +1093,7 @@ mod tests {
             sketch: sk,
             profiles: vec![ProfileRef::at([1.0, 1.0])],
             extent: Extent::OneSide(Expr::num(10.0)),
-            op: Op::NewBody,
-        });
+            op: Op::NewBody, face: None });
         (d, sk)
     }
 
@@ -1099,8 +1135,7 @@ mod tests {
             sketch: sk,
             profiles: vec![ProfileRef::at([20.0, 12.5])],
             extent: Extent::OneSide(Expr::num(10.0)),
-            op: Op::Join,
-        });
+            op: Op::Join, face: None });
         d.insert(FeatureKind::Primitive {
             shape: Shape::Box { w: Expr::num(5.0), d: Expr::num(5.0), h: Expr::num(20.0) },
             at: [Expr::num(-1.0), Expr::num(-1.0), Expr::num(-5.0)],
@@ -1214,7 +1249,7 @@ mod tests {
         let r = s.regions();
         let pref = ProfileRef::of(&r[0]);
         let sk = d.insert(FeatureKind::Sketch { plane: Plane::XY, sketch: s });
-        d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![pref], extent: Extent::OneSide(Expr::num(5.0)), op: Op::NewBody });
+        d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![pref], extent: Extent::OneSide(Expr::num(5.0)), op: Op::NewBody, face: None });
         d.params.set("x", "100");
         let mut ev = Evaluator::default();
         ev.evaluate(&d);
@@ -1303,6 +1338,15 @@ mod new_ops {
                 assert!((min - 5.0).abs() < 1e-6 && (max - 45.0).abs() < 1e-6, "{min}..{max}");
             }
         }
+    }
+
+    #[test]
+    fn extrude_can_take_a_body_face_instead_of_a_sketch() {
+        let (mut d, _) = plate();
+        let top = Plane { origin: [0.0, 0.0, 10.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+        d.insert(FeatureKind::Extrude { sketch: 0, profiles: vec![], extent: Extent::OneSide(Expr::num(5.0)), op: Op::Join, face: Some(FaceRef { plane: top, seed: [20.0, 15.0, 10.0] }) });
+        let v = run(&d).model().bodies[0].solid.volume();
+        assert!((v - (12000.0 + 40.0 * 30.0 * 5.0)).abs() < 1.0, "a 5 mm pull on the top face adds 6000 mm3, got {v}");
     }
 
     #[test]
@@ -1502,7 +1546,7 @@ mod perf {
         let pref = ProfileRef::of(outer);
         let t = std::time::Instant::now();
         let sk = d.insert(FeatureKind::Sketch { plane: Plane::XY, sketch: s });
-        d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![pref], extent: Extent::OneSide(Expr::num(5.0)), op: Op::NewBody });
+        d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![pref], extent: Extent::OneSide(Expr::num(5.0)), op: Op::NewBody, face: None });
         let b = d.insert(FeatureKind::Primitive {
             shape: Shape::Cylinder { r: Expr::num(3.0), h: Expr::num(10.0) },
             at: [Expr::num(20.0), Expr::num(20.0), Expr::num(5.0)],

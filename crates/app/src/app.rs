@@ -1230,8 +1230,13 @@ impl App {
         // a feature that moves faces (put on a plane, press-pull) picks its face on the body as it was before the feature,
         // otherwise a second pick lands on the already moved face and the plane comes out wrong
         if let Mode::Command(c) = &self.mode {
-            let moves = self.doc.feature(c.uid).is_some_and(|f| matches!(f.kind, FeatureKind::PlaceOnPlane { .. } | FeatureKind::PressPull { .. }));
-            if moves && matches!(c.pick, PickTarget::Face | PickTarget::AlignTarget) {
+            // an extrude picks its face on the body before the extrude too: the default profile already extrudes the shown body
+            let moves = self.doc.feature(c.uid).is_some_and(|f| match f.kind {
+                FeatureKind::PlaceOnPlane { .. } | FeatureKind::PressPull { .. } => matches!(c.pick, PickTarget::Face | PickTarget::AlignTarget),
+                FeatureKind::Extrude { .. } => c.pick == PickTarget::Profiles,
+                _ => false,
+            });
+            if moves {
                 if let Some(i) = self.doc.index_of(c.uid) {
                     return self.ev.model_before(i);
                 }
@@ -1298,7 +1303,8 @@ impl App {
             .filter(|(_, s)| s.regions.len() == 1)
             .map(|(uid, s)| (uid, vec![ProfileRef::of(&s.regions[0])]));
         let has_sketch = self.doc.features.iter().take(self.doc.rollback).any(|f| matches!(f.kind, FeatureKind::Sketch { .. }));
-        if matches!(kind, "extrude" | "revolve" | "sweep" | "loft" | "pipe") && !has_sketch {
+        // выдавить можно и грань тела, без чертежа
+        if matches!(kind, "revolve" | "sweep" | "loft" | "pipe") && !has_sketch || kind == "extrude" && !has_sketch && model.bodies.is_empty() {
             self.toast(tr("Сначала создайте чертёж (кнопка «Новый чертёж»)"), true, now);
             return;
         }
@@ -1658,12 +1664,17 @@ impl App {
                 let uid = cmd.uid;
                 let pick = cmd.pick;
                 // грань для отверстия и ребро для фаски определяем до заимствования документа
+                let extrudes = matches!(self.doc.feature(uid).map(|f| &f.kind), Some(FeatureKind::Extrude { .. }));
                 let face = match (pick, hit) {
                     (PickTarget::Face | PickTarget::AlignTarget, Some(Hit::Body { slot, tri, t })) => {
                         let (o,d)=self.last_ray;
                         let is_hole=self.doc.feature(uid).is_some_and(|f|matches!(f.kind,FeatureKind::Hole{..}));
                         if is_hole {self.hole_target(&model,slot,tri,o+d*t,self.viewport).map(|(p,a,_,_,_)|(p,a))}
                         else {self.face_plane(&model,slot,tri).map(|(p,_)|(p,p.to_local(o+d*t)))}
+                    },
+                    (PickTarget::Profiles, Some(Hit::Body { slot, tri, t })) if extrudes => {
+                        let (o,d)=self.last_ray;
+                        self.face_plane(&model,slot,tri).map(|(p,_)|(p,p.to_local(o+d*t)))
                     },
                     _ => None,
                 };
@@ -1780,7 +1791,28 @@ impl App {
                         }
                         changed = true;
                     }
-                    (FeatureKind::Extrude { sketch, profiles, .. } | FeatureKind::Revolve { sketch, profiles, .. } | FeatureKind::Sweep { sketch, profiles, .. }, Some(Hit::Profile { sketch: s, region, .. }), _) => {
+                    (FeatureKind::Extrude { face, profiles, .. }, Some(Hit::Body { t, .. }), PickTarget::Profiles) => {
+                        if let Some((pl, _)) = face_pick {
+                            *face = Some(fusion_core::doc::FaceRef { plane: pl, seed: (ray.0 + ray.1 * t).to_array() });
+                            profiles.clear();
+                            changed = true;
+                        }
+                    }
+                    (FeatureKind::Extrude { face, sketch, profiles, .. }, Some(Hit::Profile { sketch: s, region, .. }), _) => {
+                        *face = None;
+                        if *sketch != s {
+                            *sketch = s;
+                            profiles.clear();
+                        }
+                        let regions = self.ev.sketch(s).map(|r| r.regions.clone()).unwrap_or_default();
+                        if let Some(i) = profiles.iter().position(|p| p.resolve(&regions) == Some(region)) {
+                            profiles.remove(i);
+                        } else if let Some(r) = regions.get(region) {
+                            profiles.push(ProfileRef::of(r));
+                        }
+                        changed = true;
+                    }
+                    (FeatureKind::Revolve { sketch, profiles, .. } | FeatureKind::Sweep { sketch, profiles, .. }, Some(Hit::Profile { sketch: s, region, .. }), _) => {
                         if *sketch != s {
                             *sketch = s;
                             profiles.clear();
@@ -3731,7 +3763,7 @@ impl App {
     /// Стрелка выдавливания: начало, направление и текущая длина (в мире).
     fn extrude_handle(&self) -> Option<(DVec3, DVec3, f64)> {
         let Mode::Command(c) = &self.mode else { return None };
-        let FeatureKind::Extrude { sketch, profiles, extent, .. } = &self.doc.feature(c.uid)?.kind else { return None };
+        let FeatureKind::Extrude { sketch, profiles, extent, face: None, .. } = &self.doc.feature(c.uid)?.kind else { return None };
         let sk = self.ev.sketch(*sketch)?;
         let i = profiles.first()?.resolve(&sk.regions)?;
         let base = sk.plane.to_world(sk.regions[i].interior_point());

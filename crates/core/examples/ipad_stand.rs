@@ -19,10 +19,10 @@ fn main() {
     let num = Expr::num;
     // 1-2. base plate with a front lip: the tablet's bottom edge stands in the groove behind the lip
     let base = d.insert(FeatureKind::Sketch { plane: Plane::YZ, sketch: polygon(&[[0.0, 0.0], [80.0, 0.0], [80.0, 8.0], [10.0, 8.0], [10.0, 22.0], [0.0, 22.0]]) });
-    d.insert(FeatureKind::Extrude { sketch: base, profiles: vec![ProfileRef::at([40.0, 4.0])], extent: Extent::Symmetric(num(120.0)), op: Op::NewBody });
+    d.insert(FeatureKind::Extrude { sketch: base, profiles: vec![ProfileRef::at([40.0, 4.0])], extent: Extent::Symmetric(num(120.0)), op: Op::NewBody, face: None });
     // 3-4. back rest leaning about 76° from the desk; the 12 mm groove between lip and rest holds the tablet's bottom edge
     let rest = d.insert(FeatureKind::Sketch { plane: Plane::YZ, sketch: polygon(&[[22.0, 6.0], [34.0, 6.0], [58.0, 105.0], [46.0, 105.0]]) });
-    d.insert(FeatureKind::Extrude { sketch: rest, profiles: vec![ProfileRef::at([38.0, 50.0])], extent: Extent::Symmetric(num(120.0)), op: Op::Join });
+    d.insert(FeatureKind::Extrude { sketch: rest, profiles: vec![ProfileRef::at([38.0, 50.0])], extent: Extent::Symmetric(num(120.0)), op: Op::Join, face: None });
     // 5. cable slot through the rest
     d.insert(FeatureKind::Primitive { shape: Shape::Box { w: num(44.0), d: num(60.0), h: num(40.0) }, at: [num(-22.0), num(18.0), num(38.0)], op: Op::Cut });
     // 6-9. four recesses for rubber feet underneath

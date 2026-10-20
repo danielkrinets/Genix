@@ -122,12 +122,19 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
     let p = &params;
     let uid = cmd.uid;
     match &mut f.kind {
-        FeatureKind::Extrude { sketch: _, profiles, extent, op } => {
+        FeatureKind::Extrude { sketch: _, profiles, extent, op, face } => {
             section(ui, tr("ПРОФИЛИ"));
-            ui.label(if profiles.is_empty() { RichText::new(tr("Не выбрано — щёлкните область чертежа")).color(Color32::from_rgb(200, 120, 0)) } else { RichText::new(tf!("Выбрано: {}", profiles.len())) });
-            if !profiles.is_empty() && ui.small_button(tr("Сбросить выбор")).clicked() {
-                profiles.clear();
-                changed = true;
+            if face.is_some() {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(tr("Выбрана грань тела")));
+                    if ui.small_button(tr("Сбросить выбор")).clicked() { *face = None; changed = true; }
+                });
+            } else {
+                ui.label(if profiles.is_empty() { RichText::new(tr("Не выбрано — щёлкните область чертежа или грань тела")).color(Color32::from_rgb(200, 120, 0)) } else { RichText::new(tf!("Выбрано: {}", profiles.len())) });
+                if !profiles.is_empty() && ui.small_button(tr("Сбросить выбор")).clicked() {
+                    profiles.clear();
+                    changed = true;
+                }
             }
             section(ui, tr("РАЗМЕРЫ"));
             let mut kind = match extent {
@@ -668,7 +675,8 @@ fn face_pick_row(ui: &mut egui::Ui, pick: &mut PickTarget, has_face: bool, hint:
 /// Пользователь ещё не выбрал то, без чего операция не строится: ошибку не показываем, ждём щелчка.
 pub fn awaiting_pick(kind: &FeatureKind) -> bool {
     match kind {
-        FeatureKind::Extrude { profiles, .. } | FeatureKind::Revolve { profiles, .. } => profiles.is_empty(),
+        FeatureKind::Extrude { profiles, face, .. } => profiles.is_empty() && face.is_none(),
+        FeatureKind::Revolve { profiles, .. } => profiles.is_empty(),
         FeatureKind::Sweep { profiles, path, .. } => profiles.is_empty() || *path == 0,
         FeatureKind::Pipe { path, .. } => *path == 0,
         FeatureKind::Loft { profiles, .. } => profiles.len() < 2,
@@ -697,7 +705,7 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
     match kind {
         "extrude" => {
             let (sketch, profiles) = c.last_sketch.clone().unwrap_or((0, vec![]));
-            FeatureKind::Extrude { sketch, profiles, extent: Extent::OneSide(num(10.0)), op }
+            FeatureKind::Extrude { sketch, profiles, extent: Extent::OneSide(num(10.0)), op, face: None }
         }
         "revolve" => {
             let (sketch, profiles) = c.last_sketch.clone().unwrap_or((0, vec![]));
