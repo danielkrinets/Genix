@@ -30,6 +30,14 @@ pub fn expr_field(ui: &mut egui::Ui, id: impl std::hash::Hash, e: &mut Expr, par
                 changed = true;
             }
         }
+        // on-screen arrows: a click is ±1 (Shift ±0.1), holding repeats; only for plain numbers
+        let number = text.trim().parse::<f64>().ok();
+        if let Some(d) = stepper(ui, id.with("stepper"), number.is_some()) {
+            let nv = ((number.unwrap_or(0.0) + d) * 1e6).round() / 1e6;
+            text = format_num(nv);
+            e.0 = text.clone();
+            changed = true;
+        }
         if !unit.is_empty() {
             ui.label(RichText::new(crate::i18n::tr(unit)).weak());
         }
@@ -59,6 +67,43 @@ pub fn expr_field(ui: &mut egui::Ui, id: impl std::hash::Hash, e: &mut Expr, par
     });
     ui.data_mut(|d| d.insert_temp(id, text));
     changed
+}
+
+/// Two stacked arrows ▲▼ beside a number field. Returns the step to add this frame.
+fn stepper(ui: &mut egui::Ui, id: egui::Id, enabled: bool) -> Option<f64> {
+    let h = ui.spacing().interact_size.y.max(20.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, h), egui::Sense::hover());
+    let now = ui.input(|i| i.time);
+    let step = if ui.input(|i| i.modifiers.shift) { 0.1 } else { 1.0 };
+    let mut out = None;
+    for (k, sign) in [(0, 1.0), (1, -1.0)] {
+        let half = egui::Rect::from_min_size(rect.min + egui::vec2(0.0, k as f32 * h / 2.0), egui::vec2(16.0, h / 2.0));
+        let r = ui.interact(half, id.with(k), if enabled { egui::Sense::click_and_drag() } else { egui::Sense::hover() });
+        let col = if !enabled { ui.visuals().weak_text_color().gamma_multiply(0.5) } else if r.hovered() { ui.visuals().strong_text_color() } else { ui.visuals().text_color().gamma_multiply(0.75) };
+        if r.hovered() && enabled { ui.painter().rect_filled(half.shrink(1.0), 4.0, crate::theme::tint(24)); }
+        let c = half.center();
+        let tip = egui::vec2(0.0, -3.0 * sign as f32);
+        let side = egui::vec2(4.0, 2.0 * sign as f32);
+        ui.painter().line(vec![c - side.x * egui::Vec2::X + egui::vec2(0.0, side.y), c + tip, c + side.x * egui::Vec2::X + egui::vec2(0.0, side.y)], egui::Stroke::new(1.6_f32, col));
+        // first press steps at once; after 0.4 s of holding it repeats every 0.08 s
+        let key = id.with((k, "held"));
+        if r.drag_started() || (r.clicked() && ui.data(|d| d.get_temp::<(f64, f64)>(key)).is_none()) {
+            ui.data_mut(|d| d.insert_temp(key, (now, now)));
+            out = Some(step * sign);
+        } else if r.is_pointer_button_down_on() {
+            if let Some((start, last)) = ui.data(|d| d.get_temp::<(f64, f64)>(key)) {
+                if now - start > 0.4 && now - last > 0.08 {
+                    ui.data_mut(|d| d.insert_temp(key, (start, now)));
+                    out = Some(step * sign);
+                }
+                ui.ctx().request_repaint();
+            }
+        } else {
+            ui.data_mut(|d| d.remove::<(f64, f64)>(key));
+        }
+        r.on_hover_text(if sign > 0.0 { crate::i18n::tr("Больше (Shift — на 0,1)") } else { crate::i18n::tr("Меньше (Shift — на 0,1)") });
+    }
+    out
 }
 
 /// Набирается ли сейчас текст в поле ввода (тогда горячие клавиши не срабатывают).

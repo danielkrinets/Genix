@@ -253,18 +253,21 @@ pub struct App {
 
 /// Кнопка со значком из набора (нет значка — текстовый символ).
 fn icon_button(ui: &mut egui::Ui, id: &str, fallback: &str, selected: bool, tip: &str, min: egui::Vec2) -> bool {
-    let main = if selected { crate::theme::on_accent() } else { ui.visuals().text_color() };
-    let btn = match crate::icons::icon(id, 22.0, main) {
-        Some(img) => egui::Button::image(img),
-        None => egui::Button::new(RichText::new(fallback).size(16.0)),
-    };
-    let background = ui.painter().add(egui::Shape::Noop);
-    let response = ui.add(btn.corner_radius(12).frame(false).min_size(min));
-    crate::widgets::warm_tooltip(&response, tip);
+    let enabled = ui.is_enabled();
+    let (rect, response) = ui.allocate_exact_size(min, egui::Sense::click());
     let hover = response.hovered() && !ui.input(|i| i.any_touches());
-    if selected || hover {
-        ui.painter().set(background, egui::Shape::rect_filled(response.rect, 12.0, if selected { crate::theme::accent() } else { crate::theme::tint(20) }));
+    if selected || (hover && enabled) {
+        ui.painter().rect_filled(rect, 12.0, if selected { crate::theme::accent() } else { crate::theme::tint(20) });
     }
+    let main = if selected { crate::theme::on_accent() } else if enabled { ui.visuals().text_color() } else { ui.visuals().weak_text_color() };
+    // painted at the exact centre of the button: egui's image button lays its content out from the left
+    match crate::icons::icon(id, 22.0, main) {
+        Some(img) => img.paint_at(ui, Rect::from_center_size(rect.center(), egui::vec2(22.0, 22.0))),
+        None => { ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, fallback, egui::FontId::proportional(16.0), main); }
+    }
+    let response = response.on_hover_cursor(if enabled { egui::CursorIcon::PointingHand } else { egui::CursorIcon::Default });
+    crate::widgets::warm_tooltip(&response, tip);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, tip));
     response.clicked()
 }
 
@@ -908,7 +911,7 @@ impl App {
             ("fillet", tr("Скругление").to_string(), Start("fillet"), true),
             ("chamfer", tr("Фаска").to_string(), Start("chamfer"), true),
             ("press_pull", tr("Вытянуть грань").to_string(), Start("press_pull"), true),
-            ("align", tr("Поставить на плоскость").to_string(), Start("place"), true),
+            ("align", tr("Выровнять").to_string(), Start("place"), true),
             ("move", tr("Переместить").to_string(), Start("move"), true),
             ("nav_fit", tr("Вписать модель").to_string(), Fit, true),
             ("file_save", tr("Сохранить").to_string(), Save, false),
@@ -1224,6 +1227,16 @@ impl App {
                 }
             }
         }
+        // a feature that moves faces (put on a plane, press-pull) picks its face on the body as it was before the feature,
+        // otherwise a second pick lands on the already moved face and the plane comes out wrong
+        if let Mode::Command(c) = &self.mode {
+            let moves = self.doc.feature(c.uid).is_some_and(|f| matches!(f.kind, FeatureKind::PlaceOnPlane { .. } | FeatureKind::PressPull { .. }));
+            if moves && matches!(c.pick, PickTarget::Face | PickTarget::AlignTarget) {
+                if let Some(i) = self.doc.index_of(c.uid) {
+                    return self.ev.model_before(i);
+                }
+            }
+        }
         self.ev.model()
     }
 
@@ -1263,7 +1276,8 @@ impl App {
                 self.mode = Mode::Sketch(Box::new(s));
             }
             kind => {
-                let pick = Command::pick_for(&kind);
+                // an existing put-on-plane / press-pull already has its face: show the result, re-pick on request
+                let pick = if matches!(kind, FeatureKind::PlaceOnPlane { .. } | FeatureKind::PressPull { .. }) { PickTarget::None } else { Command::pick_for(&kind) };
                 self.mode = Mode::Command(Command { uid, before: self.doc.clone(), pick, auto_op: false });
             }
         }
@@ -1491,6 +1505,7 @@ impl App {
     fn plane_pick_mode(&self) -> bool {
         matches!(self.mode, Mode::PickPlane)
             || matches!(&self.mode, Mode::Command(c) if self.doc.feature(c.uid).is_some_and(|f| matches!(f.kind, FeatureKind::OffsetPlane { .. })))
+            || matches!(&self.mode, Mode::Command(c) if c.pick == PickTarget::AlignTarget)
     }
 
     fn show_origin_planes(&self) -> bool {
@@ -1589,7 +1604,8 @@ impl App {
     }
 
     fn handle_click(&mut self, hit: Option<Hit>, shift: bool, now: f64) {
-        let model = self.ev.model();
+        // slots in `hit` index the model on screen, which is not always the final one
+        let model = self.shown();
         match &mut self.mode {
             Mode::Idle => match hit {
                 Some(Hit::Body { slot, .. }) => {
@@ -1643,7 +1659,7 @@ impl App {
                 let pick = cmd.pick;
                 // грань для отверстия и ребро для фаски определяем до заимствования документа
                 let face = match (pick, hit) {
-                    (PickTarget::Face, Some(Hit::Body { slot, tri, t })) => {
+                    (PickTarget::Face | PickTarget::AlignTarget, Some(Hit::Body { slot, tri, t })) => {
                         let (o,d)=self.last_ray;
                         let is_hole=self.doc.feature(uid).is_some_and(|f|matches!(f.kind,FeatureKind::Hole{..}));
                         if is_hole {self.hole_target(&model,slot,tri,o+d*t,self.viewport).map(|(p,a,_,_,_)|(p,a))}
@@ -1659,6 +1675,8 @@ impl App {
                 let user_planes = self.doc.offset_planes();
                 let Some(f) = self.doc.feature_mut(uid) else { return };
                 let mut changed = false;
+                let mut face_done = false;
+                let mut next_pick = None;
                 match (&mut f.kind, hit, pick) {
                     (FeatureKind::OffsetPlane { base, .. }, _, PickTarget::Face) => {
                         if let Some((pl, _)) = face {
@@ -1686,6 +1704,35 @@ impl App {
                             *seed = (ray.0 + ray.1 * t).to_array();
                             *body = id;
                             changed = true;
+                            next_pick = Some(PickTarget::AlignTarget);
+                        }
+                    }
+                    (FeatureKind::PlaceOnPlane { body, target, to, .. }, h, PickTarget::AlignTarget) => {
+                        match h {
+                            // the target face's outward normal: the moved face rests against it from outside
+                            Some(Hit::Body { t, .. }) if hit_body.is_some_and(|b| b != *body) => {
+                                if let Some((pl, _)) = face_pick {
+                                    *target = pl;
+                                    *to = Some((ray.0 + ray.1 * t).to_array());
+                                    changed = true;
+                                    face_done = true;
+                                }
+                            }
+                            Some(Hit::OriginPlane(i, _)) => {
+                                *target = ORIGIN_PLANES[i];
+                                *to = None;
+                                changed = true;
+                                face_done = true;
+                            }
+                            Some(Hit::UserPlane(i, _)) => {
+                                if let Some((_, _, pl)) = user_planes.get(i) {
+                                    *target = *pl;
+                                    *to = None;
+                                    changed = true;
+                                    face_done = true;
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     (FeatureKind::PressPull { plane, seed, .. }, Some(Hit::Body { t, .. }), PickTarget::Face) => {
@@ -1693,6 +1740,7 @@ impl App {
                             *plane = pl;
                             *seed = (ray.0 + ray.1 * t).to_array();
                             changed = true;
+                            face_done = true;
                         }
                     }
                     (FeatureKind::Hole { plane, at, .. }, _, PickTarget::Face) => {
@@ -1773,6 +1821,9 @@ impl App {
                         changed = true;
                     }
                     _ => {}
+                }
+                if face_done || next_pick.is_some() {
+                    if let Mode::Command(c) = &mut self.mode { c.pick = next_pick.unwrap_or(PickTarget::None); }
                 }
                 if changed {
                     self.after_doc_change();
@@ -1942,8 +1993,11 @@ impl App {
         ui.horizontal_centered(|ui| {
             // one row height for menus, undo/redo, tabs and «+», so everything shares the same centre line
             ui.spacing_mut().interact_size.y = 26.0;
-            let width = ui.data(|d| d.get_temp::<f32>(egui::Id::new("menu-width"))).unwrap_or(330.0) + 6.0;
+            // the measured width ends with one item gap after «redo»; drop it so both sides of the arrows match
+            let width = ui.data(|d| d.get_temp::<f32>(egui::Id::new("menu-width"))).unwrap_or(330.0) - ui.spacing().item_spacing.x;
             ui.allocate_ui_with_layout(egui::vec2(width, 28.0), egui::Layout::left_to_right(egui::Align::Center), |ui| self.menu_bar(ui, now));
+            // the header row's own gap is 3 px wider than the menu bar's, which pushed the arrows off centre
+            ui.add_space(-3.0);
             ui.separator();
             ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 28.0), egui::Layout::left_to_right(egui::Align::Center), |ui| self.tab_bar(ui));
         });
@@ -2616,7 +2670,7 @@ impl App {
                     ui.close_menu();
                     self.start_sketch();
                 }
-                for (icon, label, kind) in [("extrude", "Выдавить", "extrude"), ("hole", "Отверстие", "hole"), ("fillet", "Скругление", "fillet"), ("chamfer", "Фаска", "chamfer"), ("press_pull", "Вытянуть грань", "press_pull"), ("align", "Поставить на плоскость", "place")] {
+                for (icon, label, kind) in [("extrude", "Выдавить", "extrude"), ("hole", "Отверстие", "hole"), ("fillet", "Скругление", "fillet"), ("chamfer", "Фаска", "chamfer"), ("press_pull", "Вытянуть грань", "press_pull"), ("align", "Выровнять", "place")] {
                     if menu_item(ui, icon, tr(label)) {
                         ui.close_menu();
                         self.start_command(kind, now);
@@ -2830,7 +2884,7 @@ impl App {
             }
         }
         // подсветка грани при выборе плоскости чертежа или места отверстия
-        let face_pick = matches!(self.mode, Mode::PickPlane) || matches!(&self.mode, Mode::Command(cm) if cm.pick == PickTarget::Face);
+        let face_pick = matches!(self.mode, Mode::PickPlane) || matches!(&self.mode, Mode::Command(cm) if matches!(cm.pick, PickTarget::Face | PickTarget::AlignTarget));
         let face_pick = face_pick;
         if let (true, Some(Hit::Body { slot, tri, .. })) = (face_pick, self.hover) {
             if let Some((_, tris)) = self.face_plane(model, slot, tri) {
@@ -4162,6 +4216,24 @@ mod lifecycle_tests {
         let uid = match &app.mode { Mode::Command(c) => c.uid, _ => panic!("the command did not start") };
         assert!(matches!(app.doc.feature(uid).unwrap().kind, FeatureKind::PlaceOnPlane { .. }));
         assert!(matches!(app.doc.feature(uid).unwrap().kind, FeatureKind::PlaceOnPlane { body: 0, .. }), "no body may be chosen for the user");
+    }
+
+    #[test]
+    fn a_face_for_put_on_plane_is_picked_on_the_body_before_it_moved() {
+        use fusion_core::doc::Shape;
+        let mut app = app();
+        let n = Expr::num;
+        app.doc.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(40.0), d: n(30.0), h: n(10.0) }, at: [n(0.0), n(0.0), n(0.0)], op: fusion_core::Op::NewBody });
+        app.after_doc_change();
+        let id = app.ev.model().bodies[0].id;
+        let side = Plane { origin: [0.0, 0.0, 0.0], x: [0.0, 1.0, 0.0], y: [0.0, 0.0, 1.0] };
+        let uid = app.doc.insert(FeatureKind::PlaceOnPlane { body: id, face: side, seed: [0.0, 15.0, 5.0], target: Plane::XY, to: None });
+        app.after_doc_change();
+        app.edit_feature(uid, 0.0);
+        let i = app.doc.index_of(uid).unwrap();
+        assert!(Arc::ptr_eq(&app.shown(), &app.ev.model()), "editing starts on the result");
+        if let Mode::Command(c) = &mut app.mode { c.pick = PickTarget::Face; }
+        assert!(Arc::ptr_eq(&app.shown(), &app.ev.model_before(i)), "a new face is picked on the unmoved body");
     }
 
     #[test]

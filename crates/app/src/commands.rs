@@ -24,6 +24,8 @@ pub enum PickTarget {
     Edges,
     /// Линия чертежа для пути трубы.
     Path,
+    /// Куда выровнять: грань другого тела или плоскость.
+    AlignTarget,
 }
 
 pub struct Command {
@@ -65,6 +67,7 @@ impl Command {
             PickTarget::Face => tr("Щёлкните плоскую грань тела (для плоскости — ещё и плоскость начала координат)"),
             PickTarget::Edges => tr("Щёлкните прямые рёбра или дуги; повторный щелчок снимает выбор"),
             PickTarget::Path => tr("Щёлкните линию чертежа — путь трубы"),
+            PickTarget::AlignTarget => tr("Куда: щёлкните грань другого тела или плоскость"),
             PickTarget::None => tr("Задайте размеры и положение"),
         }
     }
@@ -332,34 +335,50 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
             changed |= crate::widgets::checkbox(ui, keep_tools, tr("Сохранить инструменты")).changed();
         }
         FeatureKind::Remove { bodies } => bodies_ui(ui, bodies, body_name, &mut changed),
-        FeatureKind::PlaceOnPlane { target, .. } => {
-            section(ui, tr("ГРАНЬ"));
-            ui.label(RichText::new(tr("Щёлкните плоскую грань тела: она ляжет на выбранную плоскость")).weak());
-            section(ui, tr("ПЛОСКОСТЬ"));
+        FeatureKind::PlaceOnPlane { target, body, to, .. } => {
+            section(ui, tr("ОТКУДА"));
+            let choosing_target = cmd.pick == PickTarget::AlignTarget;
+            if choosing_target {
+                ui.horizontal(|ui| {
+                    ui.label(tr("Грань выбрана"));
+                    if ui.button(tr("Выбрать другую")).clicked() { cmd.pick = PickTarget::Face; }
+                });
+            } else {
+                face_pick_row(ui, &mut cmd.pick, *body != 0, tr("Щёлкните плоскую грань тела, которую нужно поставить"));
+            }
+            section(ui, tr("КУДА"));
             let floors = [(tr("XY (пол)"), fusion_core::Plane::XY), (tr("XZ (перед)"), fusion_core::Plane::XZ), (tr("YZ (право)"), fusion_core::Plane::YZ)];
             // which of the three origin planes the target is on (sign of its normal does not matter here)
             let n = target.normal();
-            let current = (0..3).find(|&i| n.dot(floors[i].1.normal()).abs() > 0.99).unwrap_or(0);
-            let flipped = n.dot(floors[current].1.normal()) < 0.0;
+            let origin_plane = (0..3).find(|&i| to.is_none() && n.dot(floors[i].1.normal()).abs() > 0.99 && target.o().length() < 1e-9);
+            let current = origin_plane.unwrap_or(usize::MAX);
             let mut pick = current;
             changed |= row(ui, tr("Плоскость"), |ui| {
                 let mut c = false;
-                egui::ComboBox::from_id_salt("place_plane").selected_text(floors[current].0).show_ui(ui, |ui| {
+                let shown = if current < 3 { floors[current].0 } else { tr("Грань тела") };
+                egui::ComboBox::from_id_salt("place_plane").selected_text(shown).show_ui(ui, |ui| {
                     for (i, (name, _)) in floors.iter().enumerate() { c |= ui.selectable_value(&mut pick, i, *name).changed(); }
                 });
                 c
             });
-            let mut flip = flipped;
-            changed |= crate::widgets::checkbox(ui, &mut flip, tr("С обратной стороны плоскости")).changed();
-            if pick != current || flip != flipped {
-                let base = floors[pick].1;
-                *target = if flip { base.flipped() } else { base };
+            if pick != current && pick < 3 {
+                *target = floors[pick].1;
+                *to = None;
             }
-            ui.label(RichText::new(tr("Положение вдоль плоскости сохраняется, тело встаёт на неё гранью")).weak().small());
+            if choosing_target {
+                ui.label(RichText::new(tr("Куда: щёлкните грань другого тела или плоскость")).color(Color32::from_rgb(200, 120, 0)));
+            } else if *body != 0 && ui.button(tr("Указать грань в окне")).clicked() {
+                cmd.pick = PickTarget::AlignTarget;
+            }
+            if ui.button(tr("⇅ Перевернуть на другую сторону")).clicked() {
+                *target = target.flipped();
+                changed = true;
+            }
+            ui.label(RichText::new(tr("Как «Выровнять» во Fusion: грань ложится на грань или плоскость, точка щелчка совпадает с точкой назначения")).weak().small());
         }
         FeatureKind::PressPull { distance, .. } => {
             section(ui, tr("ГРАНЬ"));
-            ui.label(RichText::new(tr("Щёлкните плоскую грань тела")).weak());
+            face_pick_row(ui, &mut cmd.pick, true, tr("Щёлкните плоскую грань тела"));
             section(ui, tr("РАЗМЕРЫ"));
             changed |= row(ui, tr("Расстояние"), |ui| expr_field(ui, ("press_pull", uid, 0), distance, p, tr("мм")));
             ui.label(RichText::new(tr("Больше нуля — вытянуть грань наружу, меньше нуля — вдавить внутрь")).weak().small());
@@ -633,6 +652,19 @@ fn sketch_combo(ui: &mut egui::Ui, id: &str, current: &mut u64, sketches: &[(u64
     changed
 }
 
+/// Грань уже выбрана — «Выбрать другую грань»; во время выбора — подсказка.
+fn face_pick_row(ui: &mut egui::Ui, pick: &mut PickTarget, has_face: bool, hint: &str) {
+    if *pick == PickTarget::Face || !has_face {
+        *pick = PickTarget::Face;
+        ui.label(RichText::new(hint).color(Color32::from_rgb(200, 120, 0)));
+    } else {
+        ui.horizontal(|ui| {
+            ui.label(tr("Грань выбрана"));
+            if ui.button(tr("Выбрать другую")).clicked() { *pick = PickTarget::Face; }
+        });
+    }
+}
+
 /// Пользователь ещё не выбрал то, без чего операция не строится: ошибку не показываем, ждём щелчка.
 pub fn awaiting_pick(kind: &FeatureKind) -> bool {
     match kind {
@@ -690,7 +722,7 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
         }
         "place" => {
             let (face, at) = c.top_face.unwrap_or((fusion_core::Plane::XY, [0.0, 0.0]));
-            FeatureKind::PlaceOnPlane { body: selected.first().copied().unwrap_or(0), face, seed: face.to_world(at).to_array(), target: fusion_core::Plane::XY }
+            FeatureKind::PlaceOnPlane { body: selected.first().copied().unwrap_or(0), face, seed: face.to_world(at).to_array(), target: fusion_core::Plane::XY, to: None }
         }
         "press_pull" => {
             let (plane, at) = c.top_face.unwrap_or((fusion_core::Plane::XY, [0.0, 0.0]));

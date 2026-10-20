@@ -167,7 +167,16 @@ pub enum FeatureKind {
     OffsetPlane { base: Plane, offset: Expr },
     /// Поставить тело на плоскость: грань `face` (нормаль наружу, `seed` — точка на ней) ложится на плоскость `target`,
     /// тело оказывается по ту сторону плоскости, куда смотрит её нормаль. Положение вдоль плоскости сохраняется.
-    PlaceOnPlane { body: u64, face: Plane, seed: [f64; 3], target: Plane },
+    /// Align as in Fusion: the body turns so that `face` lies on `target`. With `to` (a point picked on another body's face)
+    /// the picked point of the face lands exactly there; without it the body only moves across the plane.
+    PlaceOnPlane {
+        body: u64,
+        face: Plane,
+        seed: [f64; 3],
+        target: Plane,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<[f64; 3]>,
+    },
     /// Вытягивание плоской грани тела: `plane` — плоскость грани (нормаль наружу), `seed` — точка на грани, `distance` > 0 добавляет материал, < 0 вырезает.
     PressPull { plane: Plane, seed: [f64; 3], distance: Expr },
     /// Оболочка: стенки толщиной `thickness`; грань на плоскости `plane` остаётся открытой (если `open`).
@@ -186,7 +195,7 @@ impl FeatureKind {
             FeatureKind::Primitive { shape: Shape::Torus { .. }, .. } => "Тор",
             FeatureKind::Hole { .. } => "Отверстие",
             FeatureKind::PressPull { .. } => "Вытягивание грани",
-            FeatureKind::PlaceOnPlane { .. } => "Поставить на плоскость",
+            FeatureKind::PlaceOnPlane { .. } => "Выровнять",
             FeatureKind::Coil { .. } => "Спираль",
             FeatureKind::Pipe { .. } => "Труба",
             FeatureKind::Sweep { .. } => "По траектории",
@@ -804,14 +813,16 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             apply_op(&mut m, tool, Op::Cut, id_base)?;
             Ok((Arc::new(m), None))
         }
-        FeatureKind::PlaceOnPlane { body, face, seed, target } => {
+        FeatureKind::PlaceOnPlane { body, face, seed, target, to: point } => {
             let sel = bodies_by_id(prev, &[*body])?;
             let (from, to) = (face.normal().normalize(), target.normal().normalize());
             // the face normal must end up opposite to the plane normal: the face lies on the plane, the body stands on top of it
             let q = DQuat::from_rotation_arc(from, -to);
             let pivot = DVec3::from(*seed);
             let lift = (target.o() - pivot).dot(to);
-            let mat = DMat4::from_translation(to * lift) * DMat4::from_translation(pivot) * DMat4::from_quat(q) * DMat4::from_translation(-pivot);
+            // the turned pivot goes onto the picked point, or straight onto the plane when no point was picked
+            let dest = point.map(DVec3::from).unwrap_or(pivot + to * lift);
+            let mat = DMat4::from_translation(dest) * DMat4::from_quat(q) * DMat4::from_translation(-pivot);
             let moved = sel[0].solid.transformed(&mat);
             let mut m = (**prev).clone();
             if let Some(b) = m.bodies.iter_mut().find(|b| b.id == *body) { b.solid = Arc::new(moved); }
@@ -1277,7 +1288,7 @@ mod new_ops {
         assert!((end.normal() - DVec3::X).length() < 1e-12);
         for (target, axis) in [(Plane::XY, 2), (Plane { origin: [0.0, 5.0, 0.0], ..Plane::XZ }.flipped(), 1)] {
             let (mut d, body) = plate();
-            d.insert(FeatureKind::PlaceOnPlane { body, face: end, seed: [40.0, 15.0, 5.0], target });
+            d.insert(FeatureKind::PlaceOnPlane { body, face: end, seed: [40.0, 15.0, 5.0], target, to: None });
             let ev = run(&d);
             assert_eq!(ev.model().bodies.len(), 1);
             let b = &ev.model().bodies[0];
@@ -1292,6 +1303,23 @@ mod new_ops {
                 assert!((min - 5.0).abs() < 1e-6 && (max - 45.0).abs() < 1e-6, "{min}..{max}");
             }
         }
+    }
+
+    #[test]
+    fn align_puts_a_face_onto_a_point_of_another_bodys_face() {
+        // the plate's x = 40 end face goes onto the top of a stand at (100, 100, 20): the plate stands up there
+        let (mut d, body) = plate();
+        let end = Plane { origin: [40.0, 0.0, 0.0], x: [0.0, 1.0, 0.0], y: [0.0, 0.0, 1.0] };
+        let top = Plane { origin: [0.0, 0.0, 20.0], ..Plane::XY };
+        d.insert(FeatureKind::PlaceOnPlane { body, face: end, seed: [40.0, 15.0, 5.0], target: top, to: Some([100.0, 100.0, 20.0]) });
+        let ev = run(&d);
+        let (lo, hi) = ev.model().bodies[0].mesh().bounds().unwrap();
+        assert!((lo.z - 20.0).abs() < 1e-6 && (hi.z - 60.0).abs() < 1e-6, "{lo} {hi}");
+        let centre = (lo + hi) / 2.0;
+        assert!((centre.x - 100.0).abs() < 5.0 + 1e-6 && (centre.y - 100.0).abs() < 15.0 + 1e-6, "the face centre lands on the picked point: {centre}");
+        // an old file without `to` still reads
+        let json = serde_json::to_string(&d).unwrap().replace(",\"to\":[100.0,100.0,20.0]", "");
+        assert!(Document::from_json(&json).is_ok());
     }
 
     #[test]
