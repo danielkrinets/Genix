@@ -861,7 +861,8 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
         }
         let thumbs = &h.thumbs;
         let card = |ui: &mut egui::Ui, key: &str, title: &str, sub: &str, people: usize, edit: bool, checked: bool, tex_key: &str| -> egui::Response {
-            let (rect, resp) = ui.allocate_exact_size(egui::vec2(240.0, 160.0), if edit { egui::Sense::click_and_drag() } else { egui::Sense::click() });
+            // a card can always be dragged onto a folder; move mode only adds multi-selection
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(240.0, 160.0), egui::Sense::click_and_drag());
             // move mode: the card trembles like an icon on the iPhone home screen
             let rect = if edit {
                 let t = ui.input(|i| i.time) as f32;
@@ -957,8 +958,8 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
                     else if ui.input(|i| i.modifiers.shift) { h.edit_mode = true; h.edit_since = now_t; toggle = Some(p.clone()); }
                     else if info.exists { action = HomeAction::OpenPath(PathBuf::from(p)); }
                 }
-                if h.edit_mode && r.drag_started() {
-                    r.dnd_set_drag_payload(if checked { h.selected.iter().cloned().collect::<Vec<String>>() } else { vec![p.clone()] });
+                if r.drag_started() {
+                    r.dnd_set_drag_payload(if checked && h.edit_mode { h.selected.iter().cloned().collect::<Vec<String>>() } else { vec![p.clone()] });
                 }
                 r.context_menu(|ui| {
                     if cfg!(target_os="macos") && info.exists && crate::app::menu_item(ui, "search", tr("Показать в Finder")) {crate::desktop::reveal(std::path::Path::new(p)); ui.close_menu();}
@@ -1007,6 +1008,15 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
     }
     if let Some(path) = toggle {
         if !h.selected.remove(&path) { h.selected.insert(path); }
+    }
+    // while a card is carried, a small label follows the pointer so it is clear what is being moved
+    if let (Some(paths), Some(at)) = (egui::DragAndDrop::payload::<Vec<String>>(ui.ctx()), ui.ctx().pointer_latest_pos()) {
+        let text = if paths.len() == 1 { h.infos.get(&paths[0]).map(|i| i.name.clone()).unwrap_or_default() } else { tf!("Моделей: {}", paths.len()) };
+        let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("carry-chip")));
+        let g = painter.layout_no_wrap(text, egui::FontId::proportional(14.0), crate::theme::on_accent());
+        let r = egui::Rect::from_min_size(at + egui::vec2(14.0, 10.0), g.size() + egui::vec2(24.0, 12.0));
+        painter.rect_filled(r, r.height() / 2.0, crate::theme::accent());
+        painter.galley(r.min + egui::vec2(12.0, 6.0), g, crate::theme::on_accent());
     }
     // hovering one model for 3 s starts its 360° preview
     let now = ui.input(|i| i.time);
