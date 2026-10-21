@@ -576,12 +576,13 @@ impl SketchSession {
     }
 
     fn accepts_typing(&self) -> bool {
-        matches!(self.pending, Pending::Line { .. } | Pending::Rect { .. } | Pending::Circle { .. })
+        matches!(self.pending, Pending::Line { .. } | Pending::Rect { .. } | Pending::Circle { .. } | Pending::Arc2 { .. })
     }
 
     fn open_dim_editor(&mut self, i: usize) {
+        let angle = matches!(self.sketch.constraints.get(i), Some(Constraint::Angle(..)));
         if let Some(e) = self.sketch.constraints.get(i).and_then(|c| c.expr()) {
-            self.edit_dim = Some((i, e.0.clone(), true));
+            self.edit_dim = Some((i, if angle { e.0.clone() } else { crate::units::field_text(&e.0) }, true));
         }
     }
 
@@ -813,7 +814,8 @@ impl SketchSession {
             if t.is_empty() {
                 return None;
             }
-            params.eval(t).ok().filter(|v| *v > 0.0).map(|v| (Expr(t.to_string()), v))
+            let plain = t.parse::<f64>().is_ok();
+            params.eval(t).ok().filter(|v| *v > 0.0).map(|v| if plain { (Expr(crate::units::stored_text(t)), crate::units::from_display(v)) } else { (Expr(t.to_string()), v) })
         };
         let Some(cur) = self.cursor else { return };
         match self.pending {
@@ -842,6 +844,17 @@ impl SketchSession {
                     return;
                 };
                 self.finish_circle(c, pt, d / 2.0, Some(e), params);
+            }
+            Pending::Arc2 { a, pa, b, pb } => {
+                let Some((_, r)) = parse(&self.typed[0]) else {
+                    self.message = Some(tr("Неверный радиус").into());
+                    return;
+                };
+                let Some(m) = arc_through_radius(a, b, r, cur.pos) else {
+                    self.message = Some(tr("Радиус меньше половины хорды — дуга невозможна").into());
+                    return;
+                };
+                self.finish_arc(a, pa, b, pb, m, params);
             }
             _ => {}
         }
@@ -1475,39 +1488,67 @@ impl SketchSession {
             self.label_rects.push((i, r));
         }
 
-        // набираемое значение возле курсора
+        // значения возле курсора: подписанные поля; активное подсвечено, подсказка про Tab только когда полей два
         if self.accepts_typing() {
             if let Some(m) = ui.ctx().pointer_hover_pos() {
-                let label = match self.pending {
-                    Pending::Rect { .. } => {
-                        let f = |i: usize, name: &str| {
-                            let v = if self.typed[i].is_empty() { "…".to_string() } else { self.typed[i].clone() };
-                            if self.typed_field == i { format!("[{name} {v}]") } else { format!("{name} {v}") }
-                        };
-                        tf!("{}  {}   (Tab — переключить)", f(0, tr("Ш")), f(1, tr("В")))
-                    }
-                    Pending::Circle { c: cc, .. } => {
-                        if self.typed[0].is_empty() {
-                            format!("Ø {}", format_num(round3(2.0 * DVec2::from(cc).distance(DVec2::from(self.cursor.map(|s| s.pos).unwrap_or(cc))))))
-                        } else {
-                            format!("Ø {} ↵", self.typed[0])
-                        }
-                    }
-                    Pending::Line { start, .. } => {
-                        if self.typed[0].is_empty() {
-                            let a = DVec2::from(self.sketch.points[start].pos);
-                            let b = DVec2::from(self.cursor.map(|s| s.pos).unwrap_or(a.to_array()));
-                            tf!("{} мм", format_num(round3(a.distance(b))))
-                        } else {
-                            format!("{} ↵", self.typed[0])
-                        }
-                    }
-                    _ => String::new(),
+                let cur = self.cursor.map(|s| s.pos);
+                let live = |v: f64| crate::units::number(crate::units::to_display(v));
+                let field = |i: usize, name: &'static str, measured: Option<f64>| -> (String, String, bool, bool) {
+                    let typed = !self.typed[i].is_empty();
+                    let value = if typed { self.typed[i].clone() } else { measured.map(live).unwrap_or_else(|| "…".into()) };
+                    (tr(name).to_string(), value, self.typed_field == i, typed)
                 };
-                let g = painter.layout_no_wrap(label, font.clone(), Color32::WHITE);
-                let r = Rect::from_min_size(m + egui::vec2(16.0, 14.0), g.size() + egui::vec2(10.0, 6.0));
-                painter.rect_filled(r, 8.0, Color32::from_rgb(37, 99, 176));
-                painter.galley(r.min + egui::vec2(5.0, 3.0), g, Color32::WHITE);
+                let mut hint = tr("Введите число и нажмите Enter").to_string();
+                let rows: Vec<(String, String, bool, bool)> = match self.pending {
+                    Pending::Rect { p0, .. } => {
+                        hint = tr("Tab — следующее поле · Enter — создать").to_string();
+                        vec![field(0, "Ширина", cur.map(|c| (c[0] - p0[0]).abs())), field(1, "Высота", cur.map(|c| (c[1] - p0[1]).abs()))]
+                    }
+                    Pending::Circle { c: cc, .. } => vec![field(0, "Диаметр", cur.map(|c| 2.0 * DVec2::from(cc).distance(DVec2::from(c))))],
+                    Pending::Line { start, .. } => {
+                        let a = DVec2::from(self.sketch.points[start].pos);
+                        vec![field(0, "Длина", cur.map(|c| a.distance(DVec2::from(c))))]
+                    }
+                    Pending::Arc2 { a, b, .. } => {
+                        hint = tr("Введите радиус, чтобы дуги получались одинаковыми · Enter — создать").to_string();
+                        let stats = cur.and_then(|c| arc_stats(a, b, c));
+                        let mut r = vec![field(0, "Радиус", stats.map(|s| s.0))];
+                        // the sweep is only read, never typed
+                        r.push((tr("Угол").to_string(), stats.map_or("…".into(), |s| format!("{}°", format_num((s.1 * 10.0).round() / 10.0))), false, false));
+                        r
+                    }
+                    _ => Vec::new(),
+                };
+                if !rows.is_empty() {
+                    let unit_label = |name: &str| if name == crate::i18n::tr("Угол") { String::new() } else { crate::units::label().to_string() };
+                    let small = egui::FontId::proportional(11.5);
+                    let lay = |t: &str, f: &egui::FontId| painter.layout_no_wrap(t.to_string(), f.clone(), Color32::WHITE);
+                    let (pad, gap) = (10.0, 8.0);
+                    let cells: Vec<_> = rows.iter().map(|(n, v, active, typed)| {
+                        let (ln, lv, lu) = (lay(n, &small), lay(&format!("{v}{}", if *active { "▏" } else { "" }), &font), lay(&unit_label(n), &small));
+                        (ln, lv, lu, *active, *typed)
+                    }).collect();
+                    let lh = lay(&hint, &small);
+                    let row_w: f32 = cells.iter().map(|(n, v, u, ..)| n.size().x.max(v.size().x + u.size().x + 6.0) + 2.0 * pad + gap).sum::<f32>() - gap;
+                    let width = row_w.max(lh.size().x + 2.0 * pad) + 2.0 * pad;
+                    let top_left = m + egui::vec2(16.0, 14.0);
+                    let panel = Rect::from_min_size(top_left, egui::vec2(width, 22.0 + 40.0 + lh.size().y + 14.0));
+                    painter.rect_filled(panel, 16.0, Color32::from_rgb(37, 99, 176));
+                    let mut x = panel.left() + pad;
+                    for (n, v, u, active, typed) in cells {
+                        let w = n.size().x.max(v.size().x + u.size().x + 6.0) + 2.0 * pad;
+                        let cell = Rect::from_min_size(egui::pos2(x, panel.top() + 10.0), egui::vec2(w, 54.0));
+                        painter.galley(egui::pos2(cell.left() + pad, cell.top() + 4.0), n.clone(), Color32::from_white_alpha(200));
+                        let inset = Rect::from_min_size(egui::pos2(cell.left(), cell.top() + 22.0), egui::vec2(w, 30.0));
+                        painter.rect_filled(inset, 9.0, if active { Color32::from_rgb(14, 52, 104) } else { Color32::from_rgb(28, 78, 146) });
+                        if active { painter.rect_stroke(inset, 9.0, Stroke::new(1.5_f32, Color32::WHITE), egui::StrokeKind::Inside); }
+                        let vy = inset.center().y - v.size().y / 2.0;
+                        painter.galley(egui::pos2(inset.left() + pad, vy), v.clone(), if typed { Color32::WHITE } else { Color32::from_white_alpha(170) });
+                        painter.galley(egui::pos2(inset.right() - pad - u.size().x, inset.center().y - u.size().y / 2.0), u, Color32::from_white_alpha(170));
+                        x += w + gap;
+                    }
+                    painter.galley(egui::pos2(panel.left() + 2.0 * pad, panel.bottom() - lh.size().y - 9.0), lh, Color32::from_white_alpha(190));
+                }
             }
         }
 
@@ -1551,8 +1592,9 @@ impl SketchSession {
             });
             if apply {
                 self.checkpoint();
+                let angle = matches!(self.sketch.constraints.get(i), Some(Constraint::Angle(..)));
                 if let Some(e) = self.sketch.constraints.get_mut(i).and_then(|c| c.expr_mut()) {
-                    *e = Expr(text.trim().to_string());
+                    *e = Expr(if angle { text.trim().to_string() } else { crate::units::stored_text(text.trim()) });
                 }
                 self.commit_checked(params, tr("Размер"));
             } else if keep {
@@ -1615,11 +1657,12 @@ impl SketchSession {
             }
             egui::vec2(px * 0.7, -px * 0.7)
         };
-        let value = |e: &Expr| {
-            let v = params.eval(&e.0).map(format_num).unwrap_or_else(|_| "?".into());
+        // lengths carry the unit chosen in the settings; angles stay plain degrees
+        let value = |e: &Expr, len: bool| {
+            let v = params.eval(&e.0).map(|v| if len { crate::units::fmt(v) } else { format_num(v) }).unwrap_or_else(|_| "?".into());
             if e.is_plain_number() { v } else { format!("{} = {v}", e.0) }
         };
-        let fmt = |e: &Expr| value(e);
+        let fmt = |e: &Expr| value(e, true);
         use Constraint::*;
         Some(match cons {
             Length(e, x) => (scr(mid(*e)?)? + normal_off(*e, 16.0), fmt(x)),
@@ -1633,7 +1676,7 @@ impl SketchSession {
             }
             Angle(a, b, x) => {
                 let m = (mid(*a)? + mid(*b)?) * 0.5;
-                (scr(m)?, format!("{}°", fmt(x)))
+                (scr(m)?, format!("{}°", value(x, false)))
             }
             Horizontal(e) => (scr(mid(*e)?)? + normal_off(*e, -14.0), "—".into()),
             Vertical(e) => (scr(mid(*e)?)? + normal_off(*e, -14.0), "|".into()),
@@ -1715,6 +1758,29 @@ fn seg_dist(p: Pos2, a: Pos2, b: Pos2) -> f32 {
     let ab = b - a;
     let t = ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
     p.distance(a + ab * t)
+}
+
+/// A point in the middle of the arc from `a` to `b` with radius `r` that bulges to the side of `towards`.
+fn arc_through_radius(a: P2, b: P2, r: f64, towards: P2) -> Option<P2> {
+    let (a, b) = (DVec2::from(a), DVec2::from(b));
+    let chord = b - a;
+    let half = chord.length() / 2.0;
+    if half < 1e-9 || r < half - 1e-9 {
+        return None;
+    }
+    let n = DVec2::new(-chord.y, chord.x).normalize();
+    let side = if (DVec2::from(towards) - (a + b) / 2.0).dot(n) >= 0.0 { 1.0 } else { -1.0 };
+    let sag = r - (r * r - half * half).max(0.0).sqrt();
+    Some(((a + b) / 2.0 + n * side * sag).to_array())
+}
+
+/// Radius and sweep (degrees) of the arc from `a` to `b` through `m`.
+fn arc_stats(a: P2, b: P2, m: P2) -> Option<(f64, f64)> {
+    let c = circumcenter(a, b, m)?;
+    let ang = |p: P2| (p[1] - c[1]).atan2(p[0] - c[0]);
+    let ccw = |from: f64, to: f64| (to - from).rem_euclid(std::f64::consts::TAU);
+    let sweep = if ccw(ang(a), ang(m)) < ccw(ang(a), ang(b)) { ccw(ang(a), ang(b)) } else { ccw(ang(b), ang(a)) };
+    Some((DVec2::from(c).distance(DVec2::from(a)), sweep.to_degrees()))
 }
 
 fn circumcenter(a: P2, b: P2, c: P2) -> Option<P2> {

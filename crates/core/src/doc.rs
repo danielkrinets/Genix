@@ -139,6 +139,17 @@ pub enum PatternKind {
 }
 
 /// A flat face of a body, found again by its plane and a point on it.
+fn zero_expr() -> Expr {
+    Expr::num(0.0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PipeShape {
+    #[default]
+    Round,
+    Square,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FaceRef {
     pub plane: Plane,
@@ -170,7 +181,20 @@ pub enum FeatureKind {
     /// Пружина/спираль: круглое сечение вдоль винтовой линии вокруг оси.
     Coil { at: [Expr; 3], axis: Axis3, dia: Expr, pitch: Expr, turns: Expr, section: Expr, op: Op },
     /// Труба вдоль пути из чертежа: внешний диаметр и толщина стенки.
-    Pipe { path: u64, outer: Expr, wall: Expr, op: Op },
+    /// `shape`: round or square section; `wall` 0 makes a solid rod; `corner` rounds the section's corners,
+    /// `bend` rounds the bends of the path (0 keeps them sharp).
+    Pipe {
+        path: u64,
+        outer: Expr,
+        wall: Expr,
+        op: Op,
+        #[serde(default)]
+        shape: PipeShape,
+        #[serde(default = "zero_expr")]
+        corner: Expr,
+        #[serde(default = "zero_expr")]
+        bend: Expr,
+    },
     /// Сдвиг: профиль чертежа вдоль пути из другого чертежа.
     Sweep { sketch: u64, profiles: Vec<ProfileRef>, path: u64, op: Op },
     /// Лофт: плавный переход между профилями разных чертежей.
@@ -893,20 +917,35 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             apply_op(&mut m, tool, *op, id_base)?;
             Ok((Arc::new(m), None))
         }
-        FeatureKind::Pipe { path, outer, wall, op } => {
+        FeatureKind::Pipe { path, outer, wall, op, shape, corner, bend } => {
             let sk = find_sketch(*path, steps, feats)?;
-            let pts: Vec<DVec3> = sk.sketch.chain_path()?.into_iter().map(|q| sk.plane.to_world(q)).collect();
-            let (od, w) = (positive(outer, p, "диаметр")?, positive(wall, p, "толщина стенки")?);
-            if pts.len() < 2 {
+            let raw: Vec<DVec3> = sk.sketch.chain_path()?.into_iter().map(|q| sk.plane.to_world(q)).collect();
+            let od = positive(outer, p, "диаметр")?;
+            let w = wall.eval(p)?;
+            if w < 0.0 {
+                return Err("толщина стенки не может быть отрицательной".into());
+            }
+            let (corner_r, bend_r) = (corner.eval(p)?, bend.eval(p)?);
+            if corner_r < 0.0 || bend_r < 0.0 {
+                return Err("радиус скругления не может быть отрицательным".into());
+            }
+            if raw.len() < 2 {
                 return Err("путь слишком короткий".into());
             }
             if w * 2.0 >= od {
                 return Err("стенка слишком толстая для такого диаметра".into());
             }
+            let pts = geom::round_path(&raw, bend_r);
             let t = (pts[1] - pts[0]).normalize();
-            let o = geom::circle_loop(pts[0], t, od / 2.0, true);
-            let i = geom::circle_loop(pts[0], t, od / 2.0 - w, false);
-            let tool = Solid::from_mesh(&geom::sweep_loops(&pts, &o, &[i])?)?;
+            let (o, i) = match shape {
+                PipeShape::Round => (geom::circle_loop(pts[0], t, od / 2.0, true), geom::circle_loop(pts[0], t, od / 2.0 - w, false)),
+                PipeShape::Square => (
+                    geom::rounded_rect_loop(pts[0], t, od / 2.0, od / 2.0, corner_r, true),
+                    geom::rounded_rect_loop(pts[0], t, od / 2.0 - w, od / 2.0 - w, (corner_r - w).max(0.0), false),
+                ),
+            };
+            let holes = if w > 1e-9 { vec![i] } else { vec![] };
+            let tool = Solid::from_mesh(&geom::sweep_loops(&pts, &o, &holes)?)?;
             let mut m = (**prev).clone();
             apply_op(&mut m, tool, *op, id_base)?;
             Ok((Arc::new(m), None))
@@ -1341,6 +1380,24 @@ mod new_ops {
     }
 
     #[test]
+    fn a_square_pipe_with_rounded_bends_has_the_expected_volume() {
+        // L-shaped path 60 + 40 long; square 10 x 10 section, wall 1: area 100 - 64 = 36
+        let mut d = Document::default();
+        let mut path = Sketch::default();
+        path.add_line([0.0, 0.0], [60.0, 0.0]);
+        path.add_line([60.0, 0.0], [60.0, 40.0]);
+        let ps = d.insert(FeatureKind::Sketch { plane: Plane::XZ, sketch: path });
+        let mk = |bend: f64, shape: PipeShape| FeatureKind::Pipe { path: ps, outer: Expr::num(10.0), wall: Expr::num(1.0), op: Op::NewBody, shape, corner: Expr::num(0.0), bend: Expr::num(bend) };
+        let uid = d.insert(mk(0.0, PipeShape::Square));
+        let sharp = run(&d).model().bodies[0].solid.volume();
+        assert!((sharp - 36.0 * 100.0).abs() / sharp < 0.08, "sharp square pipe: {sharp}");
+        d.feature_mut(uid).unwrap().kind = mk(8.0, PipeShape::Square);
+        let round = run(&d).model().bodies[0].solid.volume();
+        // rounding the bend shortens the path a little (about r * (2 - pi/2) at the centre line)
+        assert!(round < sharp && round > sharp * 0.9, "rounded bend {round} vs sharp {sharp}");
+    }
+
+    #[test]
     fn extrude_can_take_a_body_face_instead_of_a_sketch() {
         let (mut d, _) = plate();
         let top = Plane { origin: [0.0, 0.0, 10.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
@@ -1374,7 +1431,7 @@ mod new_ops {
         path.add_line([0.0, 0.0], [0.0, 30.0]);
         path.add_line([0.0, 30.0], [30.0, 30.0]);
         let ps = d.insert(FeatureKind::Sketch { plane: Plane::XZ, sketch: path });
-        d.insert(FeatureKind::Pipe { path: ps, outer: Expr::num(8.0), wall: Expr::num(1.0), op: Op::NewBody });
+        d.insert(FeatureKind::Pipe { path: ps, outer: Expr::num(8.0), wall: Expr::num(1.0), op: Op::NewBody, shape: PipeShape::Round, corner: Expr::num(0.0), bend: Expr::num(0.0) });
         let v = run(&d).model().bodies[0].solid.volume();
         assert!((v - std::f64::consts::PI * (16.0 - 9.0) * 60.0).abs() / v < 0.03, "{v}");
     }
@@ -1455,7 +1512,7 @@ mod new_ops {
         path.add(crate::sketch::Entity::Line { a: pts[0], b: pts[1], construction: false });
         path.add(crate::sketch::Entity::Line { a: pts[1], b: pts[2], construction: false });
         let ps = d.insert(FeatureKind::Sketch { plane: Plane::XZ, sketch: path });
-        d.insert(FeatureKind::Pipe { path: ps, outer: Expr::num(8.0), wall: Expr::num(1.0), op: Op::NewBody });
+        d.insert(FeatureKind::Pipe { path: ps, outer: Expr::num(8.0), wall: Expr::num(1.0), op: Op::NewBody, shape: PipeShape::Round, corner: Expr::num(0.0), bend: Expr::num(0.0) });
         let ev = run(&d);
         let v = ev.model().bodies[0].solid.volume();
         assert!((v - std::f64::consts::PI * (16.0 - 9.0) * 60.0).abs() / v < 0.03, "{v}");

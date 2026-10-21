@@ -8,65 +8,149 @@ use fusion_core::{Expr, Params};
 /// Значение записывается только когда оно корректно; ошибка показывается красной рамкой и подсказкой.
 /// Возвращает true, если выражение изменилось.
 pub fn expr_field(ui: &mut egui::Ui, id: impl std::hash::Hash, e: &mut Expr, params: &Params, unit: &'static str) -> bool {
+    let scrub_id = egui::Id::new(&id).with("scrub");
     let id = ui.make_persistent_id(id);
-    let mut text: String = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| e.0.clone());
+    // length fields show and accept the unit chosen in the settings; the document keeps millimetres
+    let is_len = unit == "мм";
+    let show = |s: &str| if is_len { crate::units::field_text(s) } else { s.to_string() };
+    let store = |s: &str| if is_len { crate::units::stored_text(s) } else { s.to_string() };
+    let step_base = if is_len { crate::units::unit().step() } else if unit == "×" { 0.1 } else { 1.0 };
+    let mut text: String = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| show(&e.0));
     // если выражение поменяли снаружи (например, отменой), а поле не в фокусе — показываем новое
     let focused = ui.memory(|m| m.has_focus(id));
-    if !focused && text != e.0 {
-        text = e.0.clone();
+    let spring_id = id.with("spring");
+    let mut spring: Option<Spring> = ui.data(|d| d.get_temp(spring_id));
+    if !focused && text != show(&e.0) {
+        text = show(&e.0);
     }
-    let result = params.eval(&text);
-    let ok = result.is_ok();
     let mut changed = false;
+    // value changes by arrows, wheel or dragging: the model follows with a spring (a little overshoot, then settles)
+    let mut nudge: Option<f64> = None;
+    let mut dragged_px = 0.0_f32;
     ui.horizontal(|ui| {
+        let ok = params.eval(&store(&text)).is_ok();
         let mut te = egui::TextEdit::singleline(&mut text).id(id).desired_width(ui.spacing().text_edit_width.min(90.0));
         if !ok {
             te = te.background_color(Color32::from_rgb(255, 225, 225)).text_color(Color32::from_rgb(160, 0, 0));
         }
         let r = ui.add(te);
         if r.changed() {
-            if params.eval(&text).is_ok() && text.trim() != e.0 {
-                e.0 = text.trim().to_string();
+            spring = None;
+            if params.eval(&store(&text)).is_ok() && store(text.trim()) != e.0 {
+                e.0 = store(text.trim());
                 changed = true;
             }
         }
-        // on-screen arrows: a click is ±1 (Shift ±0.1), holding repeats; only for plain numbers
+        // on-screen arrows: a click is ±1 step (Shift ±0.1 of it), holding repeats; only for plain numbers
         let number = text.trim().parse::<f64>().ok();
+        let fine = ui.input(|i| i.modifiers.shift);
         if let Some(d) = stepper(ui, id.with("stepper"), number.is_some()) {
-            let nv = ((number.unwrap_or(0.0) + d) * 1e6).round() / 1e6;
-            text = format_num(nv);
-            e.0 = text.clone();
-            changed = true;
+            nudge = Some(d * step_base * if fine { 1.0 } else { 1.0 });
         }
         if !unit.is_empty() {
-            ui.label(RichText::new(crate::i18n::tr(unit)).weak());
+            let label = if is_len { crate::units::label() } else { crate::i18n::tr(unit) };
+            // the unit is also a drag handle: pull right to grow, left to shrink
+            let u = ui.add(egui::Label::new(RichText::new(label).weak()).sense(egui::Sense::drag()));
+            let u = u.on_hover_cursor(egui::CursorIcon::ResizeHorizontal).on_hover_text(crate::i18n::tr("Потяните вправо или влево, чтобы менять значение"));
+            dragged_px += u.drag_delta().x;
         }
         // показываем вычисленное значение для выражений
-        match params.eval(&text) {
+        match params.eval(&store(&text)) {
             Ok(v) if text.trim().parse::<f64>().is_err() => {
-                ui.label(RichText::new(format!("= {}", format_num(v))).weak());
+                let v = if is_len { crate::units::to_display(v) } else { v };
+                ui.label(RichText::new(format!("= {}", format_num((v * 1e6).round() / 1e6))).weak());
             }
             Err(msg) => {
                 r.on_hover_text(msg);
             }
             _ => {}
         }
-        // колёсико над полем: ±1 (с Shift — ±0.1) для простых чисел
-        if ui.rect_contains_pointer(ui.min_rect()) {
-            if let Ok(v) = text.trim().parse::<f64>() {
-                let dy = ui.input(|i| i.raw_scroll_delta.y);
-                if dy != 0.0 {
-                    let step = if ui.input(|i| i.modifiers.shift) { 0.1 } else { 1.0 };
-                    let nv = v + step * dy.signum() as f64;
-                    text = format_num(nv);
-                    e.0 = text.clone();
-                    changed = true;
-                }
+        // колёсико над полем: ±1 шаг (с Shift — в 10 раз меньше) для простых чисел
+        if ui.rect_contains_pointer(ui.min_rect()) && number.is_some() {
+            let dy = ui.input(|i| i.raw_scroll_delta.y);
+            if dy != 0.0 {
+                nudge = Some(step_base * if fine { 0.1 } else { 1.0 } * dy.signum() as f64);
             }
         }
     });
-    ui.data_mut(|d| d.insert_temp(id, text));
+    // a label elsewhere (the chip caption) may also be dragged: it leaves its pixels under the same key
+    dragged_px += ui.data_mut(|d| d.remove_temp::<f32>(scrub_id)).unwrap_or(0.0);
+    let now = ui.input(|i| i.time);
+    let current = text.trim().parse::<f64>().ok();
+    if let (Some(v), true) = (current, dragged_px != 0.0) {
+        // every 6 px is one step; Shift makes it ten times finer. No spring while the hand is on it.
+        let acc = ui.data_mut(|d| { let a = d.get_temp::<f32>(id.with("px")).unwrap_or(0.0) + dragged_px; d.insert_temp(id.with("px"), a); a });
+        let step = step_base * if ui.input(|i| i.modifiers.shift) { 0.1 } else { 1.0 };
+        let n = (acc / 6.0).trunc();
+        if n != 0.0 {
+            ui.data_mut(|d| d.insert_temp(id.with("px"), acc - n * 6.0));
+            let nv = ((v + n as f64 * step) * 1e6).round() / 1e6;
+            text = format_num(nv);
+            e.0 = store(&text);
+            spring = None;
+            changed = true;
+            crate::haptics::tick();
+        }
+    } else if ui.input(|i| i.pointer.any_released()) {
+        ui.data_mut(|d| d.remove_temp::<f32>(id.with("px")));
+    }
+    if let (Some(d), Some(v)) = (nudge, current) {
+        let target = ((v + d) * 1e6).round() / 1e6;
+        let from = spring.as_ref().map_or(v, |s| s.value(now));
+        text = format_num(target);
+        spring = if crate::theme::reduced_motion() { None } else { Some(Spring { from, to: target, start: now }) };
+        e.0 = store(&text);
+        changed = true;
+    }
+    if let Some(sp) = spring {
+        let t = now - sp.start;
+        if t >= SPRING_SECONDS {
+            spring = None;
+            e.0 = store(&format_num(sp.to));
+        } else {
+            let mut v = sp.value(now);
+            // an overshoot must not make a size negative or zero while it bounces
+            if sp.from > 0.0 && sp.to > 0.0 { v = v.max(sp.to.min(sp.from) * 0.25); }
+            e.0 = store(&format_num((v * 1e5).round() / 1e5));
+            ui.ctx().request_repaint();
+        }
+        changed = true;
+    }
+    ui.data_mut(|d| {
+        d.insert_temp(id, text);
+        match spring { Some(s) => d.insert_temp(spring_id, s), None => { d.remove_temp::<Spring>(spring_id); } }
+    });
     changed
+}
+
+/// Hands a horizontal drag made on some caption to the field that is drawn next with the same id.
+pub fn scrub_caption(ui: &mut egui::Ui, text: egui::RichText, id: impl std::hash::Hash) {
+    let r = ui.add(egui::Label::new(text).sense(egui::Sense::drag()));
+    let r = r.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+    if r.dragged() {
+        let key = egui::Id::new(&id).with("scrub");
+        ui.data_mut(|d| d.insert_temp(key, r.drag_delta().x));
+    }
+}
+
+const SPRING_SECONDS: f64 = 0.7;
+
+/// Damped spring from `from` to `to`: overshoots by about 15 % and settles in well under a second.
+#[derive(Clone, Copy, Default)]
+struct Spring {
+    from: f64,
+    to: f64,
+    start: f64,
+}
+
+impl Spring {
+    fn value(&self, now: f64) -> f64 {
+        let t = (now - self.start).max(0.0);
+        let (zeta, omega) = (0.45_f64, 24.0_f64);
+        let wd = omega * (1.0 - zeta * zeta).sqrt();
+        let k = 1.0 - (-zeta * omega * t).exp() * ((wd * t).cos() + zeta * omega / wd * (wd * t).sin());
+        self.from + (self.to - self.from) * k
+    }
 }
 
 /// Two stacked arrows ▲▼ beside a number field. Returns the step to add this frame.
@@ -104,6 +188,39 @@ fn stepper(ui: &mut egui::Ui, id: egui::Id, enabled: bool) -> Option<f64> {
         r.on_hover_text(if sign > 0.0 { crate::i18n::tr("Больше (Shift — на 0,1)") } else { crate::i18n::tr("Меньше (Shift — на 0,1)") });
     }
     out
+}
+
+/// Language, theme, accent and measurement units as one grid: used by the first-launch setup and by the settings pages.
+/// `appearance` adds language, theme and accent above the units.
+pub fn preference_grid(ui: &mut egui::Ui, st: &mut crate::settings::Settings, id: &str, appearance: bool) {
+    use crate::settings::ThemeChoice;
+    egui::Grid::new(id).num_columns(2).spacing([28.0, 12.0]).show(ui, |ui| {
+        if appearance {
+            ui.label(crate::i18n::tr("Язык"));
+            egui::ComboBox::from_id_salt((id, "lang")).selected_text(st.lang.name()).show_ui(ui, |ui| {
+                for l in crate::i18n::Lang::ALL { ui.selectable_value(&mut st.lang, l, l.name()); }
+            });
+            ui.end_row();
+            ui.label(crate::i18n::tr("Тема"));
+            ui.horizontal(|ui| {
+                for (t, n) in [(ThemeChoice::Auto, "Как в системе"), (ThemeChoice::Light, "Светлая"), (ThemeChoice::Dark, "Тёмная")] {
+                    ui.selectable_value(&mut st.theme, t, crate::i18n::tr(n));
+                }
+            });
+            ui.end_row();
+            ui.label(crate::i18n::tr("Акцентный цвет"));
+            ui.horizontal(|ui| { for color in crate::theme::Accent::ALL { if accent_swatch(ui, color, st.accent == color).clicked() { st.accent = color; } } });
+            ui.end_row();
+        }
+        ui.label(crate::i18n::tr("Единицы длины"));
+        egui::ComboBox::from_id_salt((id, "unit")).selected_text(crate::i18n::tr(st.length_unit.name())).show_ui(ui, |ui| {
+            for u in crate::units::LengthUnit::ALL { ui.selectable_value(&mut st.length_unit, u, crate::i18n::tr(u.name())); }
+        });
+        ui.end_row();
+        ui.label(crate::i18n::tr("Знаков после запятой"));
+        ui.horizontal(|ui| { for n in 0..=4u8 { ui.selectable_value(&mut st.decimals, n, n.to_string()); } });
+        ui.end_row();
+    });
 }
 
 /// Набирается ли сейчас текст в поле ввода (тогда горячие клавиши не срабатывают).

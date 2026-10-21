@@ -42,7 +42,6 @@ pub const MODIFY: &[Item] = &[
     it("shell", "◰", "Оболочка", "", "Выдолбить тело, оставив стенки"),
     it("chamfer", "◢", "Фаска", "", "Снять фаску с прямых рёбер"),
     it("combine", "∪", "Комбинировать", "", "Объединить, вычесть или пересечь тела"),
-    it("cutter", "", "Тело-отверстие", "", "Сделать выбранное тело прозрачным инструментом для вычитания"),
     it("remove", "✖", "Удалить", "Del", "Удалить тела"),
 ];
 
@@ -51,7 +50,7 @@ pub const REFERENCE: &[Item] = &[it("plane", "▱", "Смещённая плос
 pub const INSPECT: &[Item] = &[it("measure", "↔", "Измерить", "", "Расстояние между двумя точками тела")];
 
 const QUICK_CREATE: &[&str] = &["sketch", "extrude", "revolve", "hole"];
-const QUICK_MODIFY: &[&str] = &["move", "place", "fillet", "chamfer", "cutter"];
+const QUICK_MODIFY: &[&str] = &["move", "place", "fillet", "chamfer"];
 
 /// Большая кнопка: значок над подписью.
 pub fn tool_button(ui: &mut egui::Ui, id: &str, icon: &str, label: &str, enabled: bool, selected: bool) -> Response {

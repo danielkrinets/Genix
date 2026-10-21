@@ -642,6 +642,18 @@ fn settings_page(ui: &mut egui::Ui, st: &mut Settings, action: &mut HomeAction) 
     });
 
     ui.add_space(22.0);
+    crate::widgets::section(ui, tr("ЯЗЫК И ЕДИНИЦЫ"));
+    crate::widgets::preference_grid(ui, st, "home-settings-units", false);
+    ui.add_space(6.0);
+    egui::Grid::new("home-settings-lang").num_columns(2).spacing([28.0, 12.0]).show(ui, |ui| {
+        ui.label(tr("Язык"));
+        egui::ComboBox::from_id_salt("home-lang").selected_text(st.lang.name()).show_ui(ui, |ui| {
+            for l in crate::i18n::Lang::ALL { ui.selectable_value(&mut st.lang, l, l.name()); }
+        });
+        ui.end_row();
+    });
+
+    ui.add_space(22.0);
     crate::widgets::section(ui, tr("РЕДАКТОР"));
     egui::Grid::new("home-settings-editor").num_columns(2).spacing([28.0, 12.0]).show(ui, |ui| {
         ui.label(tr("Стиль отображения"));

@@ -132,6 +132,12 @@ pub struct Settings {
     pub splash_seen: String,
     pub show_left_panel: bool,
     pub show_right_panel: bool,
+    /// Единица длины на экране (в файле всегда миллиметры).
+    pub length_unit: crate::units::LengthUnit,
+    /// Знаков после запятой в размерах.
+    pub decimals: u8,
+    /// Первый запуск: выбор языка, темы и единиц уже пройден.
+    pub setup_done: bool,
 }
 
 impl Default for Settings {
@@ -167,6 +173,9 @@ impl Default for Settings {
             splash_seen: String::new(),
             show_left_panel: true,
             show_right_panel: true,
+            length_unit: crate::units::LengthUnit::Mm,
+            decimals: 2,
+            setup_done: false,
         }
     }
 }

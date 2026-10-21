@@ -15,7 +15,6 @@ use crate::toolbar;
 use eframe::egui::{self, Color32, Pos2, Rect, RichText};
 use eframe::egui_wgpu::{self, wgpu};
 use fusion_core::doc::{EdgeRef, Model, SketchResult};
-use fusion_core::csg::BoolOp;
 use fusion_core::expr::format_num;
 use fusion_core::sketch::{region_at, ProfileRef};
 use fusion_core::{Document, Evaluator, Expr, FeatureKind, Mesh, Params, Plane, Sketch};
@@ -369,7 +368,9 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, open: Option<PathBuf>) -> Self {
         let rs = cc.wgpu_render_state.as_ref().expect("нужен wgpu-рендер");
         rs.renderer.write().callback_resources.insert(GpuScene::new(&rs.device, rs.target_format, MSAA));
-        let settings = Settings::load();
+        let mut settings = Settings::load();
+        // an existing install has already seen the splash: it skips the first-launch setup
+        if !settings.splash_seen.is_empty() { settings.setup_done = true; }
         i18n::set_lang(settings.lang);
         let theme = resolve_theme(&settings, &cc.egui_ctx);
         egui_extras::install_image_loaders(&cc.egui_ctx);
@@ -1055,6 +1056,39 @@ impl App {
         true
     }
 
+    /// First launch only: language, theme and units before anything else. Returns true while it is on screen.
+    fn first_setup(&mut self, ctx: &egui::Context) -> bool {
+        if self.settings.setup_done { return false; }
+        let before = self.settings.clone();
+        let mut done = false;
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(ctx.style().visuals.panel_fill)).show(ctx, |ui| {
+            let c = ui.max_rect().center();
+            let card = Rect::from_center_size(c, egui::vec2(520.0, 470.0));
+            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(card), |ui| {
+                egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(28).inner_margin(egui::Margin::same(32)).show(ui, |ui| {
+                    ui.set_width(card.width() - 64.0);
+                    ui.vertical_centered(|ui| { crate::home::logo(ui, 56.0); });
+                    ui.add_space(10.0);
+                    ui.vertical_centered(|ui| { ui.label(RichText::new(tr("Давайте настроим Genix")).size(24.0).strong()); });
+                    ui.vertical_centered(|ui| { ui.label(RichText::new(tr("Это можно изменить позже в настройках")).color(crate::theme::secondary(ui))); });
+                    ui.add_space(22.0);
+                    crate::widgets::preference_grid(ui, &mut self.settings, "first-setup", true);
+                    ui.add_space(26.0);
+                    ui.vertical_centered(|ui| { if crate::ui_kit::b01(ui, tr("Продолжить"), 220.0).clicked() { done = true; } });
+                });
+            });
+        });
+        if self.settings != before {
+            i18n::set_lang(self.settings.lang);
+            let theme = resolve_theme(&self.settings, ctx);
+            crate::theme::configure(self.settings.accent, theme == Theme::Dark, self.settings.reduce_motion);
+            theme.apply(ctx);
+            self.theme = theme;
+        }
+        if done { self.settings.setup_done = true; self.settings.save(); }
+        done == false
+    }
+
     fn group_of(&self, i: usize) -> Option<u32> {
         if i == self.active { self.group } else { self.tabs[i].group }
     }
@@ -1348,18 +1382,6 @@ impl App {
                 } else {
                     let ids = self.selection.clone();
                     self.delete_bodies(ids);
-                }
-            }
-            "cutter" => {
-                if self.selection.is_empty() {
-                    self.toast(tr("Сначала выберите одно или несколько тел"), true, now);
-                } else {
-                    self.checkpoint();
-                    let make_cutter = self.selection.iter().any(|id| !self.doc.cutter_bodies.contains(id));
-                    for id in self.selection.clone() {
-                        if make_cutter { self.doc.cutter_bodies.insert(id); } else { self.doc.cutter_bodies.remove(&id); }
-                    }
-                    self.after_doc_change();
                 }
             }
             other => self.start_command(other, now),
@@ -2038,12 +2060,14 @@ impl App {
     fn toolbar(&mut self, ui: &mut egui::Ui, now: f64) {
         if let Mode::Sketch(s) = &mut self.mode {
             let full = ui.available_rect_before_wrap();
-            let split = full.max.x - 270.0_f32.min(full.width() * 0.45);
+            // room for «Отмена» + «Завершить чертёж» + margins; the tools scroll in what is left, so nothing hides under the buttons
+            let split = full.max.x - 310.0_f32.min(full.width() * 0.45);
             // fixed row: the scroll area would otherwise report the whole panel height and the bar would grow
             let mut tools = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(full.min, egui::pos2(split, full.min.y + 92.0))));
             let row = 92.0;
             egui::ScrollArea::horizontal().auto_shrink([false, true]).max_height(row).show(&mut tools, |ui| s.toolbar(ui));
-            let mut done = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(egui::pos2(split, full.min.y), egui::pos2(full.max.x, full.min.y + row))).layout(egui::Layout::right_to_left(egui::Align::Center)));
+            let mut done = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(egui::pos2(split, full.min.y), egui::pos2(full.max.x - 20.0, full.min.y + row))).layout(egui::Layout::right_to_left(egui::Align::Center)));
+            done.spacing_mut().item_spacing.x = 14.0;
             let act = s.actions(&mut done);
             ui.allocate_rect(Rect::from_min_max(full.min, egui::pos2(full.max.x, full.min.y + row)), egui::Sense::hover());
             match act {
@@ -2305,13 +2329,16 @@ impl App {
                             }
                         }
                         let mut text = RichText::new(format!("{icon} {}", tr_name(&name)));
+                        // the step being edited is filled with the accent: its text must be the light "on accent" colour
+                        if editing { text = text.color(crate::theme::on_accent()); }
                         if suppressed {
                             text = text.strikethrough().weak();
                         }
                         if !active {
                             text = text.weak();
                         }
-                        let mut btn = egui::Button::new(text).corner_radius(12).selected(editing);
+                        let mut btn = egui::Button::new(text).corner_radius(12);
+                        if editing { btn = btn.fill(crate::theme::accent()); }
                         if err.is_some() && active && !editing {
                             btn = btn.fill(Color32::from_rgb(250, 205, 205));
                         }
@@ -2479,7 +2506,7 @@ impl App {
             ui.label(format!("{}", sel.len()));
             ui.end_row();
             ui.label(tr("Габариты"));
-            ui.label(tf!("{} × {} × {} мм", r1(size.x), r1(size.y), r1(size.z)));
+            ui.label(format!("{} × {} × {} {}", crate::units::number(crate::units::to_display(size.x)), crate::units::number(crate::units::to_display(size.y)), crate::units::number(crate::units::to_display(size.z)), crate::units::label()));
             ui.end_row();
             ui.label(tr("Объём"));
             ui.label(tf!("{} см³", r1(vol / 1000.0)));
@@ -2504,28 +2531,6 @@ impl App {
             self.settings.material = selected_material;
             self.settings.save();
             self.after_doc_change();
-        }
-        let all_cutters = selected_ids.iter().all(|id| self.doc.cutter_bodies.contains(id));
-        let mut cutter = all_cutters;
-        if crate::widgets::toggle(ui, &mut cutter, tr("Использовать как прозрачное отверстие")).changed() {
-            self.checkpoint();
-            for id in &selected_ids {
-                if cutter { self.doc.cutter_bodies.insert(*id); } else { self.doc.cutter_bodies.remove(id); }
-            }
-            self.after_doc_change();
-        }
-        let target = selected_ids.iter().copied().find(|id| !self.doc.cutter_bodies.contains(id));
-        let tools: Vec<u64> = selected_ids.iter().copied().filter(|id| self.doc.cutter_bodies.contains(id)).collect();
-        if let Some(target) = target {
-            if !tools.is_empty() && crate::ui_kit::b01(ui, tr("Вычесть прозрачные тела"), 220.0).clicked() {
-                self.checkpoint();
-                self.doc.insert(FeatureKind::Combine { target, tools: tools.clone(), op: BoolOp::Subtract, keep_tools: false });
-                for id in &tools { self.doc.cutter_bodies.remove(id); }
-                self.selection = vec![target];
-                self.after_doc_change();
-            }
-        } else if all_cutters {
-            ui.label(RichText::new(tr("Выберите также обычное тело — из него будут вычтены прозрачные.")).color(crate::theme::secondary(ui)).small());
         }
         ui.horizontal(|ui| {
             if ui.button(tr("Удалить")).clicked() {
@@ -3089,7 +3094,7 @@ impl App {
         if let Mode::Measure(pts) = &self.mode {
             if pts.len() == 2 {
                 if let Some(p) = self.cam.project(rect, (pts[0] + pts[1]) / 2.0) {
-                    let text = format!("{} {}", format_num((pts[0].distance(pts[1]) * 1000.0).round() / 1000.0), tr("мм"));
+                    let text = crate::units::fmt(pts[0].distance(pts[1]));
                     let g = painter.layout_no_wrap(text, egui::FontId::proportional(14.0), Color32::WHITE);
                     let r = Rect::from_min_size(p + egui::vec2(10.0, -22.0), g.size() + egui::vec2(12.0, 6.0));
                     painter.rect_filled(r, 4.0, Color32::from_rgba_unmultiplied(200, 100, 0, 235));
@@ -3248,7 +3253,9 @@ impl eframe::App for App {
         for file in ctx.input(|i| i.raw.dropped_files.clone()) {
             if let Some(path)=file.path {crate::desktop::enqueue(path);}
         }
+        crate::units::apply(self.settings.length_unit, self.settings.decimals);
         if self.splash(ctx, now) { return; }
+        if self.first_setup(ctx) { return; }
         // сначала лицензия, затем аккаунт (демо)
         if !crate::home::unlocked(&self.settings) {
             if crate::home::gate_ui(ctx, &mut self.settings, &mut self.gate) {
@@ -3416,14 +3423,13 @@ impl App {
             Mode::Measure(pts) => {
                 if pts.len() == 2 {
                     let d = pts[1] - pts[0];
-                    let r = |v: f64| format_num((v * 1000.0).round() / 1000.0);
                     egui::Grid::new("measure").num_columns(2).show(ui, |ui| {
                         ui.label(tr("Расстояние"));
-                        ui.label(RichText::new(tf!("{} мм", r(d.length()))).strong());
+                        ui.label(RichText::new(crate::units::fmt(d.length())).strong());
                         ui.end_row();
                         for (n, v) in [("ΔX", d.x), ("ΔY", d.y), ("ΔZ", d.z)] {
                             ui.label(n);
-                            ui.label(tf!("{} мм", r(v)));
+                            ui.label(crate::units::fmt(v));
                             ui.end_row();
                         }
                     });
@@ -3964,6 +3970,7 @@ impl App {
                 v
             }
             FeatureKind::Shell { thickness, .. } => vec![("Толщина", "мм", thickness)],
+            FeatureKind::Pipe { outer, wall, .. } => vec![("Размер", "мм", outer), ("Стенка", "мм", wall)],
             FeatureKind::OffsetPlane { offset, .. } => vec![("Расстояние", "мм", offset)],
             FeatureKind::PressPull { distance, .. } => vec![("Расстояние", "мм", distance)],
             FeatureKind::Primitive { shape: Shape::Box { w, d, h }, .. } => vec![("Ширина", "мм", w), ("Глубина", "мм", d), ("Высота", "мм", h)],
@@ -4004,7 +4011,7 @@ impl App {
                         ui.spacing_mut().text_edit_width = 60.0;
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
-                            ui.label(RichText::new(tr(label)).size(13.0));
+                            crate::widgets::scrub_caption(ui, RichText::new(tr(label)).size(13.0), ("value_box", uid, i));
                             changed |= crate::widgets::expr_field(ui, ("value_box", uid, i), expr, &params, unit);
                         });
                     });
@@ -4131,6 +4138,7 @@ impl App {
                     row(ui, tr("Масштаб интерфейса"), &mut |ui| {
                         crate::widgets::scale_slider(ui, &mut st.ui_scale);
                     });
+                    crate::widgets::preference_grid(ui, st, "win-units", false);
                     row(ui, tr("Материал по умолчанию"), &mut |ui| {
                         egui::ComboBox::from_id_salt("mat_default").selected_text(tr(Materials::get(st.material).0)).show_ui(ui, |ui| {
                             for (i, (n, _, _, _)) in Materials::LIST.iter().enumerate() {

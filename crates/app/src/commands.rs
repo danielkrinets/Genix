@@ -8,6 +8,7 @@ use crate::i18n::{tr, tr_dyn};
 use crate::tf;
 use fusion_core::doc::{Axis3, Extent, HoleKind, PatternKind, RevolveAxis, Shape};
 use fusion_core::sketch::Entity;
+use fusion_core::doc::PipeShape;
 use fusion_core::{Document, Evaluator, Expr, FeatureKind, Op};
 
 /// Что выбирают щелчки в 3D-окне во время команды.
@@ -502,15 +503,30 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                 cmd.auto_op = false;
             }
         }
-        FeatureKind::Pipe { path, outer, wall, op } => {
+        FeatureKind::Pipe { path, outer, wall, op, shape, corner, bend } => {
             section(ui, tr("ПУТЬ"));
             if *path == 0 {
                 ui.label(RichText::new(tr("Не выбрано — щёлкните линию чертежа")).color(Color32::from_rgb(200, 120, 0)));
             }
             changed |= sketch_combo(ui, "pipe_path", path, sketches, None);
-            section(ui, tr("РАЗМЕРЫ"));
-            changed |= row(ui, tr("Внешний диаметр"), |ui| expr_field(ui, ("pipe", uid, 0), outer, p, "мм"));
+            section(ui, tr("СЕЧЕНИЕ"));
+            changed |= row(ui, tr("Форма"), |ui| {
+                let mut c = false;
+                let names = [(PipeShape::Round, tr("Круглая")), (PipeShape::Square, tr("Квадратная"))];
+                egui::ComboBox::from_id_salt("pipe_shape").selected_text(names.iter().find(|(k, _)| k == shape).map(|(_, n)| *n).unwrap_or("")).show_ui(ui, |ui| {
+                    for (k, n) in names { c |= ui.selectable_value(shape, k, n).changed(); }
+                });
+                c
+            });
+            changed |= row(ui, tr("Внешний размер"), |ui| expr_field(ui, ("pipe", uid, 0), outer, p, "мм"));
             changed |= row(ui, tr("Толщина стенки"), |ui| expr_field(ui, ("pipe", uid, 1), wall, p, "мм"));
+            ui.label(RichText::new(tr("Стенка 0 — сплошной стержень")).weak().small());
+            section(ui, tr("УГЛЫ"));
+            if *shape == PipeShape::Square {
+                changed |= row(ui, tr("Угол сечения"), |ui| expr_field(ui, ("pipe", uid, 2), corner, p, "мм"));
+            }
+            changed |= row(ui, tr("Изгиб пути"), |ui| expr_field(ui, ("pipe", uid, 3), bend, p, "мм"));
+            ui.label(RichText::new(tr("Радиус скругления изгибов пути; 0 — острые углы")).weak().small());
             if op_combo(ui, "pipe_op", op) {
                 changed = true;
                 cmd.auto_op = false;
@@ -611,15 +627,18 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
     ui.add_space(6.0);
     ui.separator();
     let mut result = if changed { CmdResult::Changed } else { CmdResult::None };
+    ui.add_space(6.0);
+    // same pair as in the sketch: filled primary pill and a text «Отмена», both centred on one line
     ui.horizontal(|ui| {
-        let ok = egui::Button::new(RichText::new("  OK  ").strong().color(crate::theme::on_accent())).fill(crate::theme::accent());
-        if ui.add(ok).on_hover_text("Enter").clicked() {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        if crate::ui_kit::b01(ui, "OK", 88.0).on_hover_text("Enter").clicked() {
             result = CmdResult::Ok;
         }
         if crate::ui_kit::b03(ui, tr("Отмена")).on_hover_text("Esc").clicked() {
             result = CmdResult::Cancel;
         }
     });
+    ui.add_space(4.0);
     result
 }
 
@@ -718,7 +737,7 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
         "shell" => FeatureKind::Shell { plane: c.top_face.map(|f| f.0).unwrap_or(fusion_core::Plane::XY), thickness: num(2.0), open: true },
         "plane" => FeatureKind::OffsetPlane { base: fusion_core::Plane::XY, offset: num(10.0) },
         "loft" => FeatureKind::Loft { profiles: vec![], op },
-        "pipe" => FeatureKind::Pipe { path: 0, outer: num(10.0), wall: num(1.5), op: if c.has_bodies { Op::NewBody } else { Op::NewBody } },
+        "pipe" => FeatureKind::Pipe { path: 0, outer: num(10.0), wall: num(1.5), op: Op::NewBody, shape: fusion_core::doc::PipeShape::Round, corner: num(0.0), bend: num(0.0) },
         "box" => FeatureKind::Primitive { shape: Shape::Box { w: num(20.0), d: num(20.0), h: num(20.0) }, at: zero(), op },
         "cylinder" => FeatureKind::Primitive { shape: Shape::Cylinder { r: num(10.0), h: num(20.0) }, at: zero(), op },
         "sphere" => FeatureKind::Primitive { shape: Shape::Sphere { r: num(10.0) }, at: zero(), op },

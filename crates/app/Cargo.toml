@@ -22,7 +22,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5.3"
 objc2-foundation = { version = "0.2.2", features = ["NSAppleEventManager", "NSAppleEventDescriptor", "NSNotification", "NSURL", "NSString", "NSObject"] }
-objc2-app-kit = { version = "0.2.2", features = ["NSApplication", "NSMenu", "NSMenuItem"] }
+objc2-app-kit = { version = "0.2.2", features = ["NSApplication", "NSMenu", "NSMenuItem", "NSHapticFeedback"] }
 
 [dev-dependencies]
 png = "0.17"

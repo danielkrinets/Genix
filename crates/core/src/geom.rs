@@ -264,6 +264,66 @@ pub fn circle_loop(c: DVec3, t: DVec3, radius: f64, ccw: bool) -> Vec<DVec3> {
     pts
 }
 
+/// Прямоугольник с закруглёнными углами в плоскости, перпендикулярной `t`, вокруг `c`: половины сторон и радиус угла.
+pub fn rounded_rect_loop(c: DVec3, t: DVec3, hw: f64, hh: f64, corner: f64, ccw: bool) -> Vec<DVec3> {
+    let (x, y) = perp_frame(t.normalize());
+    let r = corner.clamp(0.0, hw.min(hh));
+    let at = |u: f64, v: f64| c + x * u + y * v;
+    let mut pts = Vec::new();
+    for (k, (sx, sy)) in [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)].into_iter().enumerate() {
+        if r < 1e-9 {
+            pts.push(at(sx * hw, sy * hh));
+            continue;
+        }
+        let n = arc_segments(std::f64::consts::FRAC_PI_2) / 3 + 2;
+        let (cu, cv) = (sx * (hw - r), sy * (hh - r));
+        for i in 0..=n {
+            let a = std::f64::consts::FRAC_PI_2 * (k as f64 + i as f64 / n as f64);
+            pts.push(at(cu + r * a.cos(), cv + r * a.sin()));
+        }
+    }
+    if !ccw {
+        pts.reverse();
+    }
+    pts
+}
+
+/// Скругляет углы ломаной дугами радиуса `radius` (на коротких сегментах радиус уменьшается сам).
+pub fn round_path(pts: &[DVec3], radius: f64) -> Vec<DVec3> {
+    if radius < 1e-9 || pts.len() < 3 {
+        return pts.to_vec();
+    }
+    let mut out = vec![pts[0]];
+    for i in 1..pts.len() - 1 {
+        let (a, b, c) = (pts[i - 1], pts[i], pts[i + 1]);
+        let (u, v) = ((a - b).normalize_or_zero(), (c - b).normalize_or_zero());
+        let cos = u.dot(v).clamp(-1.0, 1.0);
+        let theta = cos.acos();
+        // straight or fully folded back corner: nothing to round
+        if theta < 1e-3 || theta > std::f64::consts::PI - 1e-3 {
+            out.push(b);
+            continue;
+        }
+        let half = theta / 2.0;
+        // a neighbour corner may share the segment, so each corner takes at most half of it
+        let l_max = 0.5 * (a - b).length().min((c - b).length());
+        let l = (radius / half.tan()).min(l_max);
+        let r = l * half.tan();
+        let centre = b + (u + v).normalize() * (r / half.sin());
+        let (p1, p2) = (b + u * l, b + v * l);
+        let (e1, e2) = ((p1 - centre).normalize(), (p2 - centre).normalize());
+        let phi = e1.dot(e2).clamp(-1.0, 1.0).acos();
+        let steps = ((phi / 0.12).ceil() as usize).max(2);
+        for k in 0..=steps {
+            let t = k as f64 / steps as f64;
+            let dir = (e1 * ((1.0 - t) * phi).sin() + e2 * (t * phi).sin()) / phi.sin();
+            out.push(centre + dir * r);
+        }
+    }
+    out.push(*pts.last().unwrap());
+    out
+}
+
 /// Спираль вокруг оси `axis` через `center`: диаметр, шаг, число витков.
 pub fn helix_path(center: DVec3, axis: DVec3, dia: f64, pitch: f64, turns: f64) -> Vec<DVec3> {
     let (x, y) = perp_frame(axis.normalize());
