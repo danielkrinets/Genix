@@ -680,7 +680,7 @@ fn settings_page(ui: &mut egui::Ui, st: &mut Settings, action: &mut HomeAction) 
         ui.add(egui::Slider::new(&mut st.fov_deg, 10.0..=70.0).suffix("°").fixed_decimals(0));
         ui.end_row();
         ui.label(tr("Материал новых тел"));
-        const MATERIALS: [&str; 7] = ["Сталь", "Нерж. сталь", "Алюминий", "Латунь", "PLA (3D-печать)", "ABS/PETG", "Дерево (сосна)"];
+        const MATERIALS: [&str; 8] = ["Сталь", "Нерж. сталь", "Алюминий", "Латунь", "PLA (3D-печать)", "ABS/PETG", "Дерево (сосна)", "Стекло"];
         egui::ComboBox::from_id_salt("home-material").selected_text(tr(MATERIALS[st.material.min(MATERIALS.len()-1)])).show_ui(ui, |ui| {
             for (index, name) in MATERIALS.iter().enumerate() { ui.selectable_value(&mut st.material, index, tr(name)); }
         });

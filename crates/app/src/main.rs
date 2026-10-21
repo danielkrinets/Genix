@@ -20,6 +20,7 @@ mod ui_kit;
 mod units;
 mod updates;
 mod icons;
+mod keys;
 mod trace_ui;
 mod i18n;
 mod i18n_en;

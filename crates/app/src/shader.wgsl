@@ -7,6 +7,8 @@ struct Frame {
     bg_top: vec4<f32>,
     bg_bottom: vec4<f32>,
     edge_color: vec4<f32>,
+    // x, y, w, h of the 3D view in framebuffer pixels (the glass looks its backdrop up by screen position)
+    glass: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> frame: Frame;
 // цвет каждого тела (альфа 0 — тело скрыто)
@@ -63,12 +65,65 @@ fn vs_face(v: FaceIn) -> FaceOut {
     var o: FaceOut;
     o.color = body_colors[v.slot];
     o.clip = frame.view_proj * vec4<f32>(v.pos, 1.0);
-    if abs(o.color.a) < 0.001 {
-        o.clip = vec4<f32>(0.0, 0.0, -2.0, 1.0); // скрытое тело: выбрасываем вершину
+    // hidden bodies and glass bodies (reflection 2) are left out of the opaque pass; glass has its own pass
+    if abs(o.color.a) < 0.001 || o.color.a > 1.5 {
+        o.clip = vec4<f32>(0.0, 0.0, -2.0, 1.0);
     }
     o.nrm = v.nrm;
     o.world = v.pos;
     return o;
+}
+
+@vertex
+fn vs_glass(v: FaceIn) -> FaceOut {
+    var o: FaceOut;
+    o.color = body_colors[v.slot];
+    o.clip = frame.view_proj * vec4<f32>(v.pos, 1.0);
+    if o.color.a < 1.5 {
+        o.clip = vec4<f32>(0.0, 0.0, -2.0, 1.0);
+    }
+    o.nrm = v.nrm;
+    o.world = v.pos;
+    return o;
+}
+
+@group(1) @binding(0) var backdrop: texture_2d<f32>;
+@group(1) @binding(1) var backdrop_samp: sampler;
+
+fn decode(c: vec3<f32>) -> vec3<f32> {
+    // the backdrop was written through encode(): bring it back to linear when the target is not sRGB
+    if frame.viewport.z > 0.5 {
+        let lo = c / 12.92;
+        let hi = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
+        return select(hi, lo, c <= vec3<f32>(0.04045));
+    }
+    return c;
+}
+
+// Frosted glass. Only the nearest glass surface is drawn (depth test, no blending), so overlapping faces cannot band or flicker;
+// the "see-through" part is the blurred scene behind, looked up by screen position and bent a little by the surface normal.
+@fragment
+fn fs_glass(i: FaceOut) -> @location(0) vec4<f32> {
+    var n = normalize(i.nrm);
+    let v = normalize(frame.eye.xyz - i.world);
+    if dot(n, v) < 0.0 {
+        n = -n;
+    }
+    let ndv = max(dot(n, v), 0.0);
+    let uv0 = (i.clip.xy - frame.glass.xy) / frame.glass.zw;
+    let bend = (frame.view_proj * vec4<f32>(n, 0.0)).xy / max((frame.view_proj * vec4<f32>(i.world, 1.0)).w, 1.0) * vec2<f32>(1.0, -1.0);
+    let uv = clamp(uv0 + bend * 0.5 * (1.0 - ndv), vec2<f32>(0.002), vec2<f32>(0.998));
+    let back = decode(textureSampleLevel(backdrop, backdrop_samp, uv, 0.0).rgb);
+    let tint = mix(vec3<f32>(1.0), i.color.rgb, 0.55);
+    let f0 = 0.04;
+    let fres = f0 + (1.0 - f0) * pow(1.0 - ndv, 5.0);
+    let r = reflect(-v, n);
+    let mirror = studio(room_direction(i.world, r), 0.15) * (0.55 * fres + 0.05);
+    let l = normalize(frame.light.xyz * 450.0 - i.world);
+    let spec = pow(max(dot(n, normalize(l + v)), 0.0), 220.0) * 1.2;
+    // a whisper of milk in the glass keeps it from looking like a hole
+    let c = mix(back * tint, vec3<f32>(0.92, 0.96, 1.0), 0.07) * (1.0 - 0.5 * fres) + mirror + vec3<f32>(spec);
+    return vec4<f32>(encode(c), 1.0);
 }
 
 @fragment
@@ -158,11 +213,21 @@ fn clip_near(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
 
 @vertex
 fn vs_line(v: LineIn) -> LineOut {
+    return line_vertex(v, false);
+}
+
+// the glass backdrop is drawn without the outlines of glass bodies: they would show up blurred inside the glass
+@vertex
+fn vs_line_off(v: LineIn) -> LineOut {
+    return line_vertex(v, true);
+}
+
+fn line_vertex(v: LineIn, skip_glass: bool) -> LineOut {
     var o: LineOut;
     var color = v.color;
     if v.slot != 0xffffffffu {
         let bc = body_colors[v.slot];
-        if abs(bc.a) < 0.001 {
+        if abs(bc.a) < 0.001 || (skip_glass && bc.a > 1.5) {
             o.clip = vec4<f32>(0.0, 0.0, -2.0, 1.0);
             return o;
         }

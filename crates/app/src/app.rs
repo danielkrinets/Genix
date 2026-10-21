@@ -162,7 +162,7 @@ struct Tab {
 struct Materials;
 impl Materials {
     /// Название, плотность г/см³, базовый цвет, сила отражения.
-    const LIST: [(&'static str, f64, Color32, f32); 7] = [
+    const LIST: [(&'static str, f64, Color32, f32); 8] = [
         ("Сталь", 7.85, Color32::from_rgb(142, 151, 162), 0.72),
         ("Нерж. сталь", 8.0, Color32::from_rgb(190, 198, 207), 0.92),
         ("Алюминий", 2.70, Color32::from_rgb(178, 190, 205), 0.62),
@@ -170,6 +170,8 @@ impl Materials {
         ("PLA (3D-печать)", 1.24, Color32::from_rgb(103, 151, 214), 0.16),
         ("ABS/PETG", 1.05, Color32::from_rgb(103, 111, 126), 0.24),
         ("Дерево (сосна)", 0.52, Color32::from_rgb(177, 123, 73), 0.06),
+        // reflection 2.0 is the shader's sign for frosted glass
+        ("Стекло", 2.5, Color32::from_rgb(170, 220, 236), 2.0),
     ];
 
     fn get(index: usize) -> (&'static str, f64, Color32, f32) {
@@ -2453,31 +2455,7 @@ impl App {
 
     fn help_window(&mut self, ctx: &egui::Context) {
         let mut open = self.help_open;
-        egui::Window::new(tr("Управление")).open(&mut open).default_width(420.0).show(ctx, |ui| {
-            let rows = [
-                (tr("Вращать вид"), tr("Левая кнопка мыши по пустому месту / по телу")),
-                (tr("Сдвинуть вид"), tr("Правая или средняя кнопка, Shift+левая, два пальца на трекпаде")),
-                (tr("Масштаб"), tr("Колесо мыши, щипок на трекпаде, ⌘+прокрутка")),
-                (tr("Вписать модель"), tr("F или 🏠 над кубом видов")),
-                (tr("Стандартный вид"), tr("Щелчок по грани куба видов")),
-                (tr("Выбрать тело"), tr("Щелчок; Shift — добавить к выбору")),
-                (tr("Чертёж / Выдавить / Переместить"), "S / E / M"),
-                (tr("В чертеже: линия, прямоугольник, окружность, дуга"), "L / R / C / A"),
-                (tr("В чертеже: размер"), tr("D, затем щелчок по линии/окружности")),
-                (tr("Точная длина при рисовании"), tr("Наберите число и Enter")),
-                (tr("Отменить / повторить"), "⌘Z / ⇧⌘Z"),
-                (tr("Сохранить / открыть"), "⌘S / ⌘O"),
-                (tr("Удалить выбранное"), "Delete"),
-                (tr("Отменить действие"), "Esc"),
-            ];
-            egui::Grid::new("help").striped(true).num_columns(2).show(ui, |ui| {
-                for (a, b) in rows {
-                    ui.label(a);
-                    ui.label(RichText::new(b).weak());
-                    ui.end_row();
-                }
-            });
-        });
+        crate::keys::window(ctx, &mut open);
         self.help_open = open;
     }
 
@@ -2804,6 +2782,10 @@ impl App {
             bg_top: linear(colors.bg_top),
             bg_bottom: linear(colors.bg_bottom),
             edge_color: linear(colors.edge),
+            glass: {
+                let ppp = ui.ctx().pixels_per_point();
+                [rect.min.x * ppp, rect.min.y * ppp, rect.width() * ppp, rect.height() * ppp]
+            },
         };
         let cb = ViewCallback { frame, colors: body_colors, overlay, upload: self.upload.clone(), upload_gen: self.upload_gen, style: self.settings.visual_style.parts() };
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(rect, cb));
@@ -3172,6 +3154,8 @@ impl egui_wgpu::CallbackTrait for ViewCallback {
         scene.set_style(self.style.0, self.style.1);
         scene.set_overlay(device, queue, &self.overlay);
         scene.set_frame(device, queue, self.frame, &self.colors);
+        let glass_present = self.colors.iter().any(|c| c[3] > 1.5);
+        scene.prepare_glass(device, queue, _enc, (self.frame.glass[2] as u32, self.frame.glass[3] as u32), glass_present);
         Vec::new()
     }
 
