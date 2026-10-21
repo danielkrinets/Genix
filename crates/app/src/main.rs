@@ -5,6 +5,7 @@ mod app;
 mod camera;
 mod cli;
 mod commands;
+mod crash;
 mod examples;
 mod files;
 mod edges;
@@ -26,6 +27,7 @@ mod i18n;
 mod i18n_en;
 mod i18n_he;
 mod render;
+mod report;
 mod settings;
 mod sketcher;
 mod theme;
@@ -40,6 +42,7 @@ fn main() -> eframe::Result {
     if let Some(code) = cli::run(&std::env::args().collect::<Vec<_>>()) { std::process::exit(code); }
     // файл можно передать аргументом (двойной щелчок по документу)
     let open = std::env::args().nth(1).filter(|a| !a.starts_with('-')).map(std::path::PathBuf::from);
+    crash::install();
     desktop::install();
     eframe::run_native(
         "Genix",

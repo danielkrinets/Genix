@@ -138,6 +138,8 @@ pub struct Settings {
     pub decimals: u8,
     /// Первый запуск: выбор языка, темы и единиц уже пройден.
     pub setup_done: bool,
+    /// Время (unix) последнего отчёта о сбое, о котором уже спросили.
+    pub last_crash_seen: u64,
 }
 
 impl Default for Settings {
@@ -176,6 +178,7 @@ impl Default for Settings {
             length_unit: crate::units::LengthUnit::Mm,
             decimals: 2,
             setup_done: false,
+            last_crash_seen: 0,
         }
     }
 }

@@ -1,0 +1,31 @@
+# Maintainer: Daniel Krinets <daniel.krinets@gmail.com>
+# Installs the prebuilt binary from the project's release (much faster than building). Install: `makepkg -si`.
+pkgname=genix-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Parametric 3D CAD: constrained sketches, extrude, revolve, fillet, feature history (prebuilt)'
+arch=('x86_64')
+url='https://github.com/danielkrinets/Genix'
+license=('MIT')
+depends=('libxkbcommon' 'wayland' 'libx11' 'libxcursor' 'libxi' 'libxrandr' 'vulkan-icd-loader' 'mesa' 'gcc-libs')
+optdepends=('vulkan-radeon: Vulkan on AMD GPUs'
+            'vulkan-intel: Vulkan on Intel GPUs'
+            'nvidia-utils: Vulkan on NVIDIA GPUs'
+            'xdg-utils: open links and folders from the bug report window')
+provides=('genix')
+conflicts=('genix' 'genix-git')
+# the CI job copies the tarball and the packaging files next to this PKGBUILD; locally they are downloaded from the release
+source=("Genix-linux-x86_64.tar.gz::$url/releases/download/genix-latest/Genix-linux-x86_64.tar.gz"
+        "genix.desktop::https://raw.githubusercontent.com/danielkrinets/Genix/main/packaging/linux/genix.desktop"
+        "genix.png::https://raw.githubusercontent.com/danielkrinets/Genix/main/packaging/macos/AppIcon.iconset/icon_256x256.png")
+# the release is rolling, so its checksums change with every build
+sha256sums=('SKIP' 'SKIP' 'SKIP')
+noextract=('Genix-linux-x86_64.tar.gz')
+
+package() {
+  mkdir -p unpack && bsdtar -xf Genix-linux-x86_64.tar.gz -C unpack
+  install -Dm755 unpack/genix "$pkgdir/usr/bin/genix"
+  install -Dm644 genix.desktop "$pkgdir/usr/share/applications/genix.desktop"
+  install -Dm644 genix.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/genix.png"
+  install -Dm644 unpack/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

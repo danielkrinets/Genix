@@ -141,6 +141,39 @@ jobs:
             dist/*.deb
             dist/*.rpm
 
+  arch:
+    name: Arch Linux (pacman)
+    needs: linux
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    container: archlinux:latest
+    steps:
+      - name: Инструменты
+        run: pacman -Syu --noconfirm base-devel git libarchive
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: Genix-linux-x86_64
+          path: linux
+      - name: Пакет .pkg.tar.zst
+        run: |
+          useradd -m builder
+          mkdir -p /home/builder/pkg
+          cp packaging/arch/genix-bin/PKGBUILD /home/builder/pkg/
+          cp linux/Genix-linux-x86_64.tar.gz /home/builder/pkg/
+          cp packaging/linux/genix.desktop /home/builder/pkg/
+          cp packaging/macos/AppIcon.iconset/icon_256x256.png /home/builder/pkg/genix.png
+          # inside CI the sources are the files just copied, not downloads
+          cd /home/builder/pkg
+          sed -i 's|^source=.*|source=("Genix-linux-x86_64.tar.gz" "genix.desktop" "genix.png")|; /^        "genix.desktop::/d; /^        "genix.png::/d' PKGBUILD
+          chown -R builder:builder /home/builder/pkg
+          su builder -c 'makepkg -f --nodeps --skipchecksums'
+          mkdir -p "$GITHUB_WORKSPACE/dist" && cp *.pkg.tar.zst "$GITHUB_WORKSPACE/dist/Genix-linux-x86_64.pkg.tar.zst"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Genix-arch
+          path: dist/*.pkg.tar.zst
+
   windows:
     if: false  # временно собираем только под macOS
     name: Windows ${{ matrix.arch }}
@@ -203,7 +236,7 @@ jobs:
 
   publish:
     name: Публикация в Releases
-    needs: [macos, linux, ios]
+    needs: [macos, linux, arch, ios]
     if: ${{ always() && needs.macos.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
@@ -229,6 +262,7 @@ jobs:
             | Windows 11 ARM | `Genix-windows-arm64.zip` |
             | Linux x86_64 | `Genix-linux-x86_64.AppImage`, `.deb`, `.rpm` или `.tar.gz` |
             | Linux ARM64 | `Genix-linux-aarch64.AppImage`, `.deb`, `.rpm` или `.tar.gz` |
+            | Arch Linux x86_64 | `Genix-linux-x86_64.pkg.tar.zst` (`sudo pacman -U …`) |
             | FreeBSD x86_64 | `Genix-freebsd-x86_64.tar.gz` |
 
             Если какого-то файла нет — эта сборка у него не удалась, остальные работают. Подробности — в `README.md`.

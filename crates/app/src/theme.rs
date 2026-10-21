@@ -71,6 +71,10 @@ pub fn surface(ui: &egui::Ui) -> Color32 {
     if ui.visuals().dark_mode { Color32::from_rgb(55, 67, 81) } else { Color32::WHITE }
 }
 
+pub fn surface_for(ctx: &egui::Context) -> Color32 {
+    if ctx.style().visuals.dark_mode { Color32::from_rgb(55, 67, 81) } else { Color32::WHITE }
+}
+
 pub fn secondary(ui: &egui::Ui) -> Color32 {
     if ui.visuals().dark_mode { Color32::from_rgb(160, 172, 186) } else { Color32::from_rgb(101, 109, 118) }
 }

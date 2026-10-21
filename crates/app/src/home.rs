@@ -326,6 +326,8 @@ pub enum HomeAction {
     Forget(String),
     SettingsChanged,
     SignOut,
+    /// «Пожаловаться на баг» в боковой панели.
+    Report,
 }
 
 impl HomeState {
@@ -472,6 +474,7 @@ pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
                     ui.spacing_mut().item_spacing.y = 6.0;
                     nav(ui, h, open > 0.72);
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                        // the avatar sits at the very bottom; the bug report button is just above it
                         let name = if st.account.is_some() { st.display_name.clone() } else { tr("Локальное пространство").to_string() };
                         ui.horizontal(|ui| {
                             let (rect, avatar) = ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::click());
@@ -487,6 +490,10 @@ pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
                                 });
                             }
                         });
+                        ui.add_space(6.0);
+                        if crate::widgets::navigation_button_mode(ui, tr("Пожаловаться на баг"), "report", false, open > 0.72).clicked() {
+                            action = HomeAction::Report;
+                        }
                     });
                 });
             });

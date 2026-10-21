@@ -11,3 +11,11 @@ pub fn tick() {
 
 #[cfg(not(target_os = "macos"))]
 pub fn tick() {}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    #[test]
+    fn a_tick_does_not_crash_even_without_a_trackpad() {
+        super::tick();
+    }
+}

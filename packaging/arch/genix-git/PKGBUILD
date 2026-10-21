@@ -1,0 +1,52 @@
+# Maintainer: Daniel Krinets <daniel.krinets@gmail.com>
+# Builds Genix from the latest source. Install: `makepkg -si` in this folder.
+pkgname=genix-git
+pkgver=r0.0000000
+pkgrel=1
+pkgdesc='Parametric 3D CAD: constrained sketches, extrude, revolve, fillet, feature history'
+arch=('x86_64' 'aarch64')
+url='https://github.com/danielkrinets/Genix'
+license=('MIT')
+depends=('libxkbcommon' 'wayland' 'libx11' 'libxcursor' 'libxi' 'libxrandr' 'vulkan-icd-loader' 'mesa' 'gcc-libs')
+makedepends=('git' 'cargo' 'cmake' 'gcc' 'pkgconf')
+optdepends=('vulkan-radeon: Vulkan on AMD GPUs'
+            'vulkan-intel: Vulkan on Intel GPUs'
+            'nvidia-utils: Vulkan on NVIDIA GPUs'
+            'xdg-utils: open links and folders from the bug report window')
+provides=('genix')
+conflicts=('genix' 'genix-bin')
+source=("$pkgname::git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$pkgname"
+  printf 'r%s.%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release -p fusion-app
+}
+
+check() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen --release -p fusion-core
+}
+
+package() {
+  cd "$pkgname"
+  install -Dm755 target/release/genix "$pkgdir/usr/bin/genix"
+  install -Dm644 packaging/linux/genix.desktop "$pkgdir/usr/share/applications/genix.desktop"
+  install -Dm644 packaging/macos/AppIcon.iconset/icon_256x256.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/genix.png"
+  install -Dm644 packaging/macos/AppIcon.iconset/icon_512x512.png "$pkgdir/usr/share/icons/hicolor/512x512/apps/genix.png"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

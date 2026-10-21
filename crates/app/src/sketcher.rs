@@ -430,6 +430,10 @@ impl SketchSession {
                 }
             } else if (pressed(egui::Key::Delete) || pressed(egui::Key::Backspace)) && !self.selection.is_empty() {
                 self.delete_selection(params);
+            } else if self.tool == Tool::Polygon && !typing && (pressed(egui::Key::ArrowUp) || pressed(egui::Key::ArrowRight) || pressed(egui::Key::ArrowDown) || pressed(egui::Key::ArrowLeft)) {
+                // the polygon's side count: arrows step it, so it can be changed right before (or while) drawing
+                let up = pressed(egui::Key::ArrowUp) || pressed(egui::Key::ArrowRight);
+                self.poly_sides = if up { (self.poly_sides + 1).min(64) } else { self.poly_sides.saturating_sub(1).max(3) };
             } else if !typing && !ctx.input(|i| i.modifiers.command) {
                 // горячие клавиши инструментов
                 for (k, t) in [
@@ -448,6 +452,11 @@ impl SketchSession {
                 }
                 if pressed(egui::Key::X) && matches!(self.pending, Pending::None) {
                     self.toggle_construction(params);
+                }
+                if self.tool == Tool::Polygon {
+                    for (k, n) in [(egui::Key::Num3, 3), (egui::Key::Num4, 4), (egui::Key::Num5, 5), (egui::Key::Num6, 6), (egui::Key::Num7, 7), (egui::Key::Num8, 8), (egui::Key::Num9, 9)] {
+                        if pressed(k) { self.poly_sides = n; }
+                    }
                 }
             }
             if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z)) {
@@ -1181,7 +1190,9 @@ impl SketchSession {
         if self.tool == Tool::Polygon {
             ui.horizontal(|ui| {
                 ui.label(tr("Сторон"));
+                if ui.add(egui::Button::new("−").min_size(egui::vec2(28.0, 26.0))).on_hover_text(tr("Меньше сторон (↓)")).clicked() { self.poly_sides = self.poly_sides.saturating_sub(1).max(3); }
                 ui.add(egui::DragValue::new(&mut self.poly_sides).range(3..=64));
+                if ui.add(egui::Button::new("+").min_size(egui::vec2(28.0, 26.0))).on_hover_text(tr("Больше сторон (↑)")).clicked() { self.poly_sides = (self.poly_sides + 1).min(64); }
             });
         }
         if self.tool == Tool::Offset {
@@ -1489,7 +1500,7 @@ impl SketchSession {
         }
 
         // значения возле курсора: подписанные поля; активное подсвечено, подсказка про Tab только когда полей два
-        if self.accepts_typing() {
+        if self.accepts_typing() || self.tool == Tool::Polygon {
             if let Some(m) = ui.ctx().pointer_hover_pos() {
                 let cur = self.cursor.map(|s| s.pos);
                 let live = |v: f64| crate::units::number(crate::units::to_display(v));
@@ -1517,10 +1528,14 @@ impl SketchSession {
                         r.push((tr("Угол").to_string(), stats.map_or("…".into(), |s| format!("{}°", format_num((s.1 * 10.0).round() / 10.0))), false, false));
                         r
                     }
+                    _ if self.tool == Tool::Polygon => {
+                        hint = tr("↑ ↓ или цифра 3–9 — число сторон").to_string();
+                        vec![(tr("Сторон").to_string(), self.poly_sides.to_string(), true, true)]
+                    }
                     _ => Vec::new(),
                 };
                 if !rows.is_empty() {
-                    let unit_label = |name: &str| if name == crate::i18n::tr("Угол") { String::new() } else { crate::units::label().to_string() };
+                    let unit_label = |name: &str| if name == crate::i18n::tr("Угол") || name == crate::i18n::tr("Сторон") { String::new() } else { crate::units::label().to_string() };
                     let small = egui::FontId::proportional(11.5);
                     let lay = |t: &str, f: &egui::FontId| painter.layout_no_wrap(t.to_string(), f.clone(), Color32::WHITE);
                     let (pad, gap) = (10.0, 8.0);

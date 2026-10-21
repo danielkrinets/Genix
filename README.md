@@ -34,10 +34,15 @@
 | **Windows 10/11** (x64) | `Genix-windows-x86_64.zip` | распакуйте, запустите `genix.exe` |
 | **Windows 11 на ARM** | `Genix-windows-arm64.zip` | то же |
 | **Linux x86_64** | `Genix-linux-x86_64.AppImage`, `.deb`, `.rpm`, `.tar.gz` | AppImage: `chmod +x Genix-*.AppImage && ./Genix-*.AppImage` · Debian/Ubuntu: `sudo apt install ./Genix-linux-x86_64.deb` · Fedora/RHEL: `sudo dnf install ./Genix-linux-x86_64.rpm` |
+| **Arch Linux** (x86_64) | `Genix-linux-x86_64.pkg.tar.zst` | `sudo pacman -U Genix-linux-x86_64.pkg.tar.zst`, либо из исходников: `cd packaging/arch/genix-bin && makepkg -si` (см. [packaging/arch](packaging/arch/README.md)) |
 | **Linux ARM64** | `Genix-linux-aarch64.AppImage`, `.deb`, `.rpm`, `.tar.gz` | то же (`aarch64`) |
 | **FreeBSD x86_64** | `Genix-freebsd-x86_64.tar.gz` | распакуйте, запустите `./genix` |
 
 Если какого-то файла в выпуске нет — именно эта сборка не удалась, остальные рабочие. OpenBSD и NetBSD готовых сборок не имеют — соберите из исходников (см. ниже).
+
+### Если что-то сломалось
+
+В главной странице слева внизу кнопка **«Пожаловаться на баг»** (или «Справка → Сообщить о проблеме…»). Окно показывает отчёты о сбоях, которые Genix сохранила сама, — их можно открыть, приложить и отправить на GitHub одним нажатием. Папка с отчётами: `~/Library/Application Support/Genix/crashes` (macOS), `~/.config/genix/crashes` (Linux), `%APPDATA%\Genix\crashes` (Windows). Ваши модели в отчёт не попадают.
 
 ### iPad и iPhone
 

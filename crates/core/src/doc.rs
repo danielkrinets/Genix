@@ -482,7 +482,10 @@ impl Evaluator {
             let r = if f.suppressed {
                 Ok((prev.clone(), None))
             } else {
-                eval_feature(f, &prev, &doc.params, &self.steps, &self.features)
+                // geometry code can panic on extreme values (e.g. a huge fillet while a value is dragged):
+                // that step fails with a message instead of taking the whole program down
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| eval_feature(f, &prev, &doc.params, &self.steps, &self.features)))
+                    .unwrap_or_else(|_| Err("внутренняя ошибка при построении шага: проверьте значения".to_string()))
             };
             let millis = t.elapsed().as_secs_f64() * 1000.0;
             let step = match r {
@@ -1377,6 +1380,16 @@ mod new_ops {
                 assert!((min - 5.0).abs() < 1e-6 && (max - 45.0).abs() < 1e-6, "{min}..{max}");
             }
         }
+    }
+
+    #[test]
+    fn extreme_values_do_not_take_the_evaluator_down() {
+        // absurd sizes may fail (or even panic inside the geometry code); either way `evaluate` returns
+        let (mut d, _) = plate();
+        d.insert(FeatureKind::Primitive { shape: Shape::Sphere { r: Expr::num(1e300) }, at: [Expr::num(0.0), Expr::num(0.0), Expr::num(0.0)], op: Op::Join });
+        let mut ev = Evaluator::default();
+        ev.evaluate(&d);
+        assert_eq!(ev.steps().len(), 2);
     }
 
     #[test]

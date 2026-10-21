@@ -85,6 +85,8 @@ pub fn expr_field(ui: &mut egui::Ui, id: impl std::hash::Hash, e: &mut Expr, par
         if n != 0.0 {
             ui.data_mut(|d| d.insert_temp(id.with("px"), acc - n * 6.0));
             let nv = ((v + n as f64 * step) * 1e6).round() / 1e6;
+            // far-out values only break the geometry: dragging stops at ±1e5 mm-equivalent
+            let nv = nv.clamp(-1e5, 1e5);
             text = format_num(nv);
             e.0 = store(&text);
             spring = None;
@@ -95,7 +97,7 @@ pub fn expr_field(ui: &mut egui::Ui, id: impl std::hash::Hash, e: &mut Expr, par
         ui.data_mut(|d| d.remove_temp::<f32>(id.with("px")));
     }
     if let (Some(d), Some(v)) = (nudge, current) {
-        let target = ((v + d) * 1e6).round() / 1e6;
+        let target = (((v + d) * 1e6).round() / 1e6).clamp(-1e5, 1e5);
         let from = spring.as_ref().map_or(v, |s| s.value(now));
         text = format_num(target);
         spring = if crate::theme::reduced_motion() { None } else { Some(Spring { from, to: target, start: now }) };

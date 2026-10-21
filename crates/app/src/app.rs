@@ -239,6 +239,8 @@ pub struct App {
     rename_feature: Option<(u64, String)>,
     params_open: bool,
     help_open: bool,
+    report: crate::report::ReportState,
+    crash_checked: bool,
     confirm: Option<Confirm>,
     allow_close: bool,
     need_fit: bool,
@@ -452,6 +454,8 @@ impl App {
             rename_feature: None,
             params_open: false,
             help_open: false,
+            report: Default::default(),
+            crash_checked: false,
             confirm: None,
             allow_close: false,
             need_fit: false,
@@ -550,9 +554,13 @@ impl App {
     }
 
     fn handle_home_action(&mut self, action: crate::home::HomeAction) {
+        if matches!(action, crate::home::HomeAction::Report) {
+            self.report.show(false);
+            return;
+        }
         use crate::home::HomeAction;
         match action {
-            HomeAction::None => {},
+            HomeAction::None | HomeAction::Report => {},
             HomeAction::New => self.new_blank_tab(),
             HomeAction::NewIn(folder) => {
                 self.new_blank_tab();
@@ -1325,6 +1333,7 @@ impl App {
     }
 
     fn start_command(&mut self, kind: &str, now: f64) {
+        crate::crash::note(format!("command {kind}"));
         self.cancel_mode();
         let model = self.ev.model();
         // как в Fusion: если в последнем видимом чертеже ровно один контур, он выбран сразу; иначе ждём щелчка
@@ -2028,6 +2037,10 @@ impl App {
                 if ui.button(tr("Управление и горячие клавиши")).clicked() {
                     ui.close_menu();
                     self.help_open = true;
+                }
+                if ui.button(tr("Сообщить о проблеме…")).clicked() {
+                    ui.close_menu();
+                    self.report.show(false);
                 }
             });
             ui.separator();
@@ -3239,6 +3252,18 @@ impl eframe::App for App {
         }
         crate::units::apply(self.settings.length_unit, self.settings.decimals);
         if self.splash(ctx, now) { return; }
+        // a log from an earlier crash that has not been offered yet: ask once, right after the start
+        if !self.crash_checked && self.settings.setup_done {
+            self.crash_checked = true;
+            if let Some(newest) = crate::crash::list().first().map(|e| e.when) {
+                if newest > self.settings.last_crash_seen {
+                    self.settings.last_crash_seen = newest;
+                    self.settings.save();
+                    self.report.show(true);
+                }
+            }
+        }
+        crate::report::window(ctx, &mut self.report);
         if self.first_setup(ctx) { return; }
         // сначала лицензия, затем аккаунт (демо)
         if !crate::home::unlocked(&self.settings) {

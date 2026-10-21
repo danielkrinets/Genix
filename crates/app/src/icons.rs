@@ -6,6 +6,7 @@ fn raw(id: &str) -> Option<&'static str> {
     Some(match id {
         "home_models" => include_str!("../assets/icons/home_models.svg"),
         "profile" => include_str!("../assets/icons/profile.svg"),
+        "report" => include_str!("../assets/icons/report.svg"),
         "updates" => include_str!("../assets/icons/updates.svg"),
         "server" => include_str!("../assets/icons/server.svg"),
         "add" => include_str!("../assets/icons/add.svg"),

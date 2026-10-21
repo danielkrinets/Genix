@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Как собрать и запустить
+    url: https://github.com/danielkrinets/Genix#скачать-и-установить
+    about: Сборки для macOS, Windows, Linux (в том числе Arch), FreeBSD
