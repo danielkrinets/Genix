@@ -888,7 +888,7 @@ pub const EN: &[(&str, &str)] = &[
     ("Стекло", "Glass"),
     ("Меньше сторон (↓)", "Fewer sides (↓)"),
     ("Больше сторон (↑)", "More sides (↑)"),
-    ("↑ ↓ или цифра 3–9 — число сторон", "↑ ↓ or a digit 3–9: number of sides"),
+    ("↑ ↓ или цифры — число сторон (1–64)", "↑ ↓ or digits: number of sides (1–64)"),
     ("Пожаловаться на баг", "Report a bug"),
     ("Сообщить о проблеме", "Report a problem"),
     ("Сообщить о проблеме…", "Report a problem…"),
@@ -911,4 +911,6 @@ pub const EN: &[(&str, &str)] = &[
     ("Точка", "Point"),
     ("Радиус {} {}", "Radius {} {}"),
     ("({}; {})", "({}; {})"),
+    ("Одноугольник? Чего вы ожидали увидеть?", "A monogon? What did you expect to see?"),
+    ("Двуугольника не существует. Чего вы ожидали увидеть?", "A digon does not exist. What did you expect to see?"),
 ];

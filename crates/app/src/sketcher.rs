@@ -149,6 +149,8 @@ pub struct SketchSession {
     /// Значения, набранные с клавиатуры во время рисования (длина/диаметр, ширина и высота).
     typed: [String; 2],
     typed_field: usize,
+    /// Digits typed for the polygon's side count and when the last one came (two-digit counts like 12).
+    poly_digits: (String, f64),
     history: Vec<Sketch>,
     future: Vec<Sketch>,
     edit_dim: Option<(usize, String, bool)>,
@@ -182,6 +184,7 @@ impl SketchSession {
             pending: Pending::None,
             typed: Default::default(),
             typed_field: 0,
+            poly_digits: (String::new(), 0.0),
             history: Vec::new(),
             future: Vec::new(),
             edit_dim: None,
@@ -433,7 +436,7 @@ impl SketchSession {
             } else if self.tool == Tool::Polygon && !typing && (pressed(egui::Key::ArrowUp) || pressed(egui::Key::ArrowRight) || pressed(egui::Key::ArrowDown) || pressed(egui::Key::ArrowLeft)) {
                 // the polygon's side count: arrows step it, so it can be changed right before (or while) drawing
                 let up = pressed(egui::Key::ArrowUp) || pressed(egui::Key::ArrowRight);
-                self.poly_sides = if up { (self.poly_sides + 1).min(64) } else { self.poly_sides.saturating_sub(1).max(3) };
+                self.poly_sides = if up { (self.poly_sides + 1).min(64) } else { self.poly_sides.saturating_sub(1).max(1) };
             } else if !typing && !ctx.input(|i| i.modifiers.command) {
                 // горячие клавиши инструментов
                 for (k, t) in [
@@ -454,8 +457,17 @@ impl SketchSession {
                     self.toggle_construction(params);
                 }
                 if self.tool == Tool::Polygon {
-                    for (k, n) in [(egui::Key::Num3, 3), (egui::Key::Num4, 4), (egui::Key::Num5, 5), (egui::Key::Num6, 6), (egui::Key::Num7, 7), (egui::Key::Num8, 8), (egui::Key::Num9, 9)] {
-                        if pressed(k) { self.poly_sides = n; }
+                    // any count from 1 to 64: digits typed within a second and a half of each other make one number
+                    let now = ctx.input(|i| i.time);
+                    let typed: String = ctx.input(|i| i.events.iter().filter_map(|e| if let egui::Event::Text(t) = e { Some(t.clone()) } else { None }).collect::<Vec<_>>().concat());
+                    for ch in typed.chars().filter(|c| c.is_ascii_digit()) {
+                        if now - self.poly_digits.1 > 1.5 { self.poly_digits.0.clear(); }
+                        let mut next = format!("{}{ch}", self.poly_digits.0);
+                        if next.parse::<u32>().unwrap_or(0) > 64 || next.parse::<u32>().unwrap_or(0) == 0 { next = ch.to_string(); }
+                        if let Ok(n) = next.parse::<u32>() {
+                            if (1..=64).contains(&n) { self.poly_sides = n; }
+                        }
+                        self.poly_digits = (next, now);
                     }
                 }
             }
@@ -546,6 +558,11 @@ impl SketchSession {
     fn finish_polygon(&mut self, c: P2, pt: Option<usize>, to: P2, params: &Params) {
         let r = DVec2::from(c).distance(DVec2::from(to));
         if r < 1e-9 {
+            return;
+        }
+        if self.poly_sides < 3 {
+            self.message = Some(tr(if self.poly_sides == 1 { "Одноугольник? Чего вы ожидали увидеть?" } else { "Двуугольника не существует. Чего вы ожидали увидеть?" }).into());
+            self.pending = Pending::None;
             return;
         }
         self.checkpoint();
@@ -1248,8 +1265,8 @@ impl SketchSession {
         if self.tool == Tool::Polygon {
             ui.horizontal(|ui| {
                 ui.label(tr("Сторон"));
-                if ui.add(egui::Button::new("−").min_size(egui::vec2(28.0, 26.0))).on_hover_text(tr("Меньше сторон (↓)")).clicked() { self.poly_sides = self.poly_sides.saturating_sub(1).max(3); }
-                ui.add(egui::DragValue::new(&mut self.poly_sides).range(3..=64));
+                if ui.add(egui::Button::new("−").min_size(egui::vec2(28.0, 26.0))).on_hover_text(tr("Меньше сторон (↓)")).clicked() { self.poly_sides = self.poly_sides.saturating_sub(1).max(1); }
+                ui.add(egui::DragValue::new(&mut self.poly_sides).range(1..=64));
                 if ui.add(egui::Button::new("+").min_size(egui::vec2(28.0, 26.0))).on_hover_text(tr("Больше сторон (↑)")).clicked() { self.poly_sides = (self.poly_sides + 1).min(64); }
             });
         }
@@ -1364,8 +1381,8 @@ impl SketchSession {
                     .collect();
                 polyline(&mut ov.lines_top, &pts, pv, 1.6, false);
             }
-            Pending::Polygon { c: cc, .. } => {
-                let pts = polygon_pts(cc, cur.pos, self.poly_sides.clamp(3, 64) as usize);
+            Pending::Polygon { c: cc, .. } if self.poly_sides >= 3 => {
+                let pts = polygon_pts(cc, cur.pos, self.poly_sides.min(64) as usize);
                 let w: Vec<DVec3> = pts.iter().map(|p| pl.to_world(*p)).collect();
                 polyline(&mut ov.lines_top, &w, pv, 1.6, true);
             }
@@ -1550,7 +1567,11 @@ impl SketchSession {
                         r
                     }
                     _ if self.tool == Tool::Polygon => {
-                        hint = tr("↑ ↓ или цифра 3–9 — число сторон").to_string();
+                        hint = match self.poly_sides {
+                            1 => tr("Одноугольник? Чего вы ожидали увидеть?"),
+                            2 => tr("Двуугольника не существует. Чего вы ожидали увидеть?"),
+                            _ => tr("↑ ↓ или цифры — число сторон (1–64)"),
+                        }.to_string();
                         vec![(tr("Сторон").to_string(), self.poly_sides.to_string(), true, true)]
                     }
                     _ => Vec::new(),
