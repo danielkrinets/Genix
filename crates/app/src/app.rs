@@ -1274,10 +1274,8 @@ impl App {
         // a feature that moves faces (put on a plane, press-pull) picks its face on the body as it was before the feature,
         // otherwise a second pick lands on the already moved face and the plane comes out wrong
         if let Mode::Command(c) = &self.mode {
-            // an extrude picks its face on the body before the extrude too: the default profile already extrudes the shown body
             let moves = self.doc.feature(c.uid).is_some_and(|f| match f.kind {
                 FeatureKind::PlaceOnPlane { .. } | FeatureKind::PressPull { .. } => matches!(c.pick, PickTarget::Face | PickTarget::AlignTarget),
-                FeatureKind::Extrude { .. } => c.pick == PickTarget::Profiles,
                 _ => false,
             });
             if moves {
@@ -1287,6 +1285,19 @@ impl App {
             }
         }
         self.ev.model()
+    }
+
+    /// The model that clicks and the pointer hit-test against. An extrude shows its result (so growing it can be watched),
+    /// but a face for it is picked on the body as it was before the extrude: the default profile already extrudes the shown one.
+    fn pick_model(&self) -> Arc<Model> {
+        if let Mode::Command(c) = &self.mode {
+            if c.pick == PickTarget::Profiles && self.doc.feature(c.uid).is_some_and(|f| matches!(f.kind, FeatureKind::Extrude { .. })) {
+                if let Some(i) = self.doc.index_of(c.uid) {
+                    return self.ev.model_before(i);
+                }
+            }
+        }
+        self.shown()
     }
 
     fn body_name(&self, id: u64) -> String {
@@ -1643,8 +1654,8 @@ impl App {
     }
 
     fn handle_click(&mut self, hit: Option<Hit>, shift: bool, now: f64) {
-        // slots in `hit` index the model on screen, which is not always the final one
-        let model = self.shown();
+        // slots in `hit` index the model that was hit-tested
+        let model = self.pick_model();
         match &mut self.mode {
             Mode::Idle => match hit {
                 Some(Hit::Body { slot, .. }) => {
@@ -2667,7 +2678,7 @@ impl App {
             if let Some(m) = resp.hover_pos() {
                 let (o, dir) = self.cam.ray(rect, m);
                 self.last_ray = (o, dir);
-                self.hover = if manip_active { None } else { self.hit_test(&model, o, dir) };
+                self.hover = if manip_active { None } else { let pick = self.pick_model(); self.hit_test(&pick, o, dir) };
             }
         }
         // ребро под курсором (фаска и скругление)
@@ -3773,15 +3784,21 @@ impl App {
             }
         }
         cands.sort_by(|a, b| a.0.total_cmp(&b.0));
-        for (_, e, p, b) in cands.into_iter().take(4) {
+        // visible edges win; an edge hidden behind the body can still be picked when the pointer is right on it
+        // (a box always has one vertical edge that no view angle shows, and it must be selectable too)
+        let mut hidden: Option<(f32, EdgeRef, u64)> = None;
+        for (d, e, p, b) in cands.into_iter().take(6) {
             let to = p - eye;
             let dist = to.length();
             let blocked = b.mesh().raycast(eye, to / dist).is_some_and(|(h, _)| h < dist - 2e-3 * dist.max(1.0));
             if !blocked {
                 return Some((e, b.id));
             }
+            if d < 6.0 && hidden.is_none() {
+                hidden = Some((d, e, b.id));
+            }
         }
-        None
+        hidden.map(|(_, e, id)| (e, id))
     }
 
     /// Чертёж пути (его области не выбираются как профили).
@@ -4285,6 +4302,17 @@ mod lifecycle_tests {
         let uid = match &app.mode { Mode::Command(c) => c.uid, _ => panic!("the command did not start") };
         assert!(matches!(app.doc.feature(uid).unwrap().kind, FeatureKind::PlaceOnPlane { .. }));
         assert!(matches!(app.doc.feature(uid).unwrap().kind, FeatureKind::PlaceOnPlane { body: 0, .. }), "no body may be chosen for the user");
+    }
+
+    #[test]
+    fn an_extrude_shows_its_result_while_faces_are_picked_on_the_body_before_it() {
+        let mut app = app();
+        app.load_doc(crate::examples::bracket(), None);
+        app.start_command("extrude", 0.0);
+        let Mode::Command(c) = &app.mode else { panic!("the command did not start") };
+        let i = app.doc.index_of(c.uid).unwrap();
+        assert!(Arc::ptr_eq(&app.shown(), &app.ev.model()), "growing the extrude must be visible");
+        assert!(Arc::ptr_eq(&app.pick_model(), &app.ev.model_before(i)), "a face is picked on the unextruded body");
     }
 
     #[test]
