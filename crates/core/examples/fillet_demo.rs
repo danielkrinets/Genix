@@ -58,6 +58,9 @@ fn main() {
     }
     let mut ev = Evaluator::default();
     ev.evaluate(&d);
+    for (i, st) in ev.steps().iter().enumerate() {
+        println!("step {i}: {:.0} ms", st.millis);
+    }
     println!("errors: {:?}", ev.steps().iter().filter_map(|s| s.error.clone()).collect::<Vec<_>>());
     {
         let m = ev.model();

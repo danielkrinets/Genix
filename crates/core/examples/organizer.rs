@@ -47,6 +47,9 @@ fn main() {
     let ev = Evaluator::default().tap(&d);
     let errors: Vec<_> = ev.steps().iter().enumerate().filter_map(|(i, s)| s.error.clone().map(|e| (i, e))).collect();
     println!("steps {}, bodies {}, errors {:?}", d.features.len(), ev.model().bodies.len(), errors);
+    for (i, st) in ev.steps().iter().enumerate() {
+        println!("step {i} {}: {:.0} ms", d.features[i].kind.type_label(), st.millis);
+    }
     println!("organizer volume {:.0} mm3", ev.model().bodies[0].solid.volume());
     if let Some(p) = std::env::args().nth(1) {
         std::fs::write(&p, d.to_json()).unwrap();

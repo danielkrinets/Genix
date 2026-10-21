@@ -209,3 +209,21 @@ mod tests {
         assert!(joint.volume()>1e-6);
     }
 }
+
+#[cfg(test)]
+mod timing {
+    #[test]
+    #[ignore]
+    fn selectable_timing_on_filleted_cubes() {
+        for f in ["/tmp/t12.genix", "/tmp/t2.genix", "/tmp/vr.genix", "/tmp/g_v.genix"] {
+            let Ok(text) = std::fs::read_to_string(f) else { continue };
+            let d = fusion_core::Document::from_json(&text).unwrap();
+            let mut ev = fusion_core::Evaluator::default();
+            ev.evaluate(&d);
+            let mesh = ev.model().bodies[0].mesh().clone();
+            let t = std::time::Instant::now();
+            let n = super::selectable(&mesh).len();
+            println!("{f}: {} triangles, {n} edges, selectable took {:?}", mesh.triangles.len(), t.elapsed());
+        }
+    }
+}

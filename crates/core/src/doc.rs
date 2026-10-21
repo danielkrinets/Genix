@@ -1072,9 +1072,13 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                 let shrink = Solid::from_mesh(&geom::sphere_mesh(DVec3::ZERO, v * 0.99))?;
                 // growing back with a ball 2 % bigger keeps flat faces strictly outside the opened body, so rounding error cannot leave slivers
                 let grow = Solid::from_mesh(&geom::sphere_mesh(DVec3::ZERO, v * 1.01))?;
-                let opened = b.solid.eroded(&shrink).dilated(&grow);
+                // only the surroundings of the corners are opened: the zones are 2.5 radii wide and the opening reaches 2 radii,
+                // so a box-shaped crop (few facets: the opening is slow on round ones) of 4.5 radii leaves the zones untouched but keeps the work (and the wait) small
+                let crops: Vec<Solid> = corners.iter().filter_map(|c| { let h = DVec3::splat(v * 4.5 + 1.0); Solid::from_mesh(&geom::box_mesh(*c - h, *c + h)).ok() }).collect();
+                let local = (*b.solid).boolean(&Solid::union_all(&crops), BoolOp::Intersect);
+                let opened = local.eroded(&shrink).dilated(&grow);
                 if !opened.is_empty() {
-                    let removed = (*b.solid).boolean(&opened, BoolOp::Subtract);
+                    let removed = local.boolean(&opened, BoolOp::Subtract);
                     let zones: Vec<Solid> = corners.iter().filter_map(|c| Solid::from_mesh(&geom::sphere_mesh(*c, v * 2.5 + 0.5)).ok()).collect();
                     let blend = removed.boolean(&Solid::union_all(&zones), BoolOp::Intersect);
                     if !blend.is_empty() {

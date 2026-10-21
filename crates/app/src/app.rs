@@ -2679,6 +2679,8 @@ impl App {
         }
         if picking && resp.clicked() {
             self.handle_click(self.hover, shift, now);
+            // the click changes the selection after this frame was drawn: draw again at once, so highlights do not wait for the next mouse move
+            ui.ctx().request_repaint();
         }
         if picking && resp.secondary_clicked() {
             self.context_body = match self.hover {
