@@ -139,7 +139,7 @@ fn mouse_rows(ui: &mut egui::Ui) {
         text_row(ui, tr("Выбрать тело"), tr("Щелчок; Shift — добавить к выбору"));
         text_row(ui, tr("Точная длина при рисовании"), tr("Наберите число и Enter"));
         ui.label(tr("Отменить / повторить"));
-        ui.horizontal(|ui| { inline(ui, "⌘", K::Cmd); inline(ui, "Z", letter('Z')); ui.label("/"); inline(ui, "⇧", K::Shift); inline(ui, "⌘", K::Cmd); inline(ui, "Z", letter('Z')); });
+        ui.horizontal(|ui| { inline(ui, "⌘", K::Cmd); inline(ui, "Z", letter('Z')); ui.label("/"); inline(ui, "⌘", K::Cmd); inline(ui, "Y", letter('Y')); ui.label(tr("(Ctrl работает так же)")); });
         ui.end_row();
         ui.label(tr("Сохранить / открыть"));
         ui.horizontal(|ui| { inline(ui, "⌘", K::Cmd); inline(ui, "S", letter('S')); ui.label("/"); inline(ui, "⌘", K::Cmd); inline(ui, "O", letter('O')); });

@@ -205,8 +205,8 @@ pub const EN: &[(&str, &str)] = &[
     ("Плоскость", "Plane"),
     ("Плоскость {}", "Plane {}"),
     ("Площадь", "Area"),
-    ("Повторить     ⇧⌘Z", "Redo     ⇧⌘Z"),
-    ("Повторить (⇧⌘Z)", "Redo (⇧⌘Z)"),
+    ("Повторить     ⌘Y", "Redo     ⌘Y"),
+    ("Повторить (⌘Y)", "Redo (⌘Y)"),
     ("Пока нет тел", "No bodies yet"),
     ("Показать все тела", "Show all bodies"),
     ("Показать/скрыть", "Show/hide"),
@@ -913,4 +913,5 @@ pub const EN: &[(&str, &str)] = &[
     ("({}; {})", "({}; {})"),
     ("Одноугольник? Чего вы ожидали увидеть?", "A monogon? What did you expect to see?"),
     ("Двуугольника не существует. Чего вы ожидали увидеть?", "A digon does not exist. What did you expect to see?"),
+    ("(Ctrl работает так же)", "(Ctrl works the same)"),
 ];

@@ -2022,7 +2022,7 @@ impl App {
                     ui.close_menu();
                     self.do_undo();
                 }
-                if ui.add_enabled(!self.redo.is_empty(), egui::Button::new(tr("Повторить     ⇧⌘Z"))).clicked() {
+                if ui.add_enabled(!self.redo.is_empty(), egui::Button::new(tr("Повторить     ⌘Y"))).clicked() {
                     ui.close_menu();
                     self.do_redo();
                 }
@@ -2068,13 +2068,20 @@ impl App {
                 }
             });
             ui.separator();
-            let editing = !self.home_active && !matches!(self.mode, Mode::Sketch(_));
+            // in a sketch the same two buttons step through the sketch's own history (what was drawn), not the model's
+            let editing = !self.home_active;
             let small = egui::vec2(28.0, 26.0);
-            if ui.add_enabled_ui(editing && !self.undo.is_empty(), |ui| icon_button(ui, "undo", "↶", false, tr("Отменить (⌘Z)"), small)).inner {
-                self.do_undo();
+            let (can_undo, can_redo) = match &self.mode {
+                Mode::Sketch(s) => (s.can_undo(), s.can_redo()),
+                _ => (editing && !self.undo.is_empty(), editing && !self.redo.is_empty()),
+            };
+            if ui.add_enabled_ui(can_undo, |ui| icon_button(ui, "undo", "↶", false, tr("Отменить (⌘Z)"), small)).inner {
+                let params = self.doc.params.clone();
+                if let Mode::Sketch(s) = &mut self.mode { s.undo(&params); } else { self.do_undo(); }
             }
-            if ui.add_enabled_ui(editing && !self.redo.is_empty(), |ui| icon_button(ui, "redo", "↷", false, tr("Повторить (⇧⌘Z)"), small)).inner {
-                self.do_redo();
+            if ui.add_enabled_ui(can_redo, |ui| icon_button(ui, "redo", "↷", false, tr("Повторить (⌘Y)"), small)).inner {
+                let params = self.doc.params.clone();
+                if let Mode::Sketch(s) = &mut self.mode { s.redo(&params); } else { self.do_redo(); }
             }
             // egui's menu bar fills the row; remember how much the menus really use so the tabs keep the rest
             let used = ui.cursor().left() - start;
@@ -3576,8 +3583,9 @@ impl App {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context, now: f64) {
-        let cmd = |k: egui::Key| ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, k));
-        let cmd_shift = |k: egui::Key| ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, k));
+        // on a Mac ⌘ is the main modifier, but Ctrl+Z / Ctrl+Y are what most people press: both work
+        let cmd = |k: egui::Key| ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, k) || i.consume_key(egui::Modifiers::CTRL, k));
+        let cmd_shift = |k: egui::Key| ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, k) || i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, k));
         if cmd_shift(egui::Key::S) {
             self.save(true, now);
         } else if cmd(egui::Key::S) {

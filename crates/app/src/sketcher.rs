@@ -255,6 +255,14 @@ impl SketchSession {
         self.future.clear();
     }
 
+    pub fn can_undo(&self) -> bool {
+        !self.history.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.future.is_empty()
+    }
+
     pub fn undo(&mut self, params: &Params) {
         self.cancel_pending();
         if let Some(s) = self.history.pop() {
@@ -471,12 +479,12 @@ impl SketchSession {
                     }
                 }
             }
-            if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z)) {
-                if ctx.input(|i| i.modifiers.shift) {
-                    self.redo(params);
-                } else {
-                    self.undo(params);
-                }
+            // ⌘ or Ctrl: Z undoes, ⇧Z and Y redo
+            let (z, y, shift) = ctx.input(|i| ((i.modifiers.command || i.modifiers.ctrl) && i.key_pressed(egui::Key::Z), (i.modifiers.command || i.modifiers.ctrl) && i.key_pressed(egui::Key::Y), i.modifiers.shift));
+            if y || (z && shift) {
+                self.redo(params);
+            } else if z {
+                self.undo(params);
             }
             if !matches!(action, SketchAction::None) {
                 return action;

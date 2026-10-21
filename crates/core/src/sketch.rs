@@ -874,7 +874,9 @@ impl ProfileRef {
 
     pub fn resolve(&self, regions: &[Region]) -> Option<usize> {
         if !self.ids.is_empty() {
-            if let Some(i) = regions.iter().position(|r| r.ids == self.ids) {
+            // regions cut out of overlapping curves can share all their boundary curves: the remembered point tells them apart
+            let same: Vec<usize> = (0..regions.len()).filter(|&i| regions[i].ids == self.ids).collect();
+            if let Some(i) = same.iter().copied().find(|&i| regions[i].contains(self.seed)).or_else(|| same.first().copied()) {
                 return Some(i);
             }
         }
@@ -977,28 +979,146 @@ struct HalfEdge {
     angle: f64,
 }
 
-fn regions(s: &Sketch) -> Vec<Region> {
-    // Рёбра графа: линии и дуги (вспомогательные не участвуют). Окружности — отдельные контуры.
-    let mut edges: Vec<(usize, usize, Vec<P2>, usize)> = Vec::new();
-    let mut circles: Vec<(Vec<P2>, usize)> = Vec::new();
+/// Curves cut at every point where they cross each other: the planar graph the regions are read from.
+struct Arrangement {
+    /// Number of vertices (crossings, curve ends and shared sketch points merged by position).
+    vertices: usize,
+    /// (from, to, polyline from `from` to `to`, sketch entity)
+    edges: Vec<(usize, usize, Vec<P2>, usize)>,
+    /// Circles that are crossed by nothing: separate loops.
+    circles: Vec<(Vec<P2>, usize)>,
+}
+
+fn arrange(s: &Sketch) -> Arrangement {
+    struct Curve {
+        entity: usize,
+        pts: Vec<P2>,
+        closed: bool,
+        /// (position along the polyline: segment index + fraction, point)
+        cuts: Vec<(f64, P2)>,
+    }
+    let mut curves: Vec<Curve> = Vec::new();
     for (i, e) in s.entities.iter().enumerate() {
         if e.construction() {
             continue;
         }
+        let pts = s.tessellate(i);
         match *e {
-            Entity::Line { a, b, .. } if a != b => edges.push((a, b, s.tessellate(i), i)),
-            Entity::Arc { a, b, .. } if a != b => edges.push((a, b, s.tessellate(i), i)),
-            Entity::Circle { r, .. } if r > 1e-9 => {
-                let mut p = s.tessellate(i);
-                p.pop();
-                circles.push((p, i));
-            }
+            Entity::Line { a, b, .. } if a != b => curves.push(Curve { entity: i, pts, closed: false, cuts: Vec::new() }),
+            Entity::Arc { a, b, .. } if a != b => curves.push(Curve { entity: i, pts, closed: false, cuts: Vec::new() }),
+            Entity::Circle { r, .. } if r > 1e-9 => curves.push(Curve { entity: i, pts, closed: true, cuts: Vec::new() }),
             _ => {}
         }
     }
+    let extent = curves.iter().flat_map(|c| c.pts.iter()).fold(1.0_f64, |m, p| m.max(p[0].abs()).max(p[1].abs()));
+    let tol = 1e-7 * (1.0 + extent);
+    // crossings between different curves (skipped for huge sketches, where every curve then stands on its own)
+    let segments: usize = curves.iter().map(|c| c.pts.len()).sum();
+    if segments <= 12000 {
+        let bbox = |c: &Curve| c.pts.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]);
+        let boxes: Vec<[f64; 4]> = curves.iter().map(bbox).collect();
+        for i in 0..curves.len() {
+            for j in i + 1..curves.len() {
+                let (bi, bj) = (boxes[i], boxes[j]);
+                if bi[0] > bj[2] + tol || bj[0] > bi[2] + tol || bi[1] > bj[3] + tol || bj[1] > bi[3] + tol {
+                    continue;
+                }
+                let mut hits: Vec<(f64, f64, P2)> = Vec::new();
+                for (ia, wa) in curves[i].pts.windows(2).enumerate() {
+                    for (ib, wb) in curves[j].pts.windows(2).enumerate() {
+                        let (p, r) = (DVec2::from(wa[0]), DVec2::from(wa[1]) - DVec2::from(wa[0]));
+                        let (q, d) = (DVec2::from(wb[0]), DVec2::from(wb[1]) - DVec2::from(wb[0]));
+                        let den = r.perp_dot(d);
+                        if den.abs() <= 1e-12 * r.length() * d.length() {
+                            continue;
+                        }
+                        let t = (q - p).perp_dot(d) / den;
+                        let u = (q - p).perp_dot(r) / den;
+                        let eps = 1e-9;
+                        if t < -eps || t > 1.0 + eps || u < -eps || u > 1.0 + eps {
+                            continue;
+                        }
+                        let (t, u) = (t.clamp(0.0, 1.0), u.clamp(0.0, 1.0));
+                        hits.push((ia as f64 + t, ib as f64 + u, (p + r * t).to_array()));
+                    }
+                }
+                for (ta, tb, pt) in hits {
+                    curves[i].cuts.push((ta, pt));
+                    curves[j].cuts.push((tb, pt));
+                }
+            }
+        }
+    }
+    let mut verts: Vec<P2> = Vec::new();
+    let mut vid = |p: P2| -> usize {
+        if let Some(i) = verts.iter().position(|v| (v[0] - p[0]).abs() <= tol && (v[1] - p[1]).abs() <= tol) {
+            return i;
+        }
+        verts.push(p);
+        verts.len() - 1
+    };
+    let mut edges = Vec::new();
+    let mut circles = Vec::new();
+    for c in curves {
+        let n = c.pts.len();
+        let mut cuts = c.cuts;
+        if !c.closed {
+            cuts.push((0.0, c.pts[0]));
+            cuts.push(((n - 1) as f64, c.pts[n - 1]));
+        }
+        cuts.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // a crossing exactly at a vertex shows up once per neighbouring segment: keep one
+        cuts.dedup_by(|a, b| (a.1[0] - b.1[0]).abs() <= tol && (a.1[1] - b.1[1]).abs() <= tol);
+        if c.closed {
+            // the seam (start = end) counts as one place
+            if cuts.len() > 1 && { let (f, l) = (cuts[0].1, cuts[cuts.len() - 1].1); (f[0] - l[0]).abs() <= tol && (f[1] - l[1]).abs() <= tol } {
+                cuts.pop();
+            }
+            if cuts.len() < 2 {
+                let mut p = c.pts.clone();
+                p.pop();
+                circles.push((p, c.entity));
+                continue;
+            }
+        }
+        let count = if c.closed { cuts.len() } else { cuts.len() - 1 };
+        for k in 0..count {
+            let (pa, a) = (cuts[k].0, cuts[k].1);
+            let (pb, b) = cuts[(k + 1) % cuts.len()];
+            let b_pt = b;
+            // vertices of the polyline strictly between the two cuts (wrapping round the seam of a closed curve)
+            let mut path = vec![a];
+            if pb > pa {
+                for v in (pa.floor() as usize + 1)..=(pb.ceil() as usize).saturating_sub(1) {
+                    if (v as f64) > pa && (v as f64) < pb { path.push(c.pts[v]); }
+                }
+            } else {
+                for v in (pa.floor() as usize + 1)..n {
+                    path.push(c.pts[v]);
+                }
+                for v in 1..=(pb.ceil() as usize).saturating_sub(1) {
+                    if (v as f64) < pb { path.push(c.pts[v]); }
+                }
+            }
+            path.push(b_pt);
+            let (va, vb) = (vid(a), vid(b_pt));
+            if va == vb && path.len() < 4 {
+                continue;
+            }
+            edges.push((va, vb, path, c.entity));
+        }
+    }
+    Arrangement { vertices: verts.len(), edges, circles }
+}
+
+fn regions(s: &Sketch) -> Vec<Region> {
+    let arr = arrange(s);
+    let nv = arr.vertices;
+    let mut edges = arr.edges;
+    let circles = arr.circles;
     // Убираем «висячие» рёбра (вершины степени 1) — они не ограничивают областей.
     loop {
-        let mut deg = vec![0usize; s.points.len()];
+        let mut deg = vec![0usize; nv];
         for (a, b, _, _) in &edges {
             deg[*a] += 1;
             deg[*b] += 1;
@@ -1020,7 +1140,7 @@ fn regions(s: &Sketch) -> Vec<Region> {
         hes.push(HalfEdge { from: *b, to: *a, entity: *e, angle: dir(&rev), path: rev });
     }
     // исходящие полурёбра каждой вершины, отсортированные по углу
-    let mut out: Vec<Vec<usize>> = vec![Vec::new(); s.points.len()];
+    let mut out: Vec<Vec<usize>> = vec![Vec::new(); nv];
     for (i, h) in hes.iter().enumerate() {
         out[h.from].push(i);
     }
@@ -1028,7 +1148,7 @@ fn regions(s: &Sketch) -> Vec<Region> {
         o.sort_by(|&x, &y| hes[x].angle.total_cmp(&hes[y].angle));
     }
     // компоненты связности (для вложенности контуров)
-    let mut comp: Vec<usize> = (0..s.points.len()).collect();
+    let mut comp: Vec<usize> = (0..nv).collect();
     fn find(c: &mut [usize], i: usize) -> usize {
         let mut r = i;
         while c[r] != r {
@@ -1112,7 +1232,7 @@ fn regions(s: &Sketch) -> Vec<Region> {
         }
     }
     // окружности: и область, и контур собственной «компоненты»
-    let base = s.points.len() + 1;
+    let base = nv + 1;
     for (i, (mut c, e)) in circles.into_iter().enumerate() {
         if signed_area(&c) < 0.0 {
             c.reverse();
@@ -1160,6 +1280,49 @@ mod tests {
 
     fn params() -> Params {
         Params::default()
+    }
+
+    #[test]
+    fn overlapping_circles_give_the_lens_and_both_crescents() {
+        let mut s = Sketch::default();
+        s.add_circle([0.0, 0.0], 10.0);
+        s.add_circle([10.0, 0.0], 10.0);
+        let r = s.regions();
+        assert_eq!(r.len(), 3, "lens + two crescents, not two whole circles: {r:?}");
+        let lens = r.iter().map(|x| x.area()).fold(f64::MAX, f64::min);
+        // lens of two unit-distance-r circles: 2 r^2 acos(1/2) - (d/2) sqrt(4 r^2 - d^2)
+        let ideal = 2.0 * 100.0 * 0.5_f64.acos() - 5.0 * (400.0_f64 - 100.0).sqrt();
+        assert!((lens - ideal).abs() / ideal < 0.01, "lens {lens} vs {ideal}");
+        // each part can be picked on its own
+        assert_eq!(region_at(&r, [5.0, 0.0]), r.iter().position(|x| (x.area() - lens).abs() < 1e-6));
+        assert!(region_at(&r, [-5.0, 0.0]).is_some() && region_at(&r, [15.0, 0.0]).is_some());
+        let picked = ProfileRef::at([5.0, 0.0]);
+        assert_eq!(picked.resolve(&r), region_at(&r, [5.0, 0.0]));
+    }
+
+    #[test]
+    fn three_overlapping_circles_make_seven_regions() {
+        let mut s = Sketch::default();
+        s.add_circle([0.0, 0.0], 10.0);
+        s.add_circle([8.0, 0.0], 10.0);
+        s.add_circle([4.0, 7.0], 10.0);
+        let r = s.regions();
+        assert_eq!(r.len(), 7, "{} regions", r.len());
+        // together they tile the union without overlap: no two regions contain the same point
+        for p in [[0.0, 0.0], [4.0, 2.0], [8.0, 0.0], [4.0, 9.0], [-5.0, 0.0], [14.0, 0.0]] {
+            let n = r.iter().filter(|x| x.contains(p)).count();
+            assert!(n <= 1, "{p:?} lies in {n} regions");
+        }
+    }
+
+    #[test]
+    fn a_line_across_a_rectangle_splits_it_without_drawing_the_crossing_points() {
+        let mut s = Sketch::default();
+        s.add_rect([0.0, 0.0], [10.0, 10.0]);
+        s.add_line([5.0, -3.0], [5.0, 13.0]);
+        let r = s.regions();
+        assert_eq!(r.len(), 2, "{r:?}");
+        assert!(r.iter().all(|x| (x.area() - 50.0).abs() < 1e-6));
     }
 
     #[test]
