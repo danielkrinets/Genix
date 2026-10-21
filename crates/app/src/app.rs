@@ -3266,6 +3266,11 @@ impl eframe::App for App {
             if let Some(path)=file.path {crate::desktop::enqueue(path);}
         }
         crate::units::apply(self.settings.length_unit, self.settings.decimals);
+        // a click or a key changes state after the widgets were drawn; one more frame right away shows the result
+        // (otherwise a toggle such as the grid button only seems to work after the mouse moves again)
+        if ctx.input(|i| i.pointer.any_released() || i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. } | egui::Event::Text(_)))) {
+            ctx.request_repaint();
+        }
         if self.splash(ctx, now) { return; }
         // a log from an earlier crash that has not been offered yet: ask once, right after the start
         if !self.crash_checked && self.settings.setup_done {
