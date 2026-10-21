@@ -1715,6 +1715,14 @@ impl App {
                 let face_pick = face;
                 let hit_body = match hit { Some(Hit::Body { slot, .. }) => model.bodies.get(slot).map(|b| b.id), _ => None };
                 let edge = self.hover_edge;
+                // one click takes the whole tangent chain (a straight rim and the rounded corners it runs into), as in Fusion
+                let chain: Vec<EdgeRef> = match edge {
+                    Some((e, owner)) => {
+                        let all = model.body(owner).map(|b| self.straight_edges(b));
+                        all.map(|all| crate::edges::tangent_chain(&all, &e)).unwrap_or_else(|| vec![e])
+                    }
+                    None => Vec::new(),
+                };
                 let path_pick = if pick == PickTarget::Path { self.nearest_sketch_line(self.last_ray) } else { None };
                 let user_planes = self.doc.offset_planes();
                 let Some(f) = self.doc.feature_mut(uid) else { return };
@@ -1799,11 +1807,16 @@ impl App {
                         // the first picked edge chooses the body; later edges come only from it
                         if let Some((e, owner)) = edge.filter(|(_, owner)| *body == 0 || *body == *owner) {
                             *body = owner;
-                            let same = |x: &EdgeRef| x.circle == e.circle && (DVec3::from(x.a) - DVec3::from(e.a)).length() < 1e-6 && (DVec3::from(x.b) - DVec3::from(e.b)).length() < 1e-6;
-                            if let Some(i) = edges.iter().position(same) {
-                                edges.remove(i);
+                            let same = |x: &EdgeRef, y: &EdgeRef| x.circle == y.circle && (DVec3::from(x.a) - DVec3::from(y.a)).length() < 1e-6 && (DVec3::from(x.b) - DVec3::from(y.b)).length() < 1e-6;
+                            // a second click on a selected edge lets the whole chain go again
+                            if edges.iter().any(|x| same(x, &e)) {
+                                edges.retain(|x| !chain.iter().any(|c| same(x, c)));
                             } else {
-                                edges.push(e);
+                                for c in &chain {
+                                    if !edges.iter().any(|x| same(x, c)) {
+                                        edges.push(*c);
+                                    }
+                                }
                             }
                             changed = true;
                         }

@@ -16,6 +16,15 @@ fn main() {
         EdgeRef::line([40.0, 40.0, 40.0], [0.0, 40.0, 40.0]),
         EdgeRef::line([0.0, 40.0, 40.0], [0.0, 0.0, 40.0]),
     ];
+    if std::env::args().nth(2).as_deref() == Some("vround") {
+        // only the four vertical edges rounded: the starting point for filleting the top rim as one tangent chain
+        let vert: Vec<EdgeRef> = [(0.0, 0.0), (40.0, 0.0), (40.0, 40.0), (0.0, 40.0)].iter().map(|(x, y)| EdgeRef::line([*x, *y, 0.0], [*x, *y, 40.0])).collect();
+        d.insert(FeatureKind::Fillet { body, edges: vert, radius: n(5.0) });
+        if let Some(p) = std::env::args().nth(1) {
+            std::fs::write(&p, d.to_json()).unwrap();
+        }
+        return;
+    }
     let count: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(2);
     let mut edges = all[..count.min(4)].to_vec();
     if count == 12 {

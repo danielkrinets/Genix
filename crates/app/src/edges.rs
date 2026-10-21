@@ -76,6 +76,44 @@ pub fn selectable(mesh: &Mesh) -> Vec<EdgeRef> {
     out
 }
 
+/// End points of an edge with the direction pointing away from the edge there (a line has two, an open arc two, a full circle none).
+fn ends(e: &EdgeRef) -> Vec<(DVec3, DVec3)> {
+    if !e.circle {
+        let (a, b) = (DVec3::from(e.a), DVec3::from(e.b));
+        return vec![(a, (a - b).normalize_or_zero()), (b, (b - a).normalize_or_zero())];
+    }
+    let Some(sweep) = e.sweep else { return Vec::new() };
+    let (c, axis, p0) = (DVec3::from(e.b), DVec3::from(e.axis).normalize_or_zero(), DVec3::from(e.a));
+    let r0 = p0 - c;
+    let r1 = glam::DQuat::from_axis_angle(axis, sweep.to_radians()) * r0;
+    vec![(p0, -axis.cross(r0).normalize_or_zero()), (c + r1, axis.cross(r1).normalize_or_zero())]
+}
+
+/// The edge together with every edge that continues it without a corner (a straight rim running into a rounded one and on):
+/// the «tangent chain» that a fillet has to take as a whole, otherwise the rounded corners stay as sharp ears.
+pub fn tangent_chain(all: &[EdgeRef], start: &EdgeRef) -> Vec<EdgeRef> {
+    let tol = |e: &EdgeRef| 1e-3 * (1.0 + DVec3::from(e.a).distance(DVec3::from(e.b)));
+    let same = |x: &EdgeRef, y: &EdgeRef| x.circle == y.circle && DVec3::from(x.a).distance(DVec3::from(y.a)) < 1e-6 && DVec3::from(x.b).distance(DVec3::from(y.b)) < 1e-6;
+    let mut chain = vec![*start];
+    let mut i = 0;
+    while i < chain.len() {
+        let current = chain[i];
+        for (p, t) in ends(&current) {
+            for other in all {
+                if chain.iter().any(|c| same(c, other)) {
+                    continue;
+                }
+                let joins = ends(other).into_iter().any(|(q, u)| q.distance(p) < tol(&current).max(tol(other)) && t.dot(u) < -0.99);
+                if joins {
+                    chain.push(*other);
+                }
+            }
+        }
+        i += 1;
+    }
+    chain
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,6 +124,47 @@ mod tests {
         }
         fusion_core::geom::extrude_region(&fusion_core::Plane::XY,&fusion_core::Region {outer,holes:vec![],ids:vec![]},0.0,5.0).unwrap()
     }
+    #[test]
+    fn a_straight_rim_chains_through_the_rounded_corners_around_the_whole_top() {
+        // 40 x 20 plate with 5 mm rounded corners, 5 mm thick
+        let mut outer = Vec::new();
+        for (cx, cy, start) in [(35.0, 5.0, -90.0_f64), (35.0, 15.0, 0.0), (5.0, 15.0, 90.0), (5.0, 5.0, 180.0)] {
+            for i in 0..=12 {
+                let t = (start + i as f64 * 90.0 / 12.0).to_radians();
+                outer.push([cx + 5.0 * t.cos(), cy + 5.0 * t.sin()]);
+            }
+        }
+        let mesh = fusion_core::geom::extrude_region(&fusion_core::Plane::XY, &fusion_core::Region { outer, holes: vec![], ids: vec![] }, 0.0, 5.0).unwrap();
+        let all = selectable(&mesh);
+        let start = all.iter().find(|e| !e.circle && e.a[2] > 4.9 && e.b[2] > 4.9).expect("a straight top rim");
+        let chain = tangent_chain(&all, start);
+        assert_eq!(chain.len(), 8, "four straight rims and four rounded corners: {chain:?}");
+        assert!(chain.iter().all(|e| if e.circle { e.a[2] > 4.9 } else { e.a[2] > 4.9 && e.b[2] > 4.9 }), "the chain stays on the top");
+        // the bottom rim and the vertical edges are separate chains
+        assert!(all.len() > chain.len());
+    }
+
+    #[test]
+    fn the_top_rim_of_a_box_with_rounded_vertical_edges_is_one_chain_of_eight() {
+        use fusion_core::doc::{Document, FeatureKind, Shape};
+        let n = fusion_core::Expr::num;
+        let mut d = Document::default();
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(40.0), d: n(40.0), h: n(40.0) }, at: [n(0.0), n(0.0), n(0.0)], op: fusion_core::Op::NewBody });
+        let mut ev = fusion_core::Evaluator::default();
+        ev.evaluate(&d);
+        let body = ev.model().bodies[0].id;
+        let vertical: Vec<EdgeRef> = [(0.0, 0.0), (40.0, 0.0), (40.0, 40.0), (0.0, 40.0)].iter().map(|(x, y)| EdgeRef::line([*x, *y, 0.0], [*x, *y, 40.0])).collect();
+        d.insert(FeatureKind::Fillet { body, edges: vertical, radius: n(5.0) });
+        ev.evaluate(&d);
+        let mesh = ev.model().bodies[0].mesh().clone();
+        let all = selectable(&mesh);
+        let top_lines = all.iter().filter(|e| !e.circle && e.a[2] > 39.9 && e.b[2] > 39.9).count();
+        let top_arcs = all.iter().filter(|e| e.circle && e.a[2] > 39.9).count();
+        assert_eq!((top_lines, top_arcs), (4, 4), "selectable edges: {all:?}");
+        let start = all.iter().find(|e| !e.circle && e.a[2] > 39.9 && e.b[2] > 39.9).unwrap();
+        assert_eq!(tangent_chain(&all, start).len(), 8);
+    }
+
     #[test]
     fn diameter_does_not_turn_a_semicircular_rim_into_a_full_circle() {
         let outer=(0..=24).map(|i| {let t=i as f64*std::f64::consts::PI/24.0;[5.0*t.cos(),5.0*t.sin()]}).collect();
