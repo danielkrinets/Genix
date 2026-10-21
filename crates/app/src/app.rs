@@ -241,6 +241,8 @@ pub struct App {
     help_open: bool,
     report: crate::report::ReportState,
     crash_checked: bool,
+    /// sketch picked in the tree: Delete removes it
+    tree_sketch: Option<u64>,
     confirm: Option<Confirm>,
     allow_close: bool,
     need_fit: bool,
@@ -456,6 +458,7 @@ impl App {
             help_open: false,
             report: Default::default(),
             crash_checked: false,
+            tree_sketch: None,
             confirm: None,
             allow_close: false,
             need_fit: false,
@@ -2268,10 +2271,23 @@ impl App {
                         }
                         let name = tr_name(&name);
                         let text = if err { RichText::new(format!("{name} ⚠")).color(Color32::from_rgb(200, 40, 40)) } else { RichText::new(name.to_string()) };
-                        let r = ui.selectable_label(false, text).on_hover_text(tr("Двойной щелчок — изменить чертёж"));
+                        let r = ui.selectable_label(self.tree_sketch == Some(uid), text).on_hover_text(tr("Двойной щелчок — изменить, Delete — удалить"));
+                        if r.clicked() {
+                            self.tree_sketch = Some(uid);
+                        }
                         if r.double_clicked() {
                             self.edit_feature(uid, now);
                         }
+                        r.context_menu(|ui| {
+                            if ui.button(tr("Изменить")).clicked() {
+                                ui.close_menu();
+                                self.edit_feature(uid, now);
+                            }
+                            if ui.button(RichText::new(tr("Удалить")).color(Color32::from_rgb(200, 40, 40))).clicked() {
+                                ui.close_menu();
+                                self.delete_feature(uid, now);
+                            }
+                        });
                     });
                 }
             });
@@ -3674,9 +3690,14 @@ impl App {
         if pressed(egui::Key::F) {
             self.fit_view(now, false);
         }
-        if (pressed(egui::Key::Delete) || pressed(egui::Key::Backspace)) && !self.selection.is_empty() {
-            let ids = self.selection.clone();
-            self.delete_bodies(ids);
+        if pressed(egui::Key::Delete) || pressed(egui::Key::Backspace) {
+            if !self.selection.is_empty() {
+                let ids = self.selection.clone();
+                self.delete_bodies(ids);
+            } else if let Some(uid) = self.tree_sketch.take() {
+                self.cancel_mode();
+                self.delete_feature(uid, now);
+            }
         }
     }
 }

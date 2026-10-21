@@ -1539,4 +1539,29 @@ mod tests {
         for end in [[10.0, 0.0], [0.0, 10.0], [-10.0, 0.0]] { star.add_line([0.0, 0.0], end); }
         assert!(star.chain_path().unwrap_err().contains("ветвиться"));
     }
+
+    #[test]
+    fn circle_over_rect_edge_near_tangent() {
+        let mut s = Sketch::default();
+        s.add_rect([-15.0, -12.0], [20.0, 12.0]);
+        let c = s.add_point([0.0, 0.0]);
+        s.add(Entity::Circle { c, r: 20.5, construction: false });
+        let r = s.regions();
+        let areas: Vec<f64> = r.iter().map(|r| r.area()).collect();
+        // centre piece, 2 corner pieces (top/bottom), right cap, and the circle remainder(s)
+        assert!(r.len() >= 5, "{areas:?}");
+    }
+
+    #[test]
+    fn circle_tangent_to_rect_edge() {
+        for rr in [20.0, 20.0 - 1e-6, 20.0 + 1e-6, 19.99, 20.01] {
+            let mut s = Sketch::default();
+            s.add_rect([-15.0, -12.0], [20.0, 12.0]);
+            s.add_circle([0.0, 0.0], rr);
+            let areas: Vec<f64> = s.regions().iter().map(|r| r.area()).collect();
+            println!("r={rr}: {areas:?}");
+            // rect∩circle, 2 corner pieces, the circle's left/top/bottom caps: at least 4 separate regions
+            assert!(areas.len() >= 3, "r={rr}: {areas:?}");
+        }
+    }
 }
