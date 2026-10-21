@@ -907,4 +907,8 @@ pub const EN: &[(&str, &str)] = &[
     ("Скопировать отчёт", "Copy report"),
     ("Открыл GitHub. Полный отчёт скопирован — вставьте его, если текст обрезан.", "GitHub is open. The full report is copied: paste it if the text was cut."),
     ("Отчёт скопирован в буфер обмена.", "Report copied to the clipboard."),
+    ("ВЫБРАННОЕ", "SELECTED"),
+    ("Точка", "Point"),
+    ("Радиус {} {}", "Radius {} {}"),
+    ("({}; {})", "({}; {})"),
 ];

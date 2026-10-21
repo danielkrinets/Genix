@@ -1157,6 +1157,64 @@ impl SketchSession {
 
     /// Палитра чертежа для панели справа: ограничения, настройки, состояние, выбранное.
     pub fn status_ui(&mut self, ui: &mut egui::Ui, params: &Params) {
+        // the object itself comes first: what is selected and its own settings; tools and constraints follow
+        if !self.selection.is_empty() {
+            ui.label(RichText::new(tr("ВЫБРАННОЕ")).small().weak());
+            let sel = self.selection.clone();
+            for p in sel {
+                match p {
+                    Pick::Entity(e) => {
+                        let (kind, current) = match self.sketch.entities[e] {
+                            Entity::Line { .. } => (tr("Линия"), Some((tr("Длина"), self.sketch.measure(e)))),
+                            Entity::Circle { .. } => (tr("Окружность"), Some((tr("Диаметр"), self.sketch.measure(e)))),
+                            Entity::Arc { .. } => (tr("Дуга"), None),
+                        };
+                        ui.label(RichText::new(kind).strong());
+                        if let Some((name, value)) = current {
+                            // typing a value turns it into a dimension of the sketch (and updates it later)
+                            let existing = self.sketch.constraints.iter().position(|c| matches!(c, Constraint::Length(x, _) | Constraint::Diameter(x, _) if *x == e));
+                            let mut ex = existing.and_then(|i| self.sketch.constraints[i].expr().cloned()).unwrap_or_else(|| Expr::num(round3(value)));
+                            ui.horizontal(|ui| {
+                                ui.label(name);
+                                if crate::widgets::expr_field(ui, ("selected-size", e), &mut ex, params, "мм") {
+                                    self.checkpoint();
+                                    match existing {
+                                        Some(i) => *self.sketch.constraints[i].expr_mut().unwrap() = ex.clone(),
+                                        None => self.sketch.constraints.push(if matches!(self.sketch.entities[e], Entity::Circle { .. }) { Constraint::Diameter(e, ex.clone()) } else { Constraint::Length(e, ex.clone()) }),
+                                    }
+                                    self.commit_checked(params, tr("Размер"));
+                                }
+                            });
+                        } else if let Entity::Arc { .. } = self.sketch.entities[e] {
+                            ui.label(tf!("Радиус {} {}", crate::units::number(crate::units::to_display(round3(self.sketch.measure(e) / 2.0))), crate::units::label()));
+                        }
+                    }
+                    Pick::Point(p) => {
+                        let q = self.sketch.points[p].pos;
+                        ui.label(RichText::new(tr("Точка")).strong());
+                        ui.label(tf!("({}; {})", crate::units::number(crate::units::to_display(round3(q[0]))), crate::units::number(crate::units::to_display(round3(q[1])))));
+                    }
+                    Pick::Cons(c) => {
+                        if let Some(cons) = self.sketch.constraints.get(c) {
+                            ui.label(RichText::new(cons.label()).strong());
+                            if cons.is_dimension() {
+                                let mut e = cons.expr().unwrap().clone();
+                                let angle = matches!(cons, Constraint::Angle(..));
+                                if crate::widgets::expr_field(ui, ("dimsel", c), &mut e, params, if angle { "°" } else { "мм" }) {
+                                    self.checkpoint();
+                                    *self.sketch.constraints[c].expr_mut().unwrap() = e;
+                                    self.commit_checked(params, tr("Размер"));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if crate::ui_kit::b04(ui, tr("Удалить выбранное")).clicked() {
+                self.delete_selection(params);
+            }
+            ui.separator();
+        }
         ui.label(RichText::new(tr("ОГРАНИЧЕНИЯ")).small().weak());
         egui::Grid::new("cons_grid").num_columns(2).spacing([4.0, 4.0]).show(ui, |ui| {
             for (i, k) in ConsKind::ALL.iter().enumerate() {
@@ -1229,43 +1287,6 @@ impl SketchSession {
             }
         }
         ui.label(tf!("Профилей: {}", self.regions.len()));
-        if !self.selection.is_empty() {
-            ui.separator();
-            let sel = self.selection.clone();
-            for p in sel {
-                match p {
-                    Pick::Entity(e) => {
-                        let s = &self.sketch;
-                        let txt = match s.entities[e] {
-                            Entity::Line { .. } => tf!("Линия, длина {}", format_num(round3(s.measure(e)))),
-                            Entity::Circle { .. } => tf!("Окружность Ø{}", format_num(round3(s.measure(e)))),
-                            Entity::Arc { .. } => tf!("Дуга R{}", format_num(round3(s.measure(e) / 2.0))),
-                        };
-                        ui.label(txt);
-                    }
-                    Pick::Point(p) => {
-                        let q = self.sketch.points[p].pos;
-                        ui.label(tf!("Точка ({}; {})", format_num(round3(q[0])), format_num(round3(q[1]))));
-                    }
-                    Pick::Cons(c) => {
-                        if let Some(cons) = self.sketch.constraints.get(c) {
-                            ui.label(cons.label());
-                            if cons.is_dimension() {
-                                let mut e = cons.expr().unwrap().clone();
-                                if crate::widgets::expr_field(ui, ("dimsel", c), &mut e, params, "") {
-                                    self.checkpoint();
-                                    *self.sketch.constraints[c].expr_mut().unwrap() = e;
-                                    self.commit_checked(params, tr("Размер"));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if ui.button(tr("Удалить выбранное")).clicked() {
-                self.delete_selection(params);
-            }
-        }
     }
 
     // -------------------------------------------------------------- отрисовка
