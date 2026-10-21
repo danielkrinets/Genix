@@ -608,20 +608,25 @@ pub fn edge_tool(mesh: &Mesh, a: DVec3, b: DVec3, op: EdgeOp) -> Result<(Mesh, b
 
 /// То же, но инструмент продлён на `ext` за оба конца ребра (для построения угловых стыков).
 pub fn edge_tool_ext(mesh: &Mesh, a: DVec3, b: DVec3, op: EdgeOp, ext: f64) -> Result<(Mesh, bool), String> {
+    edge_tool_ends(mesh, a, b, op, ext, ext)
+}
+
+/// The same with a separate extension past each end of the edge.
+pub fn edge_tool_ends(mesh: &Mesh, a: DVec3, b: DVec3, op: EdgeOp, ext_a: f64, ext_b: f64) -> Result<(Mesh, bool), String> {
     let len = a.distance(b);
     let faces = edge_faces(mesh, a, b)?;
     let e = (b - a) / len;
     let (poly, concave) = section_points(a, &faces, op)?;
     // инструмент не выступает за концы ребра: иначе в общих углах соседних рёбер остаются «шипы»;
     // стык в углу достраивается отдельно (см. угловые вставки в doc.rs)
-    let ext = if concave { 0.0 } else { ext };
+    let (ext_a, ext_b) = if concave { (0.0, 0.0) } else { (ext_a, ext_b) };
     let (px, py) = perp_frame(e);
     let mut pts: Vec<[f64; 2]> = poly.iter().map(|q| [(*q - a).dot(px), (*q - a).dot(py)]).collect();
     if crate::sketch::signed_area(&pts) < 0.0 {
         pts.reverse();
     }
-    let plane = Plane { origin: (a - e * ext).to_array(), x: px.to_array(), y: py.to_array() };
-    extrude_region(&plane, &Region { outer: pts, holes: vec![], ids: vec![] }, 0.0, len + 2.0 * ext).map(|m| (m, concave)).ok_or_else(|| "не удалось построить инструмент".to_string())
+    let plane = Plane { origin: (a - e * ext_a).to_array(), x: px.to_array(), y: py.to_array() };
+    extrude_region(&plane, &Region { outer: pts, holes: vec![], ids: vec![] }, 0.0, len + ext_a + ext_b).map(|m| (m, concave)).ok_or_else(|| "не удалось построить инструмент".to_string())
 }
 
 /// То же для круглого ребра (окружность вокруг оси `axis` с центром `center`, `p` — точка на ней).
@@ -668,6 +673,46 @@ pub fn circle_tool_span_ext(mesh: &Mesh, center: DVec3, axis: DVec3, p: DVec3, o
     let start = glam::DQuat::from_axis_angle(axis, -ext.to_radians()) * start;
     let plane = Plane { origin: center.to_array(), x: start.to_array(), y: axis.to_array() };
     revolve_region(&plane, &Region { outer: pts, holes: vec![], ids: vec![] }, [0.0, 0.0], [0.0, 1.0], sweep + ext * 2.0).map(|m| (m, concave))
+}
+
+/// Ends of selected straight edges where the fillet has to blend into its neighbours rather than stop with a flat cut.
+/// The flag is true when every sharp edge meeting there is selected too (a cube corner with all three edges: a sphere blend),
+/// false when the edge ends on a surface that an earlier fillet already rounded (the wedge must run on through it).
+pub fn blend_vertices(mesh: &Mesh, selected: &[(DVec3, DVec3)]) -> Vec<(DVec3, bool)> {
+    let size = mesh.bounds().map(|(lo, hi)| (hi - lo).length()).unwrap_or(1.0);
+    let tol = 1e-5 * (1.0 + size);
+    let on_selected = |p: DVec3, q: DVec3| selected.iter().any(|(a, b)| {
+        let d = (*b - *a).normalize_or_zero();
+        let near = |x: DVec3| (x - *a).cross(d).length() < tol && (x - *a).dot(d) > -tol && (x - *a).dot(d) < a.distance(*b) + tol;
+        near(p) && near(q)
+    });
+    let sharp: Vec<(DVec3, DVec3)> = mesh.sharp_edges(30.0).into_iter().map(|(i, j)| (DVec3::from(mesh.vertices[i as usize]), DVec3::from(mesh.vertices[j as usize]))).collect();
+    let mut found: Vec<(DVec3, bool)> = Vec::new();
+    for (a, b) in selected {
+        for v in [*a, *b] {
+            if found.iter().any(|f| f.0.distance(v) < tol) {
+                continue;
+            }
+            let incident: Vec<&(DVec3, DVec3)> = sharp.iter().filter(|(p, q)| p.distance(v) < tol || q.distance(v) < tol).collect();
+            let unselected = incident.iter().filter(|(p, q)| !on_selected(*p, *q)).count();
+            // distinct face directions around the vertex: three for a plain corner, more where a rounded surface starts
+            let mut normals: Vec<DVec3> = Vec::new();
+            for t in &mesh.triangles {
+                if mesh.tri(t).iter().any(|c| c.distance(v) < tol) {
+                    let n = mesh.tri_normal(t);
+                    // a rounded surface starts with facets only ~3 degrees off its neighbours: tell them apart from a flat face
+                    if !normals.iter().any(|m| m.dot(n) > 0.99995) {
+                        normals.push(n);
+                    }
+                }
+            }
+            let all_selected = unselected == 0 && incident.len() >= 3;
+            if all_selected || normals.len() >= 4 {
+                found.push((v, all_selected));
+            }
+        }
+    }
+    found
 }
 
 #[cfg(test)]

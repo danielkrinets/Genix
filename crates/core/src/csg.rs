@@ -82,6 +82,16 @@ impl Solid {
         Solid::from_manifold(self.manifold.minkowski_difference(&ball.manifold))
     }
 
+    /// Collapses sliver triangles and near-collinear vertices that deviate from the surface by less than `tol`.
+    pub fn simplified(&self, tol: f64) -> Solid {
+        Solid::from_manifold(self.manifold.simplify(tol))
+    }
+
+    /// Раздутие: все точки, отстоящие от тела меньше чем на радиус шара `ball`, добавляются.
+    pub fn dilated(&self, ball: &Solid) -> Solid {
+        Solid::from_manifold(self.manifold.minkowski_sum(&ball.manifold))
+    }
+
     /// Пересекаются ли габариты двух тел (быстрая проверка перед булевой операцией).
     pub fn bounds_overlap(&self, other: &Solid) -> bool {
         match (self.mesh.bounds(), other.mesh.bounds()) {

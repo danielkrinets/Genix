@@ -1010,11 +1010,19 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             let v = positive(size, p, if is_fillet { "радиус" } else { "расстояние" })?;
             let op = if is_fillet { EdgeOp::Fillet(v) } else { EdgeOp::Chamfer(v) };
             let (mut cuts, mut adds) = (Vec::new(), Vec::new());
+            // ends where a fillet meets one made earlier, or a corner of three selected edges (see `blend_vertices`)
+            let spots = if is_fillet {
+                let lines: Vec<(DVec3, DVec3)> = edges.iter().filter(|e| !e.circle).map(|e| (DVec3::from(e.a), DVec3::from(e.b))).collect();
+                geom::blend_vertices(b.mesh(), &lines)
+            } else {
+                Vec::new()
+            };
+            let run_on = |p: [f64; 3]| spots.iter().any(|(c, all)| !*all && c.distance(DVec3::from(p)) < 1e-4) as u8 as f64 * (v * 3.0 + 0.5);
             for e in edges {
                 let (t, concave) = if e.circle {
                     geom::circle_tool_span(b.mesh(), DVec3::from(e.b), DVec3::from(e.axis), DVec3::from(e.a), op, e.sweep.unwrap_or(360.0))?
                 } else {
-                    geom::edge_tool(b.mesh(), DVec3::from(e.a), DVec3::from(e.b), op)?
+                    geom::edge_tool_ends(b.mesh(), DVec3::from(e.a), DVec3::from(e.b), op, run_on(e.a), run_on(e.b))?
                 };
                 let s = Solid::from_mesh(&t)?;
                 if concave { adds.push(s) } else { cuts.push(s) }
@@ -1055,6 +1063,26 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                     }
                 }
             }
+            // A corner where all three edges are selected needs a sphere, which the per-edge wedges cannot make:
+            // the body is "opened" with a ball of the fillet radius (shrink, then grow back); what that removes
+            // around such corners is exactly the rolling-ball blend.
+            let mut blended = false;
+            let corners: Vec<DVec3> = spots.iter().filter(|(_, all)| *all).map(|(c, _)| *c).collect();
+            if !corners.is_empty() {
+                let shrink = Solid::from_mesh(&geom::sphere_mesh(DVec3::ZERO, v * 0.99))?;
+                // growing back with a ball 2 % bigger keeps flat faces strictly outside the opened body, so rounding error cannot leave slivers
+                let grow = Solid::from_mesh(&geom::sphere_mesh(DVec3::ZERO, v * 1.01))?;
+                let opened = b.solid.eroded(&shrink).dilated(&grow);
+                if !opened.is_empty() {
+                    let removed = (*b.solid).boolean(&opened, BoolOp::Subtract);
+                    let zones: Vec<Solid> = corners.iter().filter_map(|c| Solid::from_mesh(&geom::sphere_mesh(*c, v * 2.5 + 0.5)).ok()).collect();
+                    let blend = removed.boolean(&Solid::union_all(&zones), BoolOp::Intersect);
+                    if !blend.is_empty() {
+                        cuts.push(blend);
+                        blended = true;
+                    }
+                }
+            }
             // выпуклые рёбра снимают материал, вогнутые — добавляют (скругление внутренних углов)
             let mut r = (*b.solid).clone();
             if !cuts.is_empty() {
@@ -1062,6 +1090,10 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             }
             if !adds.is_empty() {
                 r = r.boolean(&Solid::union_all(&adds), BoolOp::Union);
+            }
+            if blended {
+                // the blend leaves slivers where its facets meet an earlier fillet's: merge what is within 0.1 mm of flat
+                r = r.simplified((v * 0.02).clamp(1e-3, 0.1));
             }
             if r.is_empty() {
                 return Err("результат пуст — размер слишком большой".into());
@@ -1380,6 +1412,47 @@ mod new_ops {
                 assert!((min - 5.0).abs() < 1e-6 && (max - 45.0).abs() < 1e-6, "{min}..{max}");
             }
         }
+    }
+
+    fn cube_with_edges(edges: &[([f64; 3], [f64; 3])], then: Option<&[([f64; 3], [f64; 3])]>) -> f64 {
+        let n = Expr::num;
+        let mut d = Document::default();
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(40.0), d: n(40.0), h: n(40.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        let body = run(&d).model().bodies[0].id;
+        d.insert(FeatureKind::Fillet { body, edges: edges.iter().map(|(a, b)| EdgeRef::line(*a, *b)).collect(), radius: n(5.0) });
+        if let Some(more) = then {
+            let body = run(&d).model().bodies[0].id;
+            d.insert(FeatureKind::Fillet { body, edges: more.iter().map(|(a, b)| EdgeRef::line(*a, *b)).collect(), radius: n(5.0) });
+        }
+        run(&d).model().bodies[0].solid.volume()
+    }
+
+    #[test]
+    fn a_cube_with_all_twelve_edges_rounded_gets_spherical_corners() {
+        let mut edges = Vec::new();
+        for z in [0.0, 40.0] {
+            edges.extend([([0.0, 0.0, z], [40.0, 0.0, z]), ([40.0, 0.0, z], [40.0, 40.0, z]), ([40.0, 40.0, z], [0.0, 40.0, z]), ([0.0, 40.0, z], [0.0, 0.0, z])]);
+        }
+        for (x, y) in [(0.0, 0.0), (40.0, 0.0), (40.0, 40.0), (0.0, 40.0)] {
+            edges.push(([x, y, 0.0], [x, y, 40.0]));
+        }
+        // a cube of side 30 grown by a ball of radius 5: a^3 + 6 a^2 r + 3 pi a r^2 + 4/3 pi r^3
+        let (a, r) = (30.0_f64, 5.0_f64);
+        let ideal = a.powi(3) + 6.0 * a * a * r + 3.0 * std::f64::consts::PI * a * r * r + 4.0 / 3.0 * std::f64::consts::PI * r.powi(3);
+        let v = cube_with_edges(&edges, None);
+        assert!((v - ideal).abs() / ideal < 0.002, "volume {v}, a ball-rounded cube has {ideal}");
+    }
+
+    #[test]
+    fn rounding_an_edge_that_meets_an_earlier_fillet_continues_through_it() {
+        let top = [([0.0, 0.0, 40.0], [40.0, 0.0, 40.0]), ([40.0, 0.0, 40.0], [40.0, 40.0, 40.0]), ([40.0, 40.0, 40.0], [0.0, 40.0, 40.0]), ([0.0, 40.0, 40.0], [0.0, 0.0, 40.0])];
+        let verticals = [([0.0, 0.0, 0.0], [0.0, 0.0, 35.0]), ([40.0, 0.0, 0.0], [40.0, 0.0, 35.0]), ([40.0, 40.0, 0.0], [40.0, 40.0, 35.0]), ([0.0, 40.0, 0.0], [0.0, 40.0, 35.0])];
+        let first = cube_with_edges(&top, None);
+        let both = cube_with_edges(&top, Some(&verticals));
+        // four vertical rounds of 5 mm over 35 mm remove 4 * 0.2146 * 25 * 35 = 751 mm3 on their own; the old result stopped at the fillet and
+        // left the overhanging corners, removing only about 755 mm3 in total
+        let removed = first - both;
+        assert!(removed > 760.0 && removed < 840.0, "removed {removed}");
     }
 
     #[test]
