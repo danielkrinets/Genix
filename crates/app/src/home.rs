@@ -265,12 +265,29 @@ fn spawn_thumb(key: String, doc: fusion_core::Document, pending: PendingFrames, 
             let mut ev = fusion_core::Evaluator::default();
             ev.evaluate(&doc);
             let model = ev.model();
-            let meshes: Vec<&fusion_core::Mesh> = model.bodies.iter().filter(|b| !doc.hidden_bodies.contains(&b.id)).map(|b| b.mesh()).collect();
+            let mut meshes: Vec<&fusion_core::Mesh> = model.bodies.iter().filter(|b| !doc.hidden_bodies.contains(&b.id)).map(|b| b.mesh()).collect();
+            // a document that is only sketches has no bodies: show its regions as thin plates
+            let plates = if meshes.is_empty() { sketch_plates(&doc) } else { Vec::new() };
+            meshes.extend(plates.iter());
             crate::thumb::render(&meshes, crate::camera::Camera::ISO.0, crate::camera::Camera::ISO.1, 528, 352)
         }).ok().flatten();
         pending.lock().unwrap().push((key, img));
         busy.fetch_sub(1, Ordering::SeqCst);
     });
+}
+
+/// Thin plates under every sketch region, so a model made only of sketches still gets a preview.
+fn sketch_plates(doc: &fusion_core::Document) -> Vec<fusion_core::Mesh> {
+    let mut out = Vec::new();
+    for f in doc.features.iter().filter(|f| !f.suppressed) {
+        if let fusion_core::doc::FeatureKind::Sketch { plane, sketch } = &f.kind {
+            let regions = sketch.regions();
+            let size = regions.iter().flat_map(|r| r.outer.iter()).fold(0.0_f64, |m, p| m.max(p[0].abs()).max(p[1].abs()));
+            let thickness = (size * 0.03).max(0.05);
+            out.extend(regions.iter().filter_map(|r| fusion_core::geom::extrude_region(plane, r, 0.0, thickness)));
+        }
+    }
+    out
 }
 
 /// Rendered preview frames travelling from worker threads to the UI thread.

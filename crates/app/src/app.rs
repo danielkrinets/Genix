@@ -1292,6 +1292,16 @@ impl App {
 
     /// The model that clicks and the pointer hit-test against. An extrude shows its result (so growing it can be watched),
     /// but a face for it is picked on the body as it was before the extrude: the default profile already extrudes the shown one.
+    /// Bodies listed in the tree: a command in progress has no body of its own there yet.
+    fn tree_model(&self) -> Arc<Model> {
+        if let Mode::Command(c) = &self.mode {
+            if let Some(i) = self.doc.index_of(c.uid) {
+                return self.ev.model_before(i);
+            }
+        }
+        self.shown()
+    }
+
     fn pick_model(&self) -> Arc<Model> {
         if let Mode::Command(c) = &self.mode {
             if c.pick == PickTarget::Profiles && self.doc.feature(c.uid).is_some_and(|f| matches!(f.kind, FeatureKind::Extrude { .. })) {
@@ -2190,7 +2200,7 @@ impl App {
                 tree_row(ui, false, |ui| { crate::widgets::checkbox(ui, &mut self.show_planes, tr("Показывать плоскости")); });
                 tree_row(ui, false, |ui| { crate::widgets::checkbox(ui, &mut self.settings.show_grid, tr("Показывать сетку")); });
             });
-            let model = self.shown();
+            let model = self.tree_model();
             tree_group(ui, "t_bodies", "tree_bodies", tf!("Тела ({})", model.bodies.len()), true, |ui| {
                 if model.bodies.is_empty() {
                     tree_row(ui, false, |ui| { ui.label(RichText::new(tr("Пока нет тел")).weak()); });
@@ -3454,7 +3464,11 @@ impl App {
     fn show_dialogs(&mut self, ctx: &egui::Context) {
         let now = self.now;
         if self.params_open {
-            self.params_window(ctx);
+            if !crate::widgets::text_input_active(ctx) && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                self.params_open = false;
+            } else {
+                self.params_window(ctx);
+            }
         }
         if self.help_open {
             self.help_window(ctx);
