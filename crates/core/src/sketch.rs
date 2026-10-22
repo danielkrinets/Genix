@@ -1101,6 +1101,9 @@ fn arrange(s: &Sketch) -> Arrangement {
                 }
             }
             path.push(b_pt);
+            // a cut at a polyline vertex (e.g. where a circle touches a line at its seam) repeats that point: a zero-length
+            // segment would give the half-edge a bogus direction and the face walk would take a wrong turn
+            path.dedup_by(|p, q| (p[0] - q[0]).abs() <= tol && (p[1] - q[1]).abs() <= tol);
             let (va, vb) = (vid(a), vid(b_pt));
             if va == vb && path.len() < 4 {
                 continue;
@@ -1563,5 +1566,62 @@ mod tests {
             // rect∩circle, 2 corner pieces, the circle's left/top/bottom caps: at least 4 separate regions
             assert!(areas.len() >= 3, "r={rr}: {areas:?}");
         }
+    }
+
+    /// Fuzz: regions of random circles and rectangles must tile their union (sum of areas = union area), also for near-tangent shapes.
+    #[test]
+    fn regions_tile_the_union_of_random_shapes() {
+        let mut seed = 0x9E3779B97F4A7C15_u64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for case in 0..60 {
+            let mut s = Sketch::default();
+            let mut circles = Vec::new();
+            let mut rects = Vec::new();
+            for _ in 0..3 {
+                if rnd() < 0.5 {
+                    let (c, r) = ([(rnd() * 20.0).round(), (rnd() * 20.0).round()], 3.0 + (rnd() * 8.0).round());
+                    s.add_circle(c, r);
+                    circles.push((c, r));
+                } else {
+                    let (a, b) = ([(rnd() * 20.0).round(), (rnd() * 20.0).round()], [4.0 + (rnd() * 12.0).round(), 4.0 + (rnd() * 12.0).round()]);
+                    s.add_rect(a, [a[0] + b[0], a[1] + b[1]]);
+                    rects.push((a, [a[0] + b[0], a[1] + b[1]]));
+                }
+            }
+            let regions = s.regions();
+            let total: f64 = regions.iter().map(|r| r.area()).sum();
+            // reference: grid sampling of the union
+            let n = 400;
+            let (lo, hi) = (-12.0, 44.0);
+            let h = (hi - lo) / n as f64;
+            let mut inside = 0usize;
+            for i in 0..n {
+                for j in 0..n {
+                    let p = [lo + (i as f64 + 0.5) * h, lo + (j as f64 + 0.5) * h];
+                    let in_c = circles.iter().any(|(c, r)| (p[0] - c[0]).hypot(p[1] - c[1]) < *r);
+                    let in_r = rects.iter().any(|(a, b)| p[0] > a[0] && p[0] < b[0] && p[1] > a[1] && p[1] < b[1]);
+                    if in_c || in_r {
+                        inside += 1;
+                    }
+                }
+            }
+            let union = inside as f64 * h * h;
+            assert!((total - union).abs() <= 0.02 * union + 1.0, "case {case}: regions {total:.2} vs union {union:.2}, circles {circles:?}, rects {rects:?}");
+        }
+    }
+
+    #[test]
+    fn circle_inscribed_in_rect_touching_sides() {
+        let mut s = Sketch::default();
+        s.add_rect([13.0, 11.0], [19.0, 18.0]);
+        s.add_circle([16.0, 14.0], 3.0);
+        let areas: Vec<f64> = s.regions().iter().map(|r| r.area()).collect();
+        let total: f64 = areas.iter().sum();
+        assert!((total - 42.0).abs() < 0.01, "{areas:?}");
     }
 }
