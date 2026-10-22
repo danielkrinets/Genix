@@ -2,6 +2,7 @@
 
 Every change, even a small fix, gets a new version: `0.00.N — what was added` (up to five words, English only). Newest first.
 
+- 0.00.13 — Sprite slime mascot
 - 0.00.12 — Oak wood material
 - 0.00.11 — Fillet picks single body
 - 0.00.10 — Depth range follows scene
