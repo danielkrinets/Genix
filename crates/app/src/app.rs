@@ -169,7 +169,8 @@ impl Materials {
         ("Латунь", 8.5, Color32::from_rgb(191, 145, 52), 0.78),
         ("PLA (3D-печать)", 1.24, Color32::from_rgb(103, 151, 214), 0.16),
         ("ABS/PETG", 1.05, Color32::from_rgb(103, 111, 126), 0.24),
-        ("Дерево (сосна)", 0.52, Color32::from_rgb(177, 123, 73), 0.06),
+        // reflection 3.06: the shader's sign for the oak texture (3 + the real reflection); the colour is only the swatch and the tint reference
+        ("Дерево", 0.75, Color32::from_rgb(177, 123, 73), 3.06),
         // reflection 2.0 is the shader's sign for frosted glass
         ("Стекло", 2.5, Color32::from_rgb(170, 220, 236), 2.0),
     ];
@@ -378,7 +379,7 @@ const ORIGIN_PLANES: [Plane; 3] = [Plane::XY, Plane::XZ, Plane::YZ];
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, open: Option<PathBuf>) -> Self {
         let rs = cc.wgpu_render_state.as_ref().expect("нужен wgpu-рендер");
-        rs.renderer.write().callback_resources.insert(GpuScene::new(&rs.device, rs.target_format, MSAA));
+        rs.renderer.write().callback_resources.insert(GpuScene::new(&rs.device, &rs.queue, rs.target_format, MSAA));
         let mut settings = Settings::load();
         // an existing install has already seen the splash: it skips the first-launch setup
         if !settings.splash_seen.is_empty() { settings.setup_done = true; }
@@ -3311,7 +3312,7 @@ impl egui_wgpu::CallbackTrait for ViewCallback {
         scene.set_style(self.style.0, self.style.1);
         scene.set_overlay(device, queue, &self.overlay);
         scene.set_frame(device, queue, self.frame, &self.colors);
-        let glass_present = self.colors.iter().any(|c| c[3] > 1.5);
+        let glass_present = self.colors.iter().any(|c| c[3] > 1.5 && c[3] < 2.5);
         scene.prepare_glass(device, queue, _enc, (self.frame.glass[2] as u32, self.frame.glass[3] as u32), glass_present);
         Vec::new()
     }

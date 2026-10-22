@@ -132,6 +132,9 @@ pub struct GpuScene {
     glass_wanted: bool,
     bgl: wgpu::BindGroupLayout,
     bind: wgpu::BindGroup,
+    /// the oak grain (sampled triplanar by bodies of the wood material)
+    wood: wgpu::TextureView,
+    wood_sampler: wgpu::Sampler,
     frame: wgpu::Buffer,
     colors: DynBuf,
     faces: DynBuf,
@@ -147,8 +150,49 @@ pub struct GpuScene {
     pub bodies_gen: u64,
 }
 
+
+/// The oak texture with its mip chain (made on the CPU), repeating, anisotropic.
+fn wood_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> (wgpu::TextureView, wgpu::Sampler) {
+    let img = image::load_from_memory(include_bytes!("../assets/wood.png")).map(|i| i.to_rgba8()).unwrap_or_else(|_| image::RgbaImage::from_pixel(4, 4, image::Rgba([177, 123, 73, 255])));
+    let (w, h) = img.dimensions();
+    let levels = 32 - w.max(h).leading_zeros();
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("wood"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: levels,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let mut level = img;
+    for m in 0..levels {
+        let (lw, lh) = level.dimensions();
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: m, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            level.as_raw(),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * lw), rows_per_image: Some(lh) },
+            wgpu::Extent3d { width: lw, height: lh, depth_or_array_layers: 1 },
+        );
+        if m + 1 < levels {
+            level = image::imageops::resize(&level, (lw / 2).max(1), (lh / 2).max(1), image::imageops::FilterType::Triangle);
+        }
+    }
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        address_mode_u: wgpu::AddressMode::Repeat,
+        address_mode_v: wgpu::AddressMode::Repeat,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::FilterMode::Linear,
+        anisotropy_clamp: 8,
+        ..Default::default()
+    });
+    (tex.create_view(&wgpu::TextureViewDescriptor::default()), sampler)
+}
+
 impl GpuScene {
-    pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat, samples: u32) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, color_format: wgpu::TextureFormat, samples: u32) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("genix shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
@@ -173,12 +217,15 @@ impl GpuScene {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[&bgl], push_constant_ranges: &[] });
         let frame = device.create_buffer(&desc("frame", std::mem::size_of::<FrameUniform>() as u64, wgpu::BufferUsages::UNIFORM));
         let colors = DynBuf::new(device, "body colors", wgpu::BufferUsages::STORAGE);
-        let bind = Self::make_bind(device, &bgl, &frame, &colors.buf);
+        let (wood, wood_sampler) = wood_texture(device, queue);
+        let bind = Self::make_bind(device, &bgl, &frame, &colors.buf, &wood, &wood_sampler);
 
         struct P<'a> {
             label: &'a str,
@@ -319,6 +366,8 @@ impl GpuScene {
             tri_top,
             bgl,
             bind,
+            wood,
+            wood_sampler,
             frame,
             colors,
             faces: DynBuf::new(device, "faces", vb),
@@ -334,13 +383,15 @@ impl GpuScene {
         }
     }
 
-    fn make_bind(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, frame: &wgpu::Buffer, colors: &wgpu::Buffer) -> wgpu::BindGroup {
+    fn make_bind(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, frame: &wgpu::Buffer, colors: &wgpu::Buffer, wood: &wgpu::TextureView, wood_sampler: &wgpu::Sampler) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: frame.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: colors.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(wood) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(wood_sampler) },
             ],
         })
     }
@@ -364,7 +415,7 @@ impl GpuScene {
         queue.write_buffer(&self.frame, 0, bytemuck::bytes_of(&f));
         let data: Vec<[f32; 4]> = if colors.is_empty() { vec![[0.0; 4]] } else { colors.to_vec() };
         if self.colors.write(device, queue, &data) {
-            self.bind = Self::make_bind(device, &self.bgl, &self.frame, &self.colors.buf);
+            self.bind = Self::make_bind(device, &self.bgl, &self.frame, &self.colors.buf, &self.wood, &self.wood_sampler);
         }
     }
 
@@ -543,7 +594,7 @@ pub mod offscreen {
             let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
             let adapter = block(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
             let (device, queue) = block(adapter.request_device(&wgpu::DeviceDescriptor::default(), None)).ok()?;
-            let scene = GpuScene::new(&device, FMT, SAMPLES);
+            let scene = GpuScene::new(&device, &queue, FMT, SAMPLES);
             Some(Offscreen { device, queue, scene, w, h })
         }
 

@@ -13,6 +13,9 @@ struct Frame {
 @group(0) @binding(0) var<uniform> frame: Frame;
 // цвет каждого тела (альфа 0 — тело скрыто)
 @group(0) @binding(1) var<storage, read> body_colors: array<vec4<f32>>;
+// oak grain for the wood material (reflection 3 + x in the body colour's alpha)
+@group(0) @binding(2) var wood_tex: texture_2d<f32>;
+@group(0) @binding(3) var wood_samp: sampler;
 
 fn encode(c: vec3<f32>) -> vec3<f32> {
     if frame.viewport.z > 0.5 {
@@ -66,7 +69,7 @@ fn vs_face(v: FaceIn) -> FaceOut {
     o.color = body_colors[v.slot];
     o.clip = frame.view_proj * vec4<f32>(v.pos, 1.0);
     // hidden bodies and glass bodies (reflection 2) are left out of the opaque pass; glass has its own pass
-    if abs(o.color.a) < 0.001 || o.color.a > 1.5 {
+    if abs(o.color.a) < 0.001 || (o.color.a > 1.5 && o.color.a < 2.5) {
         o.clip = vec4<f32>(0.0, 0.0, -2.0, 1.0);
     }
     o.nrm = v.nrm;
@@ -79,7 +82,7 @@ fn vs_glass(v: FaceIn) -> FaceOut {
     var o: FaceOut;
     o.color = body_colors[v.slot];
     o.clip = frame.view_proj * vec4<f32>(v.pos, 1.0);
-    if o.color.a < 1.5 {
+    if o.color.a < 1.5 || o.color.a > 2.5 {
         o.clip = vec4<f32>(0.0, 0.0, -2.0, 1.0);
     }
     o.nrm = v.nrm;
@@ -138,11 +141,27 @@ fn fs_face(i: FaceOut) -> @location(0) vec4<f32> {
     let diff = max(dot(n, l), 0.0);
     let h = normalize(l + v);
     let cutter = i.color.a < 0.0;
-    let reflection = select(clamp(i.color.a, 0.0, 1.0), 0.12, cutter);
+    let is_wood = i.color.a > 2.5;
+    let reflection = select(clamp(select(i.color.a, i.color.a - 3.0, is_wood), 0.0, 1.0), 0.12, cutter);
     // the material's "reflection" decides the family: low = plastic/wood, high = metal
     let metal = smoothstep(0.45, 0.6, reflection);
     let rough = select(mix(0.62, 0.26, clamp(reflection / 0.4, 0.0, 1.0)), mix(0.34, 0.06, clamp((reflection - 0.55) / 0.4, 0.0, 1.0)), metal > 0.5);
-    let albedo = i.color.rgb;
+    // wood: the grain is projected along the three axes and blended by the face normal, so any shape gets it without UVs;
+    // one tile is 160 mm, the grain runs along X on the top and the long sides. A selected or hovered wooden body (its colour is
+    // not the material's own) is recoloured with the grain's own brightness, so the grain stays visible under the highlight.
+    let wp = i.world / 160.0;
+    let w3 = pow(abs(n), vec3<f32>(6.0));
+    let wsum = max(w3.x + w3.y + w3.z, 1e-4);
+    let tx = textureSample(wood_tex, wood_samp, wp.yz).rgb;
+    let ty = textureSample(wood_tex, wood_samp, wp.xz).rgb;
+    let tz = textureSample(wood_tex, wood_samp, wp.xy).rgb;
+    let grain = (tx * w3.x + ty * w3.y + tz * w3.z) / wsum;
+    let swatch = vec3<f32>(0.440, 0.198, 0.067);
+    let luma = vec3<f32>(0.2126, 0.7152, 0.0722);
+    let marked = smoothstep(0.02, 0.2, length(i.color.rgb - swatch));
+    let recolored = i.color.rgb * (dot(grain, luma) / max(dot(i.color.rgb, luma), 1e-3));
+    let wood = mix(grain, recolored, 0.65 * marked);
+    let albedo = select(i.color.rgb, wood, is_wood);
     let ndv = max(dot(n, v), 0.0);
     let f0 = mix(vec3<f32>(0.045), albedo, metal);
     let fres = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - ndv, 5.0);
