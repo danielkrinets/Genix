@@ -58,7 +58,7 @@ impl Updates {
         ui.heading(tr("Обновления"));
         ui.label(tr("Официальные сборки Genix"));
         ui.add_space(20.0);
-        ui.label(format!("Genix {} · {}", env!("CARGO_PKG_VERSION"), std::env::consts::OS));
+        ui.label(format!("Genix {} · {}", crate::version::version(), std::env::consts::OS));
         ui.label(RichText::new(tr("Установленная версия")).color(crate::home::muted(ui)));
         ui.add_space(16.0);
         if ui.add_enabled(self.pending.is_none(), egui::Button::new(tr("Проверить обновления"))).clicked() {

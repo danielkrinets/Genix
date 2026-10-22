@@ -28,7 +28,7 @@ pub fn dir() -> Option<PathBuf> {
 pub fn system_info() -> String {
     format!(
         "Genix {}\nOS: {} {}\nLanguage: {:?}\nLength unit: {}",
-        env!("CARGO_PKG_VERSION"),
+        crate::version::version(),
         std::env::consts::OS,
         std::env::consts::ARCH,
         crate::i18n::lang(),

@@ -243,6 +243,11 @@ pub struct App {
     crash_checked: bool,
     /// sketch picked in the tree: Delete removes it
     tree_sketch: Option<u64>,
+    /// wheel zoom (natural log of the factor) still to be applied, and where it is aimed
+    zoom_pending: f64,
+    zoom_cursor: Option<egui::Pos2>,
+    /// Align: the target as it was before hover previews started changing it
+    align_saved: Option<(fusion_core::Plane, Option<[f64; 3]>)>,
     confirm: Option<Confirm>,
     allow_close: bool,
     need_fit: bool,
@@ -459,6 +464,9 @@ impl App {
             report: Default::default(),
             crash_checked: false,
             tree_sketch: None,
+            zoom_pending: 0.0,
+            zoom_cursor: None,
+            align_saved: None,
             confirm: None,
             allow_close: false,
             need_fit: false,
@@ -495,6 +503,39 @@ impl App {
     fn do_redo(&mut self) {
         if let Some(d) = self.redo.pop() {
             self.undo.push(std::mem::replace(&mut self.doc, d));
+            self.after_doc_change();
+        }
+    }
+
+    /// Lay on: while the target is being chosen, the body is shown already lying on the face or plane under the cursor.
+    /// Moving away gives back the target chosen before; a click keeps the previewed one.
+    fn align_hover_preview(&mut self) {
+        let uid = match &self.mode {
+            Mode::Command(c) if c.pick == PickTarget::AlignTarget => c.uid,
+            _ => {
+                self.align_saved = None;
+                return;
+            }
+        };
+        let model = self.pick_model();
+        let (o, d) = self.last_ray;
+        let user_planes = self.doc.offset_planes();
+        let Some(FeatureKind::PlaceOnPlane { body, target, to, .. }) = self.doc.feature(uid).map(|f| f.kind.clone()) else { return };
+        let wanted: Option<(fusion_core::Plane, Option<[f64; 3]>)> = match self.hover {
+            Some(Hit::Body { slot, tri, t }) if model.bodies.get(slot).is_some_and(|b| b.id != body) => {
+                self.face_plane(&model, slot, tri).map(|(pl, _)| (pl, Some((o + d * t).to_array())))
+            }
+            Some(Hit::OriginPlane(i, _)) => Some((ORIGIN_PLANES[i], None)),
+            Some(Hit::UserPlane(i, _)) => user_planes.get(i).map(|(_, _, pl)| (*pl, None)),
+            _ => None,
+        };
+        let saved = *self.align_saved.get_or_insert((target, to));
+        let want = wanted.unwrap_or(saved);
+        if (target, to) != want {
+            if let Some(FeatureKind::PlaceOnPlane { target, to, .. }) = self.doc.feature_mut(uid).map(|f| &mut f.kind) {
+                *target = want.0;
+                *to = want.1;
+            }
             self.after_doc_change();
         }
     }
@@ -925,7 +966,7 @@ impl App {
             ("fillet", tr("Скругление").to_string(), Start("fillet"), true),
             ("chamfer", tr("Фаска").to_string(), Start("chamfer"), true),
             ("press_pull", tr("Вытянуть грань").to_string(), Start("press_pull"), true),
-            ("align", tr("Выровнять").to_string(), Start("place"), true),
+            ("align", tr("Наложить").to_string(), Start("place"), true),
             ("move", tr("Переместить").to_string(), Start("move"), true),
             ("nav_fit", tr("Вписать модель").to_string(), Fit, true),
             ("file_save", tr("Сохранить").to_string(), Save, false),
@@ -2657,6 +2698,7 @@ impl App {
         if resp.hovered() {
             let cursor = resp.hover_pos();
             let mut zoom = 1.0f64;
+            let mut wheel = 0.0f64;
             let zk = self.settings.zoom_speed as f64 * if self.settings.invert_zoom { -1.0 } else { 1.0 };
             let mut pan = egui::Vec2::ZERO;
             ctx.input(|i| {
@@ -2670,7 +2712,9 @@ impl App {
                                 } else if self.settings.controls == ControlScheme::Blender && modifiers.shift {
                                     pan.y += delta.y * 40.0; // Shift + колесо — по вертикали
                                 } else {
-                                    zoom *= 0.88f64.powf(delta.y as f64 * zk)
+                                    // every notch counts at least as one full step of the chosen size, however small the reported delta
+                                    let ticks = if delta.y == 0.0 { 0.0 } else { delta.y.signum() as f64 * (delta.y.abs() as f64).max(1.0) };
+                                    wheel += 0.88f64.ln() * ticks * zk;
                                 }
                             }
                             // трекпад: два пальца — пан, с ⌘/Ctrl — зум
@@ -2690,8 +2734,21 @@ impl App {
                     zoom /= z as f64;
                 }
             });
+            // the wheel's zoom is not applied at once: it is spent over the next frames, so it glides
+            self.zoom_pending += wheel;
+            if cursor.is_some() {
+                self.zoom_cursor = cursor;
+            }
+            if self.zoom_pending.abs() > 1e-4 {
+                let step = if crate::theme::reduced_motion() { self.zoom_pending } else { self.zoom_pending * (1.0 - (-ctx.input(|i| i.stable_dt) as f64 * 14.0).exp()) };
+                self.zoom_pending -= step;
+                zoom *= step.exp();
+                ctx.request_repaint();
+            } else {
+                self.zoom_pending = 0.0;
+            }
             if zoom != 1.0 {
-                self.cam.zoom_at(zoom, rect, cursor);
+                self.cam.zoom_at(zoom, rect, self.zoom_cursor.or(cursor));
             }
             // два пальца на сенсорном экране (iPad/iPhone) — сдвиг вида
             if let Some(mt) = ctx.multi_touch() {
@@ -2714,6 +2771,7 @@ impl App {
                 self.hover = if manip_active { None } else { let pick = self.pick_model(); self.hit_test(&pick, o, dir) };
             }
         }
+        self.align_hover_preview();
         // ребро под курсором (фаска и скругление)
         self.hover_edge = None;
         if matches!(&self.mode, Mode::Command(c) if c.pick == PickTarget::Edges) && !resp.dragged() {
@@ -2757,7 +2815,7 @@ impl App {
                     ui.close_menu();
                     self.start_sketch();
                 }
-                for (icon, label, kind) in [("extrude", "Выдавить", "extrude"), ("hole", "Отверстие", "hole"), ("fillet", "Скругление", "fillet"), ("chamfer", "Фаска", "chamfer"), ("press_pull", "Вытянуть грань", "press_pull"), ("align", "Выровнять", "place")] {
+                for (icon, label, kind) in [("extrude", "Выдавить", "extrude"), ("hole", "Отверстие", "hole"), ("fillet", "Скругление", "fillet"), ("chamfer", "Фаска", "chamfer"), ("press_pull", "Вытянуть грань", "press_pull"), ("align", "Наложить", "place")] {
                     if menu_item(ui, icon, tr(label)) {
                         ui.close_menu();
                         self.start_command(kind, now);
@@ -4274,6 +4332,8 @@ impl App {
                     });
                     row(ui, tr("Скорость масштаба"), &mut |ui| {
                         ui.add(egui::Slider::new(&mut st.zoom_speed, 0.3..=3.0).fixed_decimals(1));
+                        // one wheel notch scales the view by exactly this much
+                        ui.label(RichText::new(format!("×{:.2}", (1.0 / 0.88f64).powf(st.zoom_speed as f64))).weak());
                     });
                     row(ui, tr("Направление масштаба"), &mut |ui| {
                         crate::widgets::toggle(ui, &mut st.invert_zoom, tr("обратное"));
@@ -4284,7 +4344,7 @@ impl App {
                     ui.collapsing("React Bits · License", |ui| {
                         egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| { ui.label(include_str!("../../../docs/REACT_BITS_LICENSE.md")); });
                     });
-                    ui.label(format!("{} {}", tr("Версия"), env!("CARGO_PKG_VERSION")));
+                    ui.label(format!("{} {} — {}", tr("Версия"), crate::version::version(), crate::version::note()));
                     ui.label(tr("Параметрический 3D-CAD: чертежи, твердотельное моделирование, история построения."));
                     ui.add_space(6.0);
                     if let Some(p) = Settings::path() {

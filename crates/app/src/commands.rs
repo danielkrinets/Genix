@@ -25,7 +25,7 @@ pub enum PickTarget {
     Edges,
     /// Линия чертежа для пути трубы.
     Path,
-    /// Куда выровнять: грань другого тела или плоскость.
+    /// Куда наложить: грань другого тела или плоскость.
     AlignTarget,
 }
 
@@ -382,7 +382,7 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                 *target = target.flipped();
                 changed = true;
             }
-            ui.label(RichText::new(tr("Как «Выровнять» во Fusion: грань ложится на грань или плоскость, точка щелчка совпадает с точкой назначения")).weak().small());
+            ui.label(RichText::new(tr("Грань ложится на грань или плоскость, точка щелчка совпадает с точкой назначения")).weak().small());
         }
         FeatureKind::PressPull { distance, .. } => {
             section(ui, tr("ГРАНЬ"));

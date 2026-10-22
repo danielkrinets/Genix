@@ -36,7 +36,7 @@ pub const CREATE: &[Item] = &[
 pub const MODIFY: &[Item] = &[
     it("move", "✚", "Переместить", "M", "Сдвиг/поворот/копирование тел"),
     it("press_pull", "⇅", "Вытянуть грань", "", "Вытянуть или вдавить плоскую грань тела в любую сторону"),
-    it("place", "⤓", "Выровнять", "", "Как Align во Fusion: грань тела ложится на грань другого тела или на плоскость"),
+    it("place", "⤓", "Наложить", "", "Грань тела ложится на грань другого тела или на плоскость"),
     it("scale", "⇲", "Масштаб", "", "Изменить размер тел"),
     it("fillet", "◠", "Скругление", "", "Скруглить прямые рёбра"),
     it("shell", "◰", "Оболочка", "", "Выдолбить тело, оставив стенки"),
@@ -103,10 +103,12 @@ pub fn group(ui: &mut egui::Ui, title: &'static str, quick: &[&str], all: &'stat
         let col = if enabled { ui.visuals().text_color() } else { ui.visuals().weak_text_color() };
         ui.painter().text(title_rect.left_center() + egui::vec2(8.0, 0.0), Align2::LEFT_CENTER, tr(title), FontId::proportional(12.5), col);
         let turn = crate::widgets::feedback(ui, title_resp.id.with("chevron"), open);
-        let center = title_rect.right_center() - egui::vec2(13.0, 0.0);
+        // the arrow answers the pointer too: it takes the accent colour and sinks a little
+        let hov = crate::widgets::feedback(ui, title_resp.id.with("chevron-hover"), title_resp.hovered() && enabled);
+        let center = title_rect.right_center() - egui::vec2(13.0, -1.5 * hov);
         let rot = egui::emath::Rot2::from_angle(std::f32::consts::PI * turn);
         let points = [egui::vec2(-5.0, -2.0), egui::vec2(0.0, 3.0), egui::vec2(5.0, -2.0)].map(|p| center + rot * p);
-        ui.painter().line(points.to_vec(), Stroke::new(2.0_f32, col));
+        ui.painter().line(points.to_vec(), Stroke::new(2.0_f32, col.lerp_to_gamma(accent(), hov)));
         // one physical click can arrive twice within a few frames; a short lock keeps the list from opening and closing at once
         let now = ui.input(|i| i.time);
         let last = ui.data(|d| d.get_temp::<f64>(popup_id.with("toggled"))).unwrap_or(f64::NEG_INFINITY);

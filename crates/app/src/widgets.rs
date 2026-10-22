@@ -271,7 +271,7 @@ pub fn feedback(ui: &egui::Ui, id: egui::Id, active: bool) -> f32 {
     feedback_duration(ui, id, active, 0.16, false)
 }
 
-fn feedback_duration(ui: &egui::Ui, id: egui::Id, active: bool, duration: f64, linear: bool) -> f32 {
+pub(crate) fn feedback_duration(ui: &egui::Ui, id: egui::Id, active: bool, duration: f64, linear: bool) -> f32 {
     let now = ui.input(|i| i.time);
     let target = if active { 1.0 } else { 0.0 };
     let keyboard = ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })));
@@ -393,7 +393,7 @@ pub fn checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::Respo
     response
 }
 
-fn paint_check(painter: &egui::Painter, center: egui::Pos2, progress: f32, color: Color32) {
+pub(crate) fn paint_check(painter: &egui::Painter, center: egui::Pos2, progress: f32, color: Color32) {
     if progress <= 0.0 { return; }
     let a = center + egui::vec2(-5.0,0.0);
     let b = center + egui::vec2(-1.0,4.0);

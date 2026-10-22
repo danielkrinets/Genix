@@ -234,7 +234,7 @@ impl FeatureKind {
             FeatureKind::Primitive { shape: Shape::Torus { .. }, .. } => "Тор",
             FeatureKind::Hole { .. } => "Отверстие",
             FeatureKind::PressPull { .. } => "Вытягивание грани",
-            FeatureKind::PlaceOnPlane { .. } => "Выровнять",
+            FeatureKind::PlaceOnPlane { .. } => "Наложить",
             FeatureKind::Coil { .. } => "Спираль",
             FeatureKind::Pipe { .. } => "Труба",
             FeatureKind::Sweep { .. } => "По траектории",

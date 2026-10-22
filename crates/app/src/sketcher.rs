@@ -610,7 +610,7 @@ impl SketchSession {
     }
 
     fn accepts_typing(&self) -> bool {
-        matches!(self.pending, Pending::Line { .. } | Pending::Rect { .. } | Pending::Circle { .. } | Pending::Arc2 { .. })
+        matches!(self.pending, Pending::Line { .. } | Pending::Rect { .. } | Pending::Circle { .. } | Pending::Arc2 { .. } | Pending::Slot1 { .. } | Pending::Slot2 { .. })
     }
 
     fn open_dim_editor(&mut self, i: usize) {
@@ -878,6 +878,24 @@ impl SketchSession {
                     return;
                 };
                 self.finish_circle(c, pt, d / 2.0, Some(e), params);
+            }
+            Pending::Slot1 { a, pa } => {
+                let Some((_, len)) = parse(&self.typed[0]) else {
+                    self.message = Some(tr("Неверная длина").into());
+                    return;
+                };
+                let dir = (DVec2::from(cur.pos) - DVec2::from(a)).normalize_or(DVec2::X);
+                self.pending = Pending::Slot2 { a, pa, b: (DVec2::from(a) + dir * len).to_array(), pb: None };
+                self.typed = Default::default();
+            }
+            Pending::Slot2 { a, pa, b, pb } => {
+                let Some((_, w)) = parse(&self.typed[0]) else {
+                    self.message = Some(tr("Неверная ширина").into());
+                    return;
+                };
+                let (_, n) = slot_axes(a, b);
+                self.finish_slot(a, pa, b, pb, [a[0] + n[0] * w / 2.0, a[1] + n[1] * w / 2.0], params);
+                self.typed = Default::default();
             }
             Pending::Arc2 { a, pa, b, pb } => {
                 let Some((_, r)) = parse(&self.typed[0]) else {
@@ -1562,6 +1580,11 @@ impl SketchSession {
                         vec![field(0, "Ширина", cur.map(|c| (c[0] - p0[0]).abs())), field(1, "Высота", cur.map(|c| (c[1] - p0[1]).abs()))]
                     }
                     Pending::Circle { c: cc, .. } => vec![field(0, "Диаметр", cur.map(|c| 2.0 * DVec2::from(cc).distance(DVec2::from(c))))],
+                    Pending::Slot1 { a, .. } => vec![field(0, "Длина", cur.map(|c| DVec2::from(a).distance(DVec2::from(c))))],
+                    Pending::Slot2 { a, b, .. } => {
+                        let (_, n) = slot_axes(a, b);
+                        vec![field(0, "Ширина", cur.map(|c| 2.0 * ((c[0] - a[0]) * n[0] + (c[1] - a[1]) * n[1]).abs()))]
+                    }
                     Pending::Line { start, .. } => {
                         let a = DVec2::from(self.sketch.points[start].pos);
                         vec![field(0, "Длина", cur.map(|c| a.distance(DVec2::from(c))))]

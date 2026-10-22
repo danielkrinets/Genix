@@ -19,6 +19,7 @@ mod slicers;
 mod ticket;
 mod ui_kit;
 mod units;
+mod version;
 mod updates;
 mod icons;
 mod keys;

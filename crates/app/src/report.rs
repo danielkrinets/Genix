@@ -106,7 +106,8 @@ pub fn window(ctx: &egui::Context, st: &mut ReportState) {
                     ui.horizontal(|ui| {
                         let (dot, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
                         ui.painter().circle_stroke(dot.center(), 7.0, egui::Stroke::new(1.6_f32, if selected { crate::theme::accent() } else { crate::theme::secondary(ui) }));
-                        if selected { ui.painter().circle_filled(dot.center(), 4.0, crate::theme::accent()); }
+                        let t = crate::widgets::feedback_duration(ui, egui::Id::new(("report-radio", i)), selected, 0.2, true);
+                        if t > 0.0 { ui.painter().circle_filled(dot.center(), 4.0 * t, crate::theme::accent()); }
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = 0.0;
                             let title: String = e.title.chars().take(54).collect();

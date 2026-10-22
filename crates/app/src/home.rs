@@ -503,7 +503,7 @@ pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
                                 ui.vertical(|ui| {
                                     ui.spacing_mut().item_spacing.y = 0.0;
                                     ui.label(RichText::new(name).strong());
-                                    ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).color(muted(ui)).small());
+                                    ui.label(RichText::new(format!("v{}", crate::version::version())).color(muted(ui)).small());
                                 });
                             }
                         });
@@ -900,8 +900,8 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
             let (base, accent) = (crate::theme::surface(ui), crate::theme::accent());
             let rect = rect.translate(egui::vec2(0.0, -2.0 * hover + 1.0 * press));
             let p = ui.painter().with_clip_rect(rect.expand(8.0));
-            // a soft shadow lifts the card on hover instead of an outline
-            p.rect_filled(rect.translate(egui::vec2(0.0, 4.0)).expand(1.0), 24.0, Color32::from_black_alpha((38.0 * hover) as u8));
+            // the card only rises a little on hover; the shadow is barely there
+            p.rect_filled(rect.translate(egui::vec2(0.0, 4.0)).expand(1.0), 24.0, Color32::from_black_alpha((12.0 * hover) as u8));
             let body = base.lerp_to_gamma(ui.visuals().extreme_bg_color, 0.55);
             p.rect_filled(rect, 24.0, body);
             p.rect_stroke(rect, 24.0, egui::Stroke::new(1.0_f32, crate::theme::tint(30)), egui::StrokeKind::Inside);
@@ -934,12 +934,11 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
             text(sub, 135.0, 11.5, muted(ui));
             if edit {
                 let dot = rect.left_top() + egui::vec2(24.0, 24.0);
-                p.circle_filled(dot, 11.0, if checked { crate::theme::accent() } else { Color32::from_black_alpha(110) });
+                // the mark grows in and out instead of switching
+                let t = crate::widgets::feedback_duration(ui, resp.id.with("checked"), checked, 0.25, true);
+                p.circle_filled(dot, 11.0, Color32::from_black_alpha(110).lerp_to_gamma(crate::theme::accent(), t));
                 p.circle_stroke(dot, 11.0, egui::Stroke::new(1.6_f32, Color32::WHITE));
-                if checked {
-                    let w = Color32::WHITE;
-                    p.add(egui::Shape::line(vec![dot + egui::vec2(-4.5, 0.5), dot + egui::vec2(-1.2, 3.8), dot + egui::vec2(5.0, -3.4)], egui::Stroke::new(2.0_f32, w)));
-                }
+                crate::widgets::paint_check(&p, dot, t, Color32::WHITE);
             }
             resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
             resp
@@ -963,9 +962,9 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
                 ui.label(RichText::new(if visible.is_empty() { if viewer { tr("Положите файлы .genix в папку Genix в приложении «Файлы»") } else { tr("Пока нет проектов — создайте новый или откройте файл") } } else { tr("Ничего не найдено") }).color(muted(ui)));
             });
         }
-        ui.horizontal_wrapped(|ui| {
+        // the whole block is indented, not just its first row, so wrapped rows line up with the first
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 22, ..Default::default() }).show(ui, |ui| ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(16.0, 16.0);
-            ui.add_space(22.0);
             for p in shown {
                 let Some(info) = h.infos.get(p).cloned() else { continue };
                 let sub = if info.exists { format!("{} · {}", info.time, info.steps.map(|n| tf!("шагов: {}", n)).unwrap_or_else(|| tr("не читается").into())) } else { tr("файл не найден").into() };
@@ -1001,16 +1000,15 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
                     }
                 });
             }
-        });
+        }));
         if folder_idx.is_some() { return; }
         ui.add_space(18.0);
         ui.horizontal(|ui| {
             ui.add_space(24.0);
             ui.label(RichText::new(tr("Начните с примера")).size(16.0).strong().color(muted(ui)).background_color(ui.visuals().panel_fill));
         });
-        ui.horizontal_wrapped(|ui| {
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 22, ..Default::default() }).show(ui, |ui| ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(16.0, 16.0);
-            ui.add_space(22.0);
             for (i, (name, sub)) in [(tr("Кронштейн (параметрический)"), tr("пластина с отверстиями и стойка")), (tr("Втулка (вращение)"), tr("деталь вращения"))].into_iter().enumerate() {
                 let key = format!("ex:{i}");
                 let spinning = h.hover_since.as_ref().filter(|(k, t0)| *k == key && now_t - t0 >= 3.0).map(|(_, t0)| now_t - t0 - 3.0);
@@ -1024,7 +1022,7 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
                     action = HomeAction::Example(i);
                 }
             }
-        });
+        }));
     });
     if let Some((path, to)) = move_to {
         st.move_to_folder(&path, to);
