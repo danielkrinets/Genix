@@ -2709,6 +2709,10 @@ impl App {
                 }
             }
         }
+        if !resp.hovered() {
+            // zoom still owed from a scroll must not fire later, when the pointer comes back
+            self.zoom_pending = 0.0;
+        }
         if resp.hovered() {
             let cursor = resp.hover_pos();
             let mut zoom = 1.0f64;
@@ -2787,6 +2791,8 @@ impl App {
                 self.hover = if manip_active { None } else { let pick = self.pick_model(); self.hit_test(&pick, o, dir) };
             }
         }
+        let (center, radius) = self.scene_sphere();
+        self.cam.set_scene(center, radius);
         self.align_hover_preview();
         // ребро под курсором (фаска и скругление)
         self.hover_edge = None;

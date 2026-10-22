@@ -28,13 +28,15 @@ pub struct Camera {
     pub distance: f64,
     pub target: DVec3,
     pub fov_deg: f64,
+    /// Centre and radius of what is drawn: the depth range and the closest zoom follow them.
+    scene: (DVec3, f64),
     anim: Option<Anim>,
 }
 
 impl Default for Camera {
     fn default() -> Self {
         let (yaw, pitch) = Self::ISO;
-        Camera { yaw, pitch, distance: 200.0, target: DVec3::ZERO, fov_deg: 35.0, anim: None }
+        Camera { yaw, pitch, distance: 200.0, target: DVec3::ZERO, fov_deg: 35.0, scene: (DVec3::ZERO, 100.0), anim: None }
     }
 }
 
@@ -98,7 +100,9 @@ impl Camera {
     pub fn zoom_at(&mut self, factor: f64, rect: Rect, cursor: Option<Pos2>) {
         self.anim = None;
         let factor = factor.clamp(0.2, 5.0);
-        let new_d = (self.distance * factor).clamp(0.05, 1e6);
+        // closer than a fiftieth of the scene's radius everything behind the target would fall beyond the far plane
+        let min_d = (self.scene.1 * 0.02).max(0.05);
+        let new_d = (self.distance * factor).clamp(min_d, 1e6);
         let real = new_d / self.distance;
         if let Some(c) = cursor {
             let (o, d) = self.ray(rect, c);
@@ -114,12 +118,17 @@ impl Camera {
     }
 
     /// Keeps the view from drifting away from the scene: zooming out towards the cursor slides the target, and zooming back
-    /// in at another spot never returned it. The target may be at most `2·radius + distance/4` from the scene centre,
+    /// in at another spot never returned it. The target may be at most `4·radius + distance/4` from the scene centre,
     /// so a far-off view still shows the scene and a close one is pulled back to where the scene is.
+    pub fn set_scene(&mut self, center: DVec3, radius: f64) {
+        self.scene = (center, radius.max(10.0));
+    }
+
     pub fn keep_near(&mut self, center: DVec3, radius: f64) {
+        self.set_scene(center, radius);
         // and the view cannot leave so far that the scene is a speck (and the grid and planes fade into nothing)
         self.distance = self.distance.min(150.0 * radius.max(10.0));
-        let limit = 2.0 * radius.max(1.0) + self.distance * 0.25;
+        let limit = 4.0 * radius.max(1.0) + self.distance * 0.25;
         let off = self.target - center;
         if off.length() > limit {
             self.target = center + off.normalize() * limit;
@@ -131,7 +140,9 @@ impl Camera {
     }
 
     pub fn proj(&self, aspect: f64) -> DMat4 {
-        DMat4::perspective_rh(self.fov_deg.to_radians(), aspect.max(0.01), self.distance * 0.002, self.distance * 100.0)
+        // the far plane always reaches past the far end of the scene, however close the camera is
+        let reach = (self.eye().distance(self.scene.0) + self.scene.1) * 1.5;
+        DMat4::perspective_rh(self.fov_deg.to_radians(), aspect.max(0.01), self.distance * 0.002, (self.distance * 100.0).max(reach))
     }
 
     pub fn view_proj(&self, rect: Rect) -> DMat4 {
@@ -269,7 +280,22 @@ mod tests {
             c.zoom_at(1.0 / 1.14, r, Some(Pos2::new(r.left() + 5.0, r.bottom() - 5.0)));
             c.keep_near(DVec3::ZERO, 100.0);
         }
-        assert!(c.target.length() <= 2.0 * 100.0 + c.distance * 0.25 + 1e-6, "target {:?} distance {}", c.target, c.distance);
+        assert!(c.target.length() <= 4.0 * 100.0 + c.distance * 0.25 + 1e-6, "target {:?} distance {}", c.target, c.distance);
+    }
+
+    #[test]
+    fn the_far_plane_always_reaches_the_scene_and_close_zoom_is_limited() {
+        let mut c = Camera::default();
+        c.set_scene(DVec3::ZERO, 300.0);
+        let r = rect();
+        for _ in 0..200 {
+            c.zoom_at(0.8, r, Some(Pos2::new(400.0, 300.0)));
+        }
+        assert!(c.distance >= 300.0 * 0.02 - 1e-9, "too close: {}", c.distance);
+        // a point on the far side of the scene must still be inside the depth range
+        let far_point = DVec3::new(0.0, 0.0, -300.0);
+        let clip = c.view_proj(r).project_point3(far_point);
+        assert!(clip.z.abs() <= 1.0, "far side clipped: z = {}", clip.z);
     }
 
     #[test]
