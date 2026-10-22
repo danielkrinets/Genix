@@ -2,6 +2,7 @@
 
 Every change, even a small fix, gets a new version: `0.00.N — what was added` (up to five words, English only). Newest first.
 
+- 0.00.15 — Faster cube corner fillet
 - 0.00.14 — Bigger pupils, better gaze
 - 0.00.13 — Sprite slime mascot
 - 0.00.12 — Oak wood material

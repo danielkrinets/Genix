@@ -166,7 +166,11 @@ pub fn cylinder_mesh(base: DVec3, r: f64, h: f64) -> Mesh {
 }
 
 pub fn sphere_mesh(c: DVec3, r: f64) -> Mesh {
-    let n_lon = arc_segments(std::f64::consts::TAU);
+    sphere_mesh_n(c, r, arc_segments(std::f64::consts::TAU))
+}
+
+/// A sphere with `n_lon` segments round the equator (and half as many from pole to pole).
+pub fn sphere_mesh_n(c: DVec3, r: f64, n_lon: usize) -> Mesh {
     let n_lat = n_lon / 2;
     let mut m = Mesh::default();
     m.vertices.push((c - DVec3::Z * r).to_array());

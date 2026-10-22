@@ -638,6 +638,9 @@ fn center_of(bodies: &[&Body]) -> DVec3 {
 
 type EvalOut = (Arc<Model>, Option<SketchResult>);
 
+/// Segments round the equator of the ball that opens a rounded corner (Minkowski sums cost time with the square of the facets).
+const OPEN_SEGMENTS: usize = 24;
+
 fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult], feats: &[Feature]) -> Result<EvalOut, String> {
     let id_base = f.uid * 1000;
     match &f.kind {
@@ -1069,9 +1072,9 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             let mut blended = false;
             let corners: Vec<DVec3> = spots.iter().filter(|(_, all)| *all).map(|(c, _)| *c).collect();
             if !corners.is_empty() {
-                let shrink = Solid::from_mesh(&geom::sphere_mesh(DVec3::ZERO, v * 0.99))?;
+                let shrink = Solid::from_mesh(&geom::sphere_mesh_n(DVec3::ZERO, v * 0.99, OPEN_SEGMENTS))?;
                 // growing back with a ball 2 % bigger keeps flat faces strictly outside the opened body, so rounding error cannot leave slivers
-                let grow = Solid::from_mesh(&geom::sphere_mesh(DVec3::ZERO, v * 1.01))?;
+                let grow = Solid::from_mesh(&geom::sphere_mesh_n(DVec3::ZERO, v * 1.01, OPEN_SEGMENTS))?;
                 // only the surroundings of the corners are opened: the zones are 2.5 radii wide and the opening reaches 2 radii,
                 // so a box-shaped crop (few facets: the opening is slow on round ones) of 4.5 radii leaves the zones untouched but keeps the work (and the wait) small
                 let crops: Vec<Solid> = corners.iter().filter_map(|c| { let h = DVec3::splat(v * 4.5 + 1.0); Solid::from_mesh(&geom::box_mesh(*c - h, *c + h)).ok() }).collect();
@@ -1101,6 +1104,13 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             }
             if r.is_empty() {
                 return Err("результат пуст — размер слишком большой".into());
+            }
+            // a rounding never makes the body smaller across: if it did, the radius does not fit (the geometry has collapsed)
+            if let (Some((lo0, hi0)), Some((lo1, hi1))) = (b.solid.mesh.bounds(), r.mesh.bounds()) {
+                let (before, after) = (hi0 - lo0, hi1 - lo1);
+                if (0..3).any(|i| after[i] < before[i] * 0.9 - 1e-6) {
+                    return Err("радиус слишком велик для этого тела".into());
+                }
             }
             let mut m = (**prev).clone();
             if let Some(bb) = m.bodies.iter_mut().find(|x| x.id == *body) {
@@ -1727,5 +1737,35 @@ mod perf {
         let r = m.bodies[0].mesh().corner_normals(30.0);
         let e = m.bodies[0].mesh().sharp_edges(30.0);
         println!("данные для отрисовки: {:.1} мс ({} рёбер, {} углов)", t4.elapsed().as_secs_f64() * 1000.0, e.len(), r.len() * 3);
+    }
+
+    #[test]
+    fn a_fillet_radius_that_does_not_fit_is_an_error_not_a_collapsed_body() {
+        let n = Expr::num;
+        let s = 40.0;
+        let corners = [[0.0, 0.0], [s, 0.0], [s, s], [0.0, s]];
+        let mut edges = Vec::new();
+        for i in 0..4 {
+            let (a, b) = (corners[i], corners[(i + 1) % 4]);
+            edges.push(EdgeRef::line([a[0], a[1], 0.0], [b[0], b[1], 0.0]));
+            edges.push(EdgeRef::line([a[0], a[1], s], [b[0], b[1], s]));
+            edges.push(EdgeRef::line([a[0], a[1], 0.0], [a[0], a[1], s]));
+        }
+        for (radius, fits) in [(5.0, true), (20.0, true), (25.0, false)] {
+            let mut d = Document::default();
+            d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(s), d: n(s), h: n(s) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+            let mut ev = Evaluator::default();
+            ev.evaluate(&d);
+            let body = ev.model().bodies[0].id;
+            d.insert(FeatureKind::Fillet { body, edges: edges.clone(), radius: n(radius) });
+            let mut ev = Evaluator::default();
+            ev.evaluate(&d);
+            let err = ev.steps().iter().find_map(|st| st.error.clone());
+            assert_eq!(err.is_none(), fits, "radius {radius}: {err:?}");
+            if fits {
+                let v = ev.model().bodies[0].solid.volume();
+                assert!(v > 0.5 * s * s * s && v < s * s * s, "radius {radius}: volume {v}");
+            }
+        }
     }
 }
