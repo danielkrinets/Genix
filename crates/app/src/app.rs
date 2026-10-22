@@ -3837,7 +3837,7 @@ fn tool_id(kind: &FeatureKind) -> &'static str {
         FeatureKind::PlaceOnPlane { .. } => "place",
         FeatureKind::Primitive { shape: Shape::Box { .. }, .. } => "box",
         FeatureKind::Primitive { shape: Shape::Cylinder { .. }, .. } => "cylinder",
-        FeatureKind::Primitive { shape: Shape::Sphere { .. }, .. } => "sphere",
+        FeatureKind::Primitive { shape: fusion_core::doc::Shape::Sphere { .. }, .. } => "sphere",
         FeatureKind::Primitive { shape: Shape::Torus { .. }, .. } => "torus",
         FeatureKind::Coil { .. } => "coil",
         FeatureKind::Pipe { .. } => "pipe",
@@ -4149,7 +4149,7 @@ impl App {
             FeatureKind::PressPull { distance, .. } => vec![("Расстояние", "мм", distance)],
             FeatureKind::Primitive { shape: Shape::Box { w, d, h }, .. } => vec![("Ширина", "мм", w), ("Глубина", "мм", d), ("Высота", "мм", h)],
             FeatureKind::Primitive { shape: Shape::Cylinder { r, h }, .. } => vec![("Радиус", "мм", r), ("Высота", "мм", h)],
-            FeatureKind::Primitive { shape: Shape::Sphere { r }, .. } => vec![("Радиус", "мм", r)],
+            FeatureKind::Primitive { shape: fusion_core::doc::Shape::Sphere { r }, .. } => vec![("Радиус", "мм", r)],
             FeatureKind::Primitive { shape: Shape::Torus { major, minor }, .. } => vec![("Большой радиус", "мм", major), ("Малый радиус", "мм", minor)],
             FeatureKind::Scale { factor, uniform: true, .. } => vec![("Масштаб", "×", &mut factor[0])],
             FeatureKind::Scale { factor, .. } => {
@@ -4464,14 +4464,29 @@ mod lifecycle_tests {
     }
 
     #[test]
-    fn a_fillet_waits_for_an_edge_and_takes_its_body_from_it() {
+    fn a_fillet_takes_the_only_body_and_waits_for_an_edge() {
         let mut app = app();
         app.load_doc(crate::examples::bracket(), None);
+        let only = app.ev.model().bodies[0].id;
+        app.start_command("fillet", 0.0);
+        let Mode::Command(c) = &app.mode else { panic!("the command did not start") };
+        let kind = app.doc.feature(c.uid).unwrap().kind.clone();
+        assert!(matches!(kind, FeatureKind::Fillet { body, .. } if body == only), "one body leaves nothing to choose");
+        assert!(commands::awaiting_pick(&kind), "no red error before the first pick");
+    }
+
+    #[test]
+    fn with_several_bodies_a_fillet_takes_its_body_from_the_first_edge() {
+        let mut app = app();
+        app.load_doc(crate::examples::bracket(), None);
+        app.doc.insert(FeatureKind::Primitive { shape: fusion_core::doc::Shape::Sphere { r: fusion_core::Expr::num(5.0) }, at: [fusion_core::Expr::num(200.0), fusion_core::Expr::num(0.0), fusion_core::Expr::num(0.0)], op: fusion_core::Op::NewBody });
+        app.after_doc_change();
+        assert!(app.ev.model().bodies.len() >= 2);
         app.start_command("fillet", 0.0);
         let Mode::Command(c) = &app.mode else { panic!("the command did not start") };
         let kind = app.doc.feature(c.uid).unwrap().kind.clone();
         assert!(matches!(kind, FeatureKind::Fillet { body: 0, .. }));
-        assert!(commands::awaiting_pick(&kind), "no red error before the first pick");
+        assert!(commands::awaiting_pick(&kind));
     }
 
     #[test]
