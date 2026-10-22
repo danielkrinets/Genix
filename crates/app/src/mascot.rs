@@ -3,12 +3,14 @@
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::sync::Arc;
 
-/// Pupil offset inside an eye of radius `r`: follows `target` and never leaves the white.
-fn pupil_offset(eye: Pos2, target: Pos2, r: f32) -> Vec2 {
+/// Pupil offset inside an egg-shaped eye with room `(rx, ry)` for the pupil's centre: follows `target`, never leaves the white.
+fn pupil_offset(eye: Pos2, target: Pos2, room: Vec2) -> Vec2 {
     let d = target - eye;
     let len = d.length();
     if len < 1.0 { return Vec2::ZERO; }
-    d / len * (len * 0.06).min(r * 0.45)
+    // full deflection when the cursor is about 120 px away, proportional below that
+    let m = (len / 120.0).min(1.0);
+    Vec2::new(d.x / len * m * room.x, d.y / len * m * room.y)
 }
 
 struct Frame {
@@ -111,17 +113,17 @@ pub fn paint(ui: &egui::Ui, ground: Pos2, width: f32, shy: bool) {
     let blink = if reduced || phase >= 1.0 { 0.0 } else { (std::f32::consts::PI * phase).sin() };
     let eye_scale = 0.62 * k * face_scale;
     let eyes_size = sp.eyes_size * eye_scale;
-    let ex = 1.0 - 0.28 * shy;
+    let ex = 1.0 - 0.12 * shy;
     let eyes_rect = Rect::from_center_size(centre, Vec2::new(eyes_size.x * ex, eyes_size.y * (1.0 - 0.9 * blink)));
     p.image(sp.eyes.id(), eyes_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
-    // the two eyes of the sprite sit at 22 % and 78 % of its width
-    let r = eyes_size.y * 0.3;
+    // the two eyes of the sprite sit at 21.5 % and 78.5 % of its width; the pupil (a bit over half the white) has this much room
+    let pupil_size = sp.pupil_size * eye_scale * 0.78;
+    let room = Vec2::new(eyes_rect.width() * 0.07, eyes_rect.height() * 0.2);
     for fx in [0.215, 0.785] {
         let eye = Pos2::new(eyes_rect.left() + eyes_rect.width() * fx, eyes_rect.center().y);
-        let follow = pupil_offset(eye, pointer, r);
-        let look = follow + (Vec2::new(-r * 0.7, 0.0) - follow) * shy;
-        let ps = sp.pupil_size * eye_scale * 0.55;
-        p.image(sp.pupil.id(), Rect::from_center_size(eye + look, Vec2::new(ps.x * ex, ps.y * (1.0 - 0.9 * blink))), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+        let follow = pupil_offset(eye, pointer, room);
+        let look = follow + (Vec2::new(-room.x, room.y * 0.2) - follow) * shy;
+        p.image(sp.pupil.id(), Rect::from_center_size(eye + look, Vec2::new(pupil_size.x * ex, pupil_size.y * (1.0 - 0.9 * blink))), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
     }
     // the mouth: a flat line while it is turned away, a big open smile mid-hop, a smile otherwise
     let (mouth, msize) = &sp.mouths[if shy > 0.5 { 0 } else if hop.is_some() { 2 } else { 1 }];
@@ -137,11 +139,17 @@ mod tests {
     #[test]
     fn pupils_follow_the_cursor_but_stay_inside_the_eye() {
         let eye = Pos2::new(100.0, 100.0);
-        let r = 10.0;
-        assert_eq!(pupil_offset(eye, eye, r), Vec2::ZERO);
-        let far = pupil_offset(eye, Pos2::new(5000.0, 100.0), r);
-        assert!(far.x > 0.0 && far.length() <= r * 0.45 + 1e-3);
-        assert!(pupil_offset(eye, Pos2::new(100.0, 0.0), r).y < 0.0);
+        let room = Vec2::new(10.0, 20.0);
+        assert_eq!(pupil_offset(eye, eye, room), Vec2::ZERO);
+        let far = pupil_offset(eye, Pos2::new(5000.0, 100.0), room);
+        assert!((far.x - 10.0).abs() < 1e-3 && far.y.abs() < 1e-3);
+        let up = pupil_offset(eye, Pos2::new(100.0, -5000.0), room);
+        assert!(up.y < -19.0 && up.x.abs() < 1e-3);
+        // never outside the ellipse of room
+        for (dx, dy) in [(3000.0, 3000.0), (-80.0, 60.0), (10.0, -500.0)] {
+            let o = pupil_offset(eye, Pos2::new(100.0 + dx, 100.0 + dy), room);
+            assert!((o.x / room.x).powi(2) + (o.y / room.y).powi(2) <= 1.0 + 1e-4);
+        }
     }
 
     #[test]
