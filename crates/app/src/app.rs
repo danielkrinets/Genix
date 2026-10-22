@@ -1441,9 +1441,14 @@ impl App {
             let c = (lo + hi) / 2.0;
             (Plane { origin: [0.0, 0.0, hi.z], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] }, [c.x, c.y])
         }));
+        // with a single body there is nothing to choose: a fillet or chamfer takes it at once, so «Select all edges» works
+        let mut selected = self.selection.clone();
+        if selected.is_empty() && matches!(kind, "fillet" | "chamfer") && model.bodies.len() == 1 {
+            selected = vec![model.bodies[0].id];
+        }
         let ctx = commands::Ctx {
             has_bodies: !model.bodies.is_empty(),
-            selected: self.selection.clone(),
+            selected,
             last_sketch,
             top_face,
         };

@@ -56,7 +56,10 @@ fn write_log(info: &std::panic::PanicHookInfo<'_>) {
 pub fn install() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        write_log(info);
+        // a panic that the evaluator or a preview thread catches is shown as a failed step, not as a crash on the next launch
+        if !fusion_core::panic_is_guarded() {
+            write_log(info);
+        }
         default(info);
     }));
 }

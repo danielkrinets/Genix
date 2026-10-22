@@ -590,7 +590,9 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                 changed = true;
             }
             if let Some(idx) = my_index {
-                if ui.button(tr("Выбрать все рёбра")).on_hover_text(tr("Все рёбра тела, включая внутренние (вогнутые) и круглые")).clicked() {
+                let known = *body != 0;
+                let tip = if known { tr("Все рёбра тела, включая внутренние (вогнутые) и круглые") } else { tr("Сначала щёлкните ребро нужного тела или выберите тело") };
+                if ui.add_enabled(known, egui::Button::new(tr("Выбрать все рёбра"))).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
                     if let Some(b) = ev.model_before(idx).body(*body) {
                         *edges = crate::app::compute_straight_edges(b.mesh());
                         changed = true;

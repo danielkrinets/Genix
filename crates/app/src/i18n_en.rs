@@ -148,6 +148,7 @@ pub const EN: &[(&str, &str)] = &[
     ("Не удалось открыть: {}", "Could not open: {}"),
     ("Неверная длина", "Invalid length"),
     ("Неверная ширина", "Invalid width"),
+    ("Сначала щёлкните ребро нужного тела или выберите тело", "Click an edge of the body first, or select the body"),
     ("Неверный диаметр", "Invalid diameter"),
     ("Несохранённые изменения", "Unsaved changes"),
     ("Нет тел для экспорта", "No bodies to export"),

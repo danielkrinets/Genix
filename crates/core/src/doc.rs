@@ -484,7 +484,7 @@ impl Evaluator {
             } else {
                 // geometry code can panic on extreme values (e.g. a huge fillet while a value is dragged):
                 // that step fails with a message instead of taking the whole program down
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| eval_feature(f, &prev, &doc.params, &self.steps, &self.features)))
+                crate::guarded(std::panic::AssertUnwindSafe(|| eval_feature(f, &prev, &doc.params, &self.steps, &self.features)))
                     .unwrap_or_else(|_| Err("внутренняя ошибка при построении шага: проверьте значения".to_string()))
             };
             let millis = t.elapsed().as_secs_f64() * 1000.0;

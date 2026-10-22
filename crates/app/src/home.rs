@@ -261,7 +261,7 @@ pub struct HomeState {
 fn spawn_thumb(key: String, doc: fusion_core::Document, pending: PendingFrames, busy: Arc<AtomicUsize>) {
     busy.fetch_add(1, Ordering::SeqCst);
     std::thread::spawn(move || {
-        let img = std::panic::catch_unwind(|| {
+        let img = fusion_core::guarded(|| {
             let mut ev = fusion_core::Evaluator::default();
             ev.evaluate(&doc);
             let model = ev.model();
@@ -316,7 +316,7 @@ fn spawn_spin(key: String, source: SpinSource, pending: PendingFrames) {
             SpinSource::Example(i) => Some(if i == 0 { crate::examples::bracket() } else { crate::examples::bushing() }),
         };
         let Some(doc) = doc else { return };
-        let _ = std::panic::catch_unwind(|| {
+        let _ = fusion_core::guarded(|| {
             let mut ev = fusion_core::Evaluator::default();
             ev.evaluate(&doc);
             let model = ev.model();
