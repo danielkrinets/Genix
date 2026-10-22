@@ -113,6 +113,19 @@ impl Camera {
         self.distance = new_d;
     }
 
+    /// Keeps the view from drifting away from the scene: zooming out towards the cursor slides the target, and zooming back
+    /// in at another spot never returned it. The target may be at most `2·radius + distance/4` from the scene centre,
+    /// so a far-off view still shows the scene and a close one is pulled back to where the scene is.
+    pub fn keep_near(&mut self, center: DVec3, radius: f64) {
+        // and the view cannot leave so far that the scene is a speck (and the grid and planes fade into nothing)
+        self.distance = self.distance.min(150.0 * radius.max(10.0));
+        let limit = 2.0 * radius.max(1.0) + self.distance * 0.25;
+        let off = self.target - center;
+        if off.length() > limit {
+            self.target = center + off.normalize() * limit;
+        }
+    }
+
     pub fn view(&self) -> DMat4 {
         DMat4::look_at_rh(self.eye(), self.target, DVec3::Z)
     }
@@ -241,6 +254,22 @@ mod tests {
         let a = c.project(rect(), DVec3::ZERO).unwrap();
         let b = c.project(rect(), DVec3::new(0.0, 0.0, 10.0)).unwrap();
         assert!(b.y < a.y);
+    }
+
+    #[test]
+    fn zooming_out_and_back_in_does_not_lose_the_scene() {
+        let mut c = Camera::default();
+        let r = rect();
+        let corner = Some(Pos2::new(r.right() - 5.0, r.top() + 5.0));
+        for _ in 0..60 {
+            c.zoom_at(1.14, r, corner);
+            c.keep_near(DVec3::ZERO, 100.0);
+        }
+        for _ in 0..60 {
+            c.zoom_at(1.0 / 1.14, r, Some(Pos2::new(r.left() + 5.0, r.bottom() - 5.0)));
+            c.keep_near(DVec3::ZERO, 100.0);
+        }
+        assert!(c.target.length() <= 2.0 * 100.0 + c.distance * 0.25 + 1e-6, "target {:?} distance {}", c.target, c.distance);
     }
 
     #[test]

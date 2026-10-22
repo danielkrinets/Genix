@@ -507,6 +507,20 @@ impl App {
         }
     }
 
+    /// Centre and radius of everything that is drawn (or a default sphere around the origin for an empty scene).
+    fn scene_sphere(&self) -> (DVec3, f64) {
+        let model = self.ev.model();
+        let (mut lo, mut hi) = (DVec3::splat(f64::MAX), DVec3::splat(f64::MIN));
+        for b in &model.bodies {
+            if let Some((a, c)) = b.mesh().bounds() {
+                lo = lo.min(a);
+                hi = hi.max(c);
+            }
+        }
+        if lo.x > hi.x { return (DVec3::ZERO, 100.0); }
+        ((lo + hi) / 2.0, ((hi - lo) / 2.0).length().max(10.0))
+    }
+
     /// Lay on: while the target is being chosen, the body is shown already lying on the face or plane under the cursor.
     /// Moving away gives back the target chosen before; a click keeps the previewed one.
     fn align_hover_preview(&mut self) {
@@ -2749,6 +2763,8 @@ impl App {
             }
             if zoom != 1.0 {
                 self.cam.zoom_at(zoom, rect, self.zoom_cursor.or(cursor));
+                let (center, radius) = self.scene_sphere();
+                self.cam.keep_near(center, radius);
             }
             // два пальца на сенсорном экране (iPad/iPhone) — сдвиг вида
             if let Some(mt) = ctx.multi_touch() {

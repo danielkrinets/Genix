@@ -2,6 +2,7 @@
 
 Every change, even a small fix, gets a new version: `0.00.N — what was added` (up to five words, English only). Newest first.
 
+- 0.00.9 — Zoom drift fixed
 - 0.00.8 — Toolbar arrow hover
 - 0.00.7 — Animated selection checks
 - 0.00.6 — Softer card hover
