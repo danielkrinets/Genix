@@ -442,6 +442,8 @@ pub const EN: &[(&str, &str)] = &[
 
     ("Папки", "Folders"),
     ("Создать папку", "Create folder"),
+    ("Расчёт модели…", "Calculating…"),
+    ("с", "s"),
     ("Параметрическое 3D-моделирование", "Parametric 3D modeling"),
     ("Название новой папки", "New folder name"),
     ("Все модели", "All models"),

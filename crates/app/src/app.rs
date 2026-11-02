@@ -20,12 +20,20 @@ use fusion_core::sketch::{region_at, ProfileRef};
 use fusion_core::{Document, Evaluator, Expr, FeatureKind, Mesh, Params, Plane, Sketch};
 use glam::DVec3;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 
 /// Anti-aliasing samples of the 3D view: from the settings (and the computer's memory for «Auto»), read once at start.
 pub fn msaa() -> u32 {
     static SAMPLES: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *SAMPLES.get_or_init(|| Settings::load().graphics.msaa(crate::sysmem::total_gib()))
+}
+
+/// How long a rebuild may keep the window waiting before it moves to the background (tests wait for the result).
+const EVAL_WAIT: std::time::Duration = if cfg!(test) { std::time::Duration::from_secs(3600) } else { std::time::Duration::from_millis(120) };
+
+struct EvalJob {
+    rx: mpsc::Receiver<Evaluator>,
+    started: std::time::Instant,
 }
 
 enum Mode {
@@ -250,6 +258,11 @@ pub struct App {
     tree_sketch: Option<u64>,
     /// a parameter changed faster than the model can be rebuilt: the rebuild waits for its turn (see `after_param_change`)
     eval_deferred: bool,
+    /// a rebuild that outlasted `EVAL_WAIT` runs on a worker thread; the window keeps the previous model until it is back
+    eval_job: Option<EvalJob>,
+    /// the document changed again while a rebuild was running: one more rebuild follows
+    eval_stale: bool,
+    eval_wait: std::time::Duration,
     last_eval_at: f64,
     last_eval_secs: f64,
     /// wheel zoom (natural log of the factor) still to be applied, and where it is aimed
@@ -474,6 +487,9 @@ impl App {
             crash_checked: false,
             tree_sketch: None,
             eval_deferred: false,
+            eval_job: None,
+            eval_stale: false,
+            eval_wait: EVAL_WAIT,
             last_eval_at: f64::NEG_INFINITY,
             last_eval_secs: 0.0,
             zoom_pending: 0.0,
@@ -593,12 +609,83 @@ impl App {
 
     fn after_doc_change(&mut self) {
         self.eval_deferred = false;
+        if self.eval_job.is_some() {
+            self.eval_stale = true;
+            return;
+        }
+        self.start_eval();
+    }
+
+    /// Rebuilds on a worker thread and waits `EVAL_WAIT` for it: quick rebuilds land at once, slow ones (a fillet on many edges)
+    /// leave the window alive, showing the previous model and a "calculating" card.
+    fn start_eval(&mut self) {
         let started = std::time::Instant::now();
-        self.ev.evaluate(&self.doc);
+        let (tx, rx) = mpsc::channel();
+        let (mut ev, doc) = (self.ev.clone(), self.doc.clone());
+        // boolean operations recurse deeply: the worker gets a stack as roomy as a main thread's
+        let spawned = std::thread::Builder::new().name("genix-eval".into()).stack_size(256 << 20).spawn(move || {
+            ev.evaluate(&doc);
+            let _ = tx.send(ev);
+        });
+        if spawned.is_err() {
+            self.ev.evaluate(&self.doc);
+            self.eval_landed(started);
+            return;
+        }
+        match rx.recv_timeout(self.eval_wait) {
+            Ok(ev) => {
+                self.ev = ev;
+                self.eval_landed(started);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => self.eval_job = Some(EvalJob { rx, started }),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                self.ev.evaluate(&self.doc);
+                self.eval_landed(started);
+            }
+        }
+    }
+
+    fn eval_landed(&mut self, started: std::time::Instant) {
         self.last_eval_secs = started.elapsed().as_secs_f64();
         self.last_eval_at = self.now;
         let model = self.ev.model();
         self.selection.retain(|id| model.body(*id).is_some());
+    }
+
+    /// Every frame: takes a finished background rebuild, starts the one that was asked for meanwhile, and shows the card while it runs.
+    fn poll_eval(&mut self, ctx: &egui::Context) {
+        let Some(job) = &self.eval_job else { return };
+        match job.rx.try_recv() {
+            Ok(ev) => {
+                let started = job.started;
+                self.eval_job = None;
+                self.ev = ev;
+                self.eval_landed(started);
+                if std::mem::take(&mut self.eval_stale) {
+                    self.start_eval();
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                let secs = job.started.elapsed().as_secs();
+                egui::Area::new(egui::Id::new("eval-card")).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 120.0)).show(ctx, |ui| {
+                    egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(18).inner_margin(egui::Margin::symmetric(18, 12)).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(format!("{} {} {}", tr("Расчёт модели…"), secs, tr("с")));
+                        });
+                    });
+                });
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                // the worker died without an answer: rebuild here, with the guard of the evaluator around every step
+                let started = job.started;
+                self.eval_job = None;
+                self.eval_stale = false;
+                self.ev.evaluate(&self.doc);
+                self.eval_landed(started);
+            }
+        }
     }
 
     fn load_doc(&mut self, d: Document, path: Option<PathBuf>) {
@@ -3411,6 +3498,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = ctx.input(|i| i.time);
         self.now = now;
+        self.poll_eval(ctx);
         self.flush_deferred(ctx);
         self.busy_overlay(ctx, now);
         if std::env::var("GENIX_DEBUG_EVENTS").is_ok() {
@@ -4688,6 +4776,26 @@ mod lifecycle_tests {
         let uid = c.uid;
         let n = match &app.doc.feature(uid).unwrap().kind { FeatureKind::Fillet { edges, .. } => edges.len(), _ => 0 };
         println!("then all: edges {n}, {:?}, error {:?}", t.elapsed(), app.ev.error(uid));
+    }
+
+    #[test]
+    fn a_slow_rebuild_runs_in_the_background_and_lands_later() {
+        let mut app = app();
+        let n = Expr::num;
+        app.doc.insert(FeatureKind::Primitive { shape: fusion_core::doc::Shape::Box { w: n(10.0), d: n(10.0), h: n(10.0) }, at: [n(0.0), n(0.0), n(0.0)], op: fusion_core::Op::NewBody });
+        app.eval_wait = std::time::Duration::ZERO;
+        app.after_doc_change();
+        // the change is asked for again while the first is still running: one more rebuild follows
+        app.doc.insert(FeatureKind::Primitive { shape: fusion_core::doc::Shape::Box { w: n(5.0), d: n(5.0), h: n(5.0) }, at: [n(50.0), n(0.0), n(0.0)], op: fusion_core::Op::NewBody });
+        app.after_doc_change();
+        let ctx = egui::Context::default();
+        for _ in 0..400 {
+            let _ = ctx.run(Default::default(), |ctx| app.poll_eval(ctx));
+            if app.eval_job.is_none() && !app.eval_stale { break; }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(app.eval_job.is_none(), "the background rebuild finished");
+        assert_eq!(app.ev.model().bodies.len(), 2, "the latest document is what shows");
     }
 
     #[test]

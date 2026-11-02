@@ -457,7 +457,7 @@ pub struct StepResult {
 const MAX_EDGE_WORK: usize = 1_500_000;
 
 /// Вычислитель истории с кэшем по шагам.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Evaluator {
     features: Vec<Feature>,
     params: Params,

@@ -2,6 +2,7 @@
 
 Every change, even a small fix, gets a new version: `0.00.N — what was added` (up to five words, English only). Newest first.
 
+- 0.00.21 — Fillet computes in background
 - 0.00.20 — Heavy fillet fails fast
 - 0.00.19 — Fillet picks sharp edges
 - 0.00.18 — Arrow steps stay whole
