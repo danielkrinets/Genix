@@ -20,7 +20,8 @@ pub fn expr_field(ui: &mut egui::Ui, id: impl std::hash::Hash, e: &mut Expr, par
     let focused = ui.memory(|m| m.has_focus(id));
     let spring_id = id.with("spring");
     let mut spring: Option<Spring> = ui.data(|d| d.get_temp(spring_id));
-    if !focused && text != show(&e.0) {
+    // while the spring runs, e.0 holds in-between values: the field keeps the target, or the next arrow click would step from a fraction
+    if !focused && spring.is_none() && text != show(&e.0) {
         text = show(&e.0);
     }
     let mut changed = false;

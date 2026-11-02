@@ -1406,6 +1406,15 @@ impl App {
                 }
             }
         }
+        // edges for a fillet or chamfer belong to the body as it was before this feature: once some edges are rounded the result
+        // has shorter edges, and an edge picked from it would no longer match the sharp ones that were picked first
+        if let Mode::Command(c) = &self.mode {
+            if c.pick == PickTarget::Edges && self.doc.feature(c.uid).is_some_and(|f| matches!(f.kind, FeatureKind::Fillet { .. } | FeatureKind::Chamfer { .. })) {
+                if let Some(i) = self.doc.index_of(c.uid) {
+                    return self.ev.model_before(i);
+                }
+            }
+        }
         self.shown()
     }
 
@@ -2879,7 +2888,7 @@ impl App {
         self.hover_edge = None;
         if matches!(&self.mode, Mode::Command(c) if c.pick == PickTarget::Edges) && !resp.dragged() {
             if let Some(m) = resp.hover_pos() {
-                self.hover_edge = self.pick_edge(&model, rect, m);
+                self.hover_edge = self.pick_edge(&self.pick_model(), rect, m);
             }
         }
         if picking && resp.clicked() {
@@ -4600,6 +4609,41 @@ mod lifecycle_tests {
         assert!((hi - lo).max_element() < 41.0 && lo.min_element() > -1.0, "the rounded box stays where it was: {lo:?} {hi:?}");
         let (center, radius) = app.scene_sphere();
         assert!(radius < 80.0 && center.length() < 80.0, "the view must not fly away: {center:?} {radius}");
+    }
+
+    #[test]
+    fn every_edge_of_an_extruded_plate_can_be_clicked_and_rounded() {
+        use fusion_core::doc::Extent;
+        use fusion_core::sketch::{region_at, ProfileRef};
+        let mut app = app();
+        let mut sk = fusion_core::Sketch::default();
+        sk.add_rect([0.0, 0.0], [100.0, 70.0]);
+        let r = sk.regions();
+        let p = ProfileRef::of(&r[region_at(&r, [50.0, 35.0]).unwrap()]);
+        let sid = app.doc.insert(FeatureKind::Sketch { plane: fusion_core::Plane::XY, sketch: sk });
+        app.doc.insert(FeatureKind::Extrude { sketch: sid, profiles: vec![p], extent: Extent::OneSide(Expr::num(30.0)), op: fusion_core::Op::NewBody, face: None });
+        app.after_doc_change();
+        let body = app.ev.model().bodies[0].clone();
+        let all = app.straight_edges(&body);
+        assert_eq!(all.len(), 12, "every edge of the plate can be picked: {:?}", all.len());
+        // one by one, as with the cursor: the edges are always taken from the body as it was before the fillet
+        app.start_command("fillet", 0.0);
+        let Mode::Command(c) = &app.mode else { panic!("the command did not start") };
+        let uid = c.uid;
+        let model = app.pick_model();
+        let sharp = app.straight_edges(&model.bodies[0]);
+        assert_eq!(sharp.len(), 12);
+        for (n, e) in sharp.iter().enumerate() {
+            let now = app.pick_model();
+            let current = app.straight_edges(&now.bodies[0]);
+            let here = current.iter().find(|x| (DVec3::from(x.a) - DVec3::from(e.a)).length() < 1e-6 && (DVec3::from(x.b) - DVec3::from(e.b)).length() < 1e-6).copied().unwrap_or_else(|| panic!("edge {n} is still pickable after {n} others were rounded"));
+            if let Some(FeatureKind::Fillet { body, edges, .. }) = app.doc.feature_mut(uid).map(|f| &mut f.kind) {
+                *body = model.bodies[0].id;
+                edges.push(here);
+            }
+            app.after_doc_change();
+            assert_eq!(app.ev.error(uid), None, "{} edges rounded by 2 mm", n + 1);
+        }
     }
 
     #[test]
