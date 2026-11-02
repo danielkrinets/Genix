@@ -453,6 +453,9 @@ pub struct StepResult {
     pub millis: f64,
 }
 
+/// Upper bound for selected edges times body triangles in one fillet or chamfer (measured on the bracket: 34 edges take 12 s, 78 edges on 1.6k triangles take 9 s).
+const MAX_EDGE_WORK: usize = 1_500_000;
+
 /// Вычислитель истории с кэшем по шагам.
 #[derive(Default)]
 pub struct Evaluator {
@@ -1017,6 +1020,10 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                     return Err("размер больше самого тела".into());
                 }
             }
+            // every selected edge is a boolean against the whole body: edges x triangles past this would freeze the window for minutes
+            if edges.len().saturating_mul(b.mesh().triangles.len()) > MAX_EDGE_WORK {
+                return Err("слишком много рёбер для такого тела: выберите меньше".into());
+            }
             let op = if is_fillet { EdgeOp::Fillet(v) } else { EdgeOp::Chamfer(v) };
             let (mut cuts, mut adds) = (Vec::new(), Vec::new());
             // ends where a fillet meets one made earlier, or a corner of three selected edges (see `blend_vertices`)
@@ -1247,6 +1254,23 @@ mod tests {
         d.rollback = 2;
         ev.evaluate(&d);
         assert!(ev.model().bodies[0].solid.volume() < 9300.0);
+    }
+
+    #[test]
+    fn a_fillet_with_far_too_many_edges_fails_fast_instead_of_freezing() {
+        let mut d = Document::default();
+        let n = Expr::num;
+        d.insert(FeatureKind::Primitive { shape: Shape::Sphere { r: n(10.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        let mut ev = Evaluator::default();
+        ev.evaluate(&d);
+        let body = ev.model().bodies[0].id;
+        let tris = ev.model().bodies[0].mesh().triangles.len();
+        let edges: Vec<EdgeRef> = (0..(MAX_EDGE_WORK / tris + 2)).map(|i| EdgeRef::line([i as f64, 0.0, 0.0], [i as f64, 1.0, 0.0])).collect();
+        let uid = d.insert(FeatureKind::Fillet { body, edges, radius: n(1.0) });
+        let t = std::time::Instant::now();
+        ev.evaluate(&d);
+        assert!(t.elapsed().as_secs_f64() < 2.0, "the guard answers at once");
+        assert!(ev.error(uid).is_some_and(|e| e.contains("слишком много рёбер")), "{:?}", ev.error(uid));
     }
 
     #[test]

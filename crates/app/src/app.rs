@@ -4669,6 +4669,28 @@ mod lifecycle_tests {
     }
 
     #[test]
+    #[ignore = "timing probe: a partial fillet first, then every edge of the bracket example"]
+    fn timing_of_all_edges_on_the_bracket() {
+        let mut app = app();
+        app.load_doc(crate::examples::bracket(), None);
+        let model = app.pick_model();
+        let body = model.bodies[0].id;
+        let top: Vec<_> = app.straight_edges(&model.bodies[0]).iter().filter(|e| e.a[2] > 30.0 && e.b[2] > 30.0).copied().collect();
+        println!("upright rim edges {}", top.len());
+        let uid = app.doc.insert(FeatureKind::Fillet { body, edges: top, radius: Expr::num(2.0) });
+        let t = std::time::Instant::now();
+        app.after_doc_change();
+        println!("partial fillet {:?}, error {:?}, triangles {}", t.elapsed(), app.ev.error(uid), app.ev.model().bodies[0].mesh().triangles.len());
+        app.start_command("fillet", 0.0);
+        let t = std::time::Instant::now();
+        assert!(app.select_all_edges());
+        let Mode::Command(c) = &app.mode else { panic!() };
+        let uid = c.uid;
+        let n = match &app.doc.feature(uid).unwrap().kind { FeatureKind::Fillet { edges, .. } => edges.len(), _ => 0 };
+        println!("then all: edges {n}, {:?}, error {:?}", t.elapsed(), app.ev.error(uid));
+    }
+
+    #[test]
     fn with_several_bodies_a_fillet_takes_its_body_from_the_first_edge() {
         let mut app = app();
         app.load_doc(crate::examples::bracket(), None);
