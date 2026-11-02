@@ -409,6 +409,16 @@ mod tests {
     }
 
     #[test]
+    fn obj_and_3mf_exports_hold_every_triangle() {
+        let c = cube();
+        let obj = Mesh::write_obj(&[("cube", &c)]);
+        assert_eq!(obj.lines().filter(|l| l.starts_with("f ")).count(), 12, "one face line per triangle");
+        assert_eq!(obj.lines().filter(|l| l.starts_with("v ")).count(), c.vertices.len());
+        let zip = Mesh::write_3mf(&[("cube", &c)]);
+        assert_eq!(&zip[..2], b"PK", "a 3MF file is a zip archive");
+    }
+
+    #[test]
     fn smooth_normals_keep_box_flat() {
         let c = cube();
         for (fi, ns) in c.corner_normals(30.0).iter().enumerate() {

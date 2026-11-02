@@ -4647,6 +4647,28 @@ mod lifecycle_tests {
     }
 
     #[test]
+    fn every_toolbar_tool_starts_cleanly_on_a_model() {
+        let mut app = app();
+        app.load_doc(crate::examples::bracket(), None);
+        let items: Vec<&str> = [crate::toolbar::CREATE, crate::toolbar::MODIFY, crate::toolbar::REFERENCE, crate::toolbar::INSPECT].into_iter().flatten().map(|i| i.id).collect();
+        assert!(items.len() > 15, "the toolbar lists its tools: {items:?}");
+        for id in items {
+            if matches!(id, "sketch" | "measure") { continue; }
+            app.cancel_mode();
+            let before = app.doc.features.len();
+            app.start_command(id, 0.0);
+            let Mode::Command(c) = &app.mode else { panic!("{id}: the command did not start") };
+            let uid = c.uid;
+            let kind = app.doc.feature(uid).unwrap().kind.clone();
+            if !commands::awaiting_pick(&kind) {
+                assert_eq!(app.ev.error(uid), None, "{id}: the default feature must build");
+            }
+            app.cancel_mode();
+            assert_eq!(app.doc.features.len(), before, "{id}: cancel leaves no feature behind");
+        }
+    }
+
+    #[test]
     fn with_several_bodies_a_fillet_takes_its_body_from_the_first_edge() {
         let mut app = app();
         app.load_doc(crate::examples::bracket(), None);
