@@ -1011,6 +1011,12 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                 return Err("не выбрано ни одного ребра".into());
             }
             let v = positive(size, p, if is_fillet { "радиус" } else { "расстояние" })?;
+            // a size beyond the body itself can only break the geometry (and a drag past it would keep the window busy for minutes)
+            if let Some((lo, hi)) = b.solid.mesh.bounds() {
+                if v > (hi - lo).max_element() {
+                    return Err("размер больше самого тела".into());
+                }
+            }
             let op = if is_fillet { EdgeOp::Fillet(v) } else { EdgeOp::Chamfer(v) };
             let (mut cuts, mut adds) = (Vec::new(), Vec::new());
             // ends where a fillet meets one made earlier, or a corner of three selected edges (see `blend_vertices`)

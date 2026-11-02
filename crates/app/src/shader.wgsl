@@ -13,9 +13,6 @@ struct Frame {
 @group(0) @binding(0) var<uniform> frame: Frame;
 // цвет каждого тела (альфа 0 — тело скрыто)
 @group(0) @binding(1) var<storage, read> body_colors: array<vec4<f32>>;
-// oak grain for the wood material (reflection 3 + x in the body colour's alpha)
-@group(0) @binding(2) var wood_tex: texture_2d<f32>;
-@group(0) @binding(3) var wood_samp: sampler;
 
 fn encode(c: vec3<f32>) -> vec3<f32> {
     if frame.viewport.z > 0.5 {
@@ -146,17 +143,9 @@ fn fs_face(i: FaceOut) -> @location(0) vec4<f32> {
     // the material's "reflection" decides the family: low = plastic/wood, high = metal
     let metal = smoothstep(0.45, 0.6, reflection);
     let rough = select(mix(0.62, 0.26, clamp(reflection / 0.4, 0.0, 1.0)), mix(0.34, 0.06, clamp((reflection - 0.55) / 0.4, 0.0, 1.0)), metal > 0.5);
-    // wood: the grain is projected along the three axes and blended by the face normal, so any shape gets it without UVs;
-    // one tile is 160 mm, the grain runs along X on the top and the long sides. A selected or hovered wooden body (its colour is
-    // not the material's own) is recoloured with the grain's own brightness, so the grain stays visible under the highlight.
-    let wp = i.world / 160.0;
-    let w3 = pow(abs(n), vec3<f32>(6.0));
-    let wsum = max(w3.x + w3.y + w3.z, 1e-4);
-    let tx = textureSample(wood_tex, wood_samp, wp.yz).rgb;
-    let ty = textureSample(wood_tex, wood_samp, wp.xz).rgb;
-    let tz = textureSample(wood_tex, wood_samp, wp.xy).rgb;
-    let grain = (tx * w3.x + ty * w3.y + tz * w3.z) / wsum;
-    let swatch = vec3<f32>(0.440, 0.198, 0.067);
+    // wood (reflection 3 + x in the alpha): a soft cartoon grain, not a photo; a highlighted body is recoloured with the grain's brightness
+    let grain = stylized_wood(i.world, n);
+    let swatch = vec3<f32>(0.62, 0.32, 0.12);
     let luma = vec3<f32>(0.2126, 0.7152, 0.0722);
     let marked = smoothstep(0.02, 0.2, length(i.color.rgb - swatch));
     let recolored = i.color.rgb * (dot(grain, luma) / max(dot(i.color.rgb, luma), 1e-3));
@@ -176,6 +165,35 @@ fn fs_face(i: FaceOut) -> @location(0) vec4<f32> {
     let spec = pow(max(dot(n, h), 0.0), power) * (0.25 + 1.1 * (1.0 - rough)) * diff;
     let c = diffuse + mirror * (0.6 + 1.1 * metal) + spec * mix(vec3<f32>(1.0), albedo, metal * 0.6);
     return vec4<f32>(encode(c / (1.0 + 0.12 * c)), select(1.0, 0.32, cutter));
+}
+
+
+fn hash2(p: vec2<f32>) -> f32 {
+    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
+}
+
+fn vnoise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash2(i), hash2(i + vec2<f32>(1.0, 0.0)), u.x), mix(hash2(i + vec2<f32>(0.0, 1.0)), hash2(i + vec2<f32>(1.0, 1.0)), u.x), u.y);
+}
+
+// Cartoon wood: wide soft light and dark bands along the grain, bent by slow noise, with a few thin darker grain lines.
+// The grain runs along X on the top and the long sides, along Y on the X-facing sides.
+fn stylized_wood(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    let w = abs(n);
+    var uv = vec2<f32>(p.x, p.y);
+    if w.z < max(w.x, w.y) {
+        uv = select(vec2<f32>(p.y, p.z), vec2<f32>(p.x, p.z), w.y >= w.x);
+    }
+    let bend = (vnoise(vec2<f32>(uv.x * 0.018, uv.y * 0.05)) - 0.5) * 7.0 + (vnoise(vec2<f32>(uv.x * 0.06, uv.y * 0.2)) - 0.5) * 1.2;
+    let across = uv.y * 0.55 + bend;
+    let band = 0.5 + 0.5 * sin(across);
+    let line = smoothstep(0.86, 1.0, 0.5 + 0.5 * sin(across * 3.1 + 1.3));
+    let light = vec3<f32>(0.80, 0.52, 0.24);
+    let dark = vec3<f32>(0.58, 0.29, 0.10);
+    return mix(dark, light, smoothstep(0.0, 1.0, band) * 0.85 + 0.1) * (1.0 - 0.14 * line);
 }
 
 // Parallax-corrected lookup: the studio is a box around the scene, so a flat polished face reflects a different

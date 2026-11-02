@@ -14,6 +14,40 @@ pub enum ThemeChoice {
 }
 
 /// Схема управления мышью и клавиатурой.
+/// How much memory the 3D view may use: the anti-aliasing samples per pixel (takes effect after a restart).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Graphics {
+    /// By the computer's memory.
+    #[default]
+    Auto,
+    /// No smoothing: the lightest.
+    Economy,
+    Balanced,
+    Maximum,
+}
+
+impl Graphics {
+    pub const ALL: [Graphics; 4] = [Graphics::Auto, Graphics::Economy, Graphics::Balanced, Graphics::Maximum];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Graphics::Auto => "Авто (по памяти)",
+            Graphics::Economy => "Экономно (без сглаживания)",
+            Graphics::Balanced => "Сбалансировано (2×)",
+            Graphics::Maximum => "Максимум (4×)",
+        }
+    }
+
+    pub fn msaa(self, ram_gib: Option<f64>) -> u32 {
+        match self {
+            Graphics::Auto => crate::sysmem::auto_msaa(ram_gib),
+            Graphics::Economy => 1,
+            Graphics::Balanced => 2,
+            Graphics::Maximum => 4,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ControlScheme {
     /// Левая кнопка — вращение, правая — сдвиг.
@@ -110,6 +144,7 @@ pub struct Settings {
     pub edge_width: f32,
     /// Угол обзора камеры, градусы (меньше — ближе к чертёжной проекции).
     pub fov_deg: f32,
+    pub graphics: Graphics,
     /// Числа вдоль осей сетки.
     pub grid_numbers: bool,
     pub controls: ControlScheme,
@@ -160,6 +195,7 @@ impl Default for Settings {
             autosave_minutes: 0,
             edge_width: 1.3,
             fov_deg: 35.0,
+            graphics: Graphics::Auto,
             grid_numbers: true,
             controls: ControlScheme::Standard,
             license: None,

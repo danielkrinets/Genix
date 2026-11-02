@@ -14,7 +14,6 @@ mod gpu;
 mod haptics;
 mod home;
 mod backgrounds;
-mod mascot;
 mod slicers;
 mod ticket;
 mod ui_kit;
@@ -30,6 +29,7 @@ mod i18n_he;
 mod render;
 mod report;
 mod settings;
+mod sysmem;
 mod sketcher;
 mod theme;
 mod thumb;
@@ -51,7 +51,7 @@ fn main() -> eframe::Result {
             viewport: egui::ViewportBuilder::default().with_inner_size([1360.0, 860.0]).with_min_inner_size([900.0, 560.0]).with_title("Genix").with_icon(std::sync::Arc::new(window_icon())),
             window_builder: Some(Box::new(|attributes| { desktop::install(); attributes })),
             depth_buffer: 32,
-            multisampling: app::MSAA as u16,
+            multisampling: app::msaa() as u16,
             renderer: eframe::Renderer::Wgpu,
             ..Default::default()
         },

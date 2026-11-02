@@ -18,6 +18,10 @@ struct PointerWaves {
     last: Option<Pos2>,
     sampled_at: f64,
     ripples: Vec<(Pos2, f64)>,
+    /// the animation clock: runs only while the pointer is being used, so an idle window costs nothing
+    clock: f32,
+    last_frame: f64,
+    last_active: f64,
 }
 
 /// Local light and travelling rings; never changes layout or consumes pointer input.
@@ -53,6 +57,7 @@ pub fn paint(ui: &egui::Ui, rect: Rect, circles: bool) {
         if let Some(at) = pointer {
             let moved = state.last.is_none_or(|last| last.distance(at)>14.0);
             let pressed = ui.input(|i| i.pointer.any_pressed());
+            if pressed || moved { state.last_active = now; }
             if pressed || (moved && now-state.sampled_at >= 0.04) {
                 if state.ripples.len() >= 16 { state.ripples.remove(0); }
                 state.ripples.push((at,now));
@@ -61,8 +66,13 @@ pub fn paint(ui: &egui::Ui, rect: Rect, circles: bool) {
             }
         } else { state.last = None; }
     } else { state.ripples.clear(); state.last = None; }
+    if state.last_frame == 0.0 { state.last_active = now; }
+    // it keeps moving for six seconds after the last pointer movement, then rests (and stops asking for repaints)
+    let active = now - state.last_active < 6.0 || !state.ripples.is_empty();
+    if active && !reduced { state.clock += (now - state.last_frame).min(0.2) as f32; }
+    state.last_frame = now;
     ui.data_mut(|d| d.insert_temp(id,state.clone()));
-    let time = if reduced { 0.0 } else { ui.input(|i| i.time) as f32 };
+    let time = if reduced { 0.0 } else { state.clock };
     let dark = ui.visuals().dark_mode;
     // Registration keeps the reference's black field; the library blends into the app panel.
     let bg = if !circles { ui.visuals().panel_fill } else if dark { Color32::BLACK } else { Color32::from_rgb(242,242,247) };
@@ -115,13 +125,13 @@ pub fn paint(ui: &egui::Ui, rect: Rect, circles: bool) {
         let font = egui::FontId::proportional(size);
         for k in 0..8 {
             let a = k as f32 * std::f32::consts::FRAC_PI_4;
-            p.text(at + egui::vec2(a.cos(), a.sin()) * 2.0, egui::Align2::CENTER_CENTER, "Genix", font.clone(), crate::theme::accent().gamma_multiply(0.85));
+            p.text(at + egui::vec2(a.cos(), a.sin()) * 1.0, egui::Align2::CENTER_CENTER, "Genix", font.clone(), crate::theme::accent().gamma_multiply(0.85));
         }
-        for off in [-1.5_f32, 0.0, 1.5] {
+        for off in [-0.5_f32, 0.0, 0.5] {
             p.text(at + egui::vec2(off, 0.0), egui::Align2::CENTER_CENTER, "Genix", font.clone(), bg);
         }
     }
-    if !reduced && ui.input(|i| i.focused) { ui.ctx().request_repaint_after(Duration::from_millis(if circles { 33 } else { 100 })); }
+    if !reduced && active && ui.input(|i| i.focused) { ui.ctx().request_repaint_after(Duration::from_millis(if circles { 55 } else { 100 })); }
 }
 
 #[cfg(test)]

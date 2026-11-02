@@ -132,9 +132,6 @@ pub struct GpuScene {
     glass_wanted: bool,
     bgl: wgpu::BindGroupLayout,
     bind: wgpu::BindGroup,
-    /// the oak grain (sampled triplanar by bodies of the wood material)
-    wood: wgpu::TextureView,
-    wood_sampler: wgpu::Sampler,
     frame: wgpu::Buffer,
     colors: DynBuf,
     faces: DynBuf,
@@ -151,48 +148,8 @@ pub struct GpuScene {
 }
 
 
-/// The oak texture with its mip chain (made on the CPU), repeating, anisotropic.
-fn wood_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> (wgpu::TextureView, wgpu::Sampler) {
-    let img = image::load_from_memory(include_bytes!("../assets/wood.png")).map(|i| i.to_rgba8()).unwrap_or_else(|_| image::RgbaImage::from_pixel(4, 4, image::Rgba([177, 123, 73, 255])));
-    let (w, h) = img.dimensions();
-    let levels = 32 - w.max(h).leading_zeros();
-    let tex = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("wood"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        mip_level_count: levels,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    let mut level = img;
-    for m in 0..levels {
-        let (lw, lh) = level.dimensions();
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: m, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            level.as_raw(),
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * lw), rows_per_image: Some(lh) },
-            wgpu::Extent3d { width: lw, height: lh, depth_or_array_layers: 1 },
-        );
-        if m + 1 < levels {
-            level = image::imageops::resize(&level, (lw / 2).max(1), (lh / 2).max(1), image::imageops::FilterType::Triangle);
-        }
-    }
-    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        address_mode_u: wgpu::AddressMode::Repeat,
-        address_mode_v: wgpu::AddressMode::Repeat,
-        mag_filter: wgpu::FilterMode::Linear,
-        min_filter: wgpu::FilterMode::Linear,
-        mipmap_filter: wgpu::FilterMode::Linear,
-        anisotropy_clamp: 8,
-        ..Default::default()
-    });
-    (tex.create_view(&wgpu::TextureViewDescriptor::default()), sampler)
-}
-
 impl GpuScene {
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, color_format: wgpu::TextureFormat, samples: u32) -> Self {
+    pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat, samples: u32) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("genix shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
@@ -217,15 +174,12 @@ impl GpuScene {
                     },
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[&bgl], push_constant_ranges: &[] });
         let frame = device.create_buffer(&desc("frame", std::mem::size_of::<FrameUniform>() as u64, wgpu::BufferUsages::UNIFORM));
         let colors = DynBuf::new(device, "body colors", wgpu::BufferUsages::STORAGE);
-        let (wood, wood_sampler) = wood_texture(device, queue);
-        let bind = Self::make_bind(device, &bgl, &frame, &colors.buf, &wood, &wood_sampler);
+        let bind = Self::make_bind(device, &bgl, &frame, &colors.buf);
 
         struct P<'a> {
             label: &'a str,
@@ -366,8 +320,6 @@ impl GpuScene {
             tri_top,
             bgl,
             bind,
-            wood,
-            wood_sampler,
             frame,
             colors,
             faces: DynBuf::new(device, "faces", vb),
@@ -383,15 +335,13 @@ impl GpuScene {
         }
     }
 
-    fn make_bind(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, frame: &wgpu::Buffer, colors: &wgpu::Buffer, wood: &wgpu::TextureView, wood_sampler: &wgpu::Sampler) -> wgpu::BindGroup {
+    fn make_bind(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, frame: &wgpu::Buffer, colors: &wgpu::Buffer) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: frame.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: colors.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(wood) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(wood_sampler) },
             ],
         })
     }
@@ -415,7 +365,7 @@ impl GpuScene {
         queue.write_buffer(&self.frame, 0, bytemuck::bytes_of(&f));
         let data: Vec<[f32; 4]> = if colors.is_empty() { vec![[0.0; 4]] } else { colors.to_vec() };
         if self.colors.write(device, queue, &data) {
-            self.bind = Self::make_bind(device, &self.bgl, &self.frame, &self.colors.buf, &self.wood, &self.wood_sampler);
+            self.bind = Self::make_bind(device, &self.bgl, &self.frame, &self.colors.buf);
         }
     }
 
@@ -594,7 +544,7 @@ pub mod offscreen {
             let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
             let adapter = block(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
             let (device, queue) = block(adapter.request_device(&wgpu::DeviceDescriptor::default(), None)).ok()?;
-            let scene = GpuScene::new(&device, &queue, FMT, SAMPLES);
+            let scene = GpuScene::new(&device, FMT, SAMPLES);
             Some(Offscreen { device, queue, scene, w, h })
         }
 
@@ -781,5 +731,207 @@ pub mod offscreen {
         assert!(dark_edges > 300, "видны рёбра: {dark_edges}");
         let grey = px.chunks(4).filter(|p| (p[0] as i32 - p[2] as i32).abs() < 25 && p[0] > 70 && p[0] < 200).count();
         assert!(grey > 20_000, "тело занимает кадр: {grey}");
+    }
+
+    /// Draws the before/after pictures of the toolbar tooltips with the real shader: `cargo test -p fusion-app render_tutorial_pictures -- --ignored`.
+    /// Writes PNGs to `target/tips/raw` (`tools/make_tips.py` turns them into `crates/app/assets/tips`).
+    #[test]
+    #[ignore]
+    fn render_tutorial_pictures() {
+        use crate::camera::Camera;
+        use crate::render::RenderCache;
+        use crate::theme::{linear, Theme};
+        use eframe::egui::{pos2, vec2, Color32, Rect};
+        use fusion_core::doc::{Axis3, Extent, FeatureKind, PatternKind, Shape};
+        use fusion_core::csg::BoolOp;
+        use fusion_core::sketch::{Entity, ProfileRef, Sketch};
+        use fusion_core::{Document, Evaluator, Expr, Op, Plane};
+        let Some(mut off) = Offscreen::new(900, 600) else {
+            eprintln!("нет GPU — картинки не нарисованы");
+            return;
+        };
+        let out = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/tips/raw");
+        std::fs::create_dir_all(&out).unwrap();
+        let n = Expr::num;
+        let bx = |w: f64, d: f64, h: f64, at: [f64; 3]| FeatureKind::Primitive { shape: Shape::Box { w: n(w), d: n(d), h: n(h) }, at: [n(at[0]), n(at[1]), n(at[2])], op: Op::NewBody };
+        let cyl = |r: f64, h: f64, at: [f64; 3]| FeatureKind::Primitive { shape: Shape::Cylinder { r: n(r), h: n(h) }, at: [n(at[0]), n(at[1]), n(at[2])], op: Op::NewBody };
+        let first_id = |d: &Document| { let mut ev = Evaluator::default(); ev.evaluate(d); ev.model().bodies[0].id };
+        let polygon = |pts: &[[f64; 2]]| {
+            let mut s = Sketch::default();
+            let ids: Vec<usize> = pts.iter().map(|&p| s.add_point(p)).collect();
+            for i in 0..ids.len() { s.add(Entity::Line { a: ids[i], b: ids[(i + 1) % ids.len()], construction: false }); }
+            s
+        };
+        let cube = 40.0;
+        let all_edges = || {
+            let c = [[0.0, 0.0], [cube, 0.0], [cube, cube], [0.0, cube]];
+            let mut v = Vec::new();
+            for i in 0..4 {
+                let (a, b) = (c[i], c[(i + 1) % 4]);
+                v.push(fusion_core::doc::EdgeRef::line([a[0], a[1], 0.0], [b[0], b[1], 0.0]));
+                v.push(fusion_core::doc::EdgeRef::line([a[0], a[1], cube], [b[0], b[1], cube]));
+                v.push(fusion_core::doc::EdgeRef::line([a[0], a[1], 0.0], [a[0], a[1], cube]));
+            }
+            v
+        };
+        // (name, before, after); `before` None makes a single picture
+        let mut jobs: Vec<(&str, Option<Document>, Document)> = Vec::new();
+        let doc = |features: Vec<FeatureKind>| { let mut d = Document::default(); for f in features { d.insert(f); } d };
+        // extrude: a flat profile becomes a block
+        jobs.push(("extrude", Some(doc(vec![bx(46.0, 30.0, 0.5, [0.0, 0.0, 0.0])])), doc(vec![bx(46.0, 30.0, 26.0, [0.0, 0.0, 0.0])])));
+        // revolve: a flat half-profile turns into a vase
+        {
+            let prof = polygon(&[[0.0, 0.0], [18.0, 0.0], [18.0, 4.0], [9.0, 8.0], [9.0, 30.0], [15.0, 38.0], [0.0, 38.0]]);
+            let mut flat = Document::default();
+            let sk = flat.insert(FeatureKind::Sketch { plane: Plane::XZ, sketch: prof.clone() });
+            flat.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![ProfileRef::at([6.0, 3.0])], extent: Extent::Symmetric(n(0.5)), op: Op::NewBody, face: None });
+            let mut round = Document::default();
+            let sk = round.insert(FeatureKind::Sketch { plane: Plane::XZ, sketch: prof });
+            round.insert(FeatureKind::Revolve { sketch: sk, profiles: vec![ProfileRef::at([6.0, 3.0])], axis: fusion_core::doc::RevolveAxis::SketchY, angle: n(360.0), op: Op::NewBody });
+            jobs.push(("revolve", Some(flat), round));
+        }
+        // hole
+        {
+            let before = doc(vec![bx(50.0, 36.0, 20.0, [0.0, 0.0, 0.0])]);
+            let mut after = before.clone();
+            after.insert(FeatureKind::Hole { plane: Plane { origin: [0.0, 0.0, 20.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] }, at: [n(25.0), n(18.0)], dia: n(14.0), depth: None, kind: fusion_core::doc::HoleKind::Simple });
+            jobs.push(("hole", Some(before), after));
+        }
+        // fillet and chamfer on every edge of a cube
+        {
+            let before = doc(vec![bx(cube, cube, cube, [0.0, 0.0, 0.0])]);
+            let id = first_id(&before);
+            let mut f = before.clone();
+            f.insert(FeatureKind::Fillet { body: id, edges: all_edges(), radius: n(7.0) });
+            let mut c = before.clone();
+            c.insert(FeatureKind::Chamfer { body: id, edges: all_edges(), dist: n(5.0) });
+            jobs.push(("fillet", Some(before.clone()), f));
+            jobs.push(("chamfer", Some(before), c));
+        }
+        // mirror
+        {
+            let before = doc(vec![bx(20.0, 20.0, 20.0, [10.0, 0.0, 0.0]), bx(10.0, 10.0, 12.0, [10.0, 5.0, 20.0])]);
+            let mut after = Document::default();
+            let a = after.insert(bx(20.0, 20.0, 20.0, [10.0, 0.0, 0.0]));
+            let _ = a;
+            let mut ev = Evaluator::default();
+            ev.evaluate(&before);
+            let ids: Vec<u64> = ev.model().bodies.iter().map(|b| b.id).collect();
+            let mut after = before.clone();
+            after.insert(FeatureKind::Mirror { bodies: ids, normal: Axis3::X, join: false });
+            jobs.push(("mirror", Some(before), after));
+        }
+        // pattern
+        {
+            let before = doc(vec![cyl(7.0, 12.0, [0.0, 0.0, 0.0])]);
+            let id = first_id(&before);
+            let mut after = before.clone();
+            after.insert(FeatureKind::Pattern { bodies: vec![id], kind: PatternKind::Rect { nx: n(3.0), dx: n(24.0), ny: n(2.0), dy: n(24.0) } });
+            jobs.push(("pattern", Some(before), after));
+        }
+        // move (a copy)
+        {
+            let before = doc(vec![bx(24.0, 24.0, 24.0, [0.0, 0.0, 0.0])]);
+            let id = first_id(&before);
+            let mut after = before.clone();
+            after.insert(FeatureKind::Move { bodies: vec![id], translate: [n(40.0), n(14.0), n(0.0)], rotate: [n(0.0), n(0.0), n(30.0)], copy: true });
+            jobs.push(("move", Some(before), after));
+        }
+        // scale
+        {
+            let before = doc(vec![bx(30.0, 30.0, 30.0, [0.0, 0.0, 0.0])]);
+            let id = first_id(&before);
+            let mut after = before.clone();
+            after.insert(FeatureKind::Scale { bodies: vec![id], factor: [n(1.6), n(1.6), n(1.6)], uniform: true });
+            jobs.push(("scale", Some(before), after));
+        }
+        // shell
+        {
+            let before = doc(vec![bx(44.0, 44.0, 30.0, [0.0, 0.0, 0.0])]);
+            let mut after = before.clone();
+            after.insert(FeatureKind::Shell { plane: Plane { origin: [0.0, 0.0, 30.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] }, thickness: n(4.0), open: true });
+            jobs.push(("shell", Some(before), after));
+        }
+        // combine (cut a cylinder out of a block)
+        {
+            let before = doc(vec![bx(44.0, 44.0, 20.0, [0.0, 0.0, 0.0]), cyl(9.0, 34.0, [22.0, 22.0, -7.0])]);
+            let mut ev = Evaluator::default();
+            ev.evaluate(&before);
+            let (a, b) = (ev.model().bodies[0].id, ev.model().bodies[1].id);
+            let mut after = before.clone();
+            after.insert(FeatureKind::Combine { target: a, tools: vec![b], op: BoolOp::Subtract, keep_tools: false });
+            jobs.push(("combine", Some(before), after));
+        }
+        // press/pull a face
+        {
+            let before = doc(vec![bx(44.0, 32.0, 14.0, [0.0, 0.0, 0.0])]);
+            let mut after = before.clone();
+            after.insert(FeatureKind::PressPull { plane: Plane { origin: [0.0, 0.0, 14.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] }, seed: [22.0, 16.0, 14.0], distance: n(14.0) });
+            jobs.push(("press_pull", Some(before), after));
+        }
+        // delete
+        {
+            let before = doc(vec![bx(26.0, 26.0, 26.0, [0.0, 0.0, 0.0]), cyl(11.0, 26.0, [48.0, 13.0, 0.0])]);
+            let mut ev = Evaluator::default();
+            ev.evaluate(&before);
+            let gone = ev.model().bodies[1].id;
+            let mut after = before.clone();
+            after.insert(FeatureKind::Remove { bodies: vec![gone] });
+            jobs.push(("remove", Some(before), after));
+        }
+        // single pictures: the primitives
+        jobs.push(("box", None, doc(vec![bx(40.0, 26.0, 18.0, [0.0, 0.0, 0.0])])));
+        jobs.push(("cylinder", None, doc(vec![cyl(14.0, 34.0, [0.0, 0.0, 0.0])])));
+        jobs.push(("sphere", None, doc(vec![FeatureKind::Primitive { shape: Shape::Sphere { r: n(20.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody }])));
+        jobs.push(("torus", None, doc(vec![FeatureKind::Primitive { shape: Shape::Torus { major: n(20.0), minor: n(7.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody }])));
+        jobs.push(("coil", None, doc(vec![FeatureKind::Coil { at: [n(0.0), n(0.0), n(0.0)], axis: Axis3::Z, dia: n(26.0), pitch: n(10.0), turns: n(4.0), section: n(3.0), op: Op::NewBody }])));
+
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(900.0, 600.0));
+        let colors = Theme::Light.view();
+        let mut body = linear(Color32::from_rgb(112, 152, 214));
+        body[3] = 0.2;
+        let mut wrote = 0;
+        for (name, before, after) in &jobs {
+            let mut ev_after = Evaluator::default();
+            ev_after.evaluate(after);
+            let model_after = ev_after.model();
+            let mut ev_before = Evaluator::default();
+            if let Some(b) = before { ev_before.evaluate(b); }
+            let model_before = ev_before.model();
+            // one camera for both pictures, framing everything of either
+            let (mut lo, mut hi) = (glam::DVec3::splat(f64::MAX), glam::DVec3::splat(f64::MIN));
+            for m in [&model_before, &model_after] {
+                for b in &m.bodies { if let Some((a, c)) = b.mesh().bounds() { lo = lo.min(a); hi = hi.max(c); } }
+            }
+            let mut cam = Camera::default();
+            let (dist, center) = cam.fit_params(lo, hi, rect);
+            cam.distance = dist * 1.02;
+            cam.target = center;
+            for (tag, model) in [("before", &model_before), ("after", &model_after)] {
+                if tag == "before" && before.is_none() { continue; }
+                let mut cache = RenderCache::default();
+                let (f, e) = cache.assemble(&model.bodies, 1.3);
+                let (dev, q) = (&off.device, &off.queue);
+                off.scene.set_bodies(dev, q, &f, &e);
+                let eye = cam.eye().as_vec3();
+                let light = cam.light_dir().as_vec3();
+                let frame = FrameUniform {
+                    view_proj: cam.view_proj_f32(rect).to_cols_array_2d(),
+                    eye: [eye.x, eye.y, eye.z, 1.0],
+                    light: [light.x, light.y, light.z, 0.0],
+                    viewport: [900.0, 600.0, 0.0, 0.0],
+                    bg_top: linear(colors.bg_top),
+                    bg_bottom: linear(colors.bg_bottom),
+                    edge_color: linear(colors.edge),
+                    glass: [0.0, 0.0, 900.0, 600.0],
+                };
+                let colors_per_body: Vec<[f32; 4]> = model.bodies.iter().map(|_| body).collect();
+                off.scene.set_frame(dev, q, frame, &colors_per_body);
+                let px = off.render();
+                Offscreen::save_png(&px, 900, 600, out.join(format!("{name}_{tag}.png")).to_str().unwrap());
+                wrote += 1;
+            }
+        }
+        println!("{wrote} pictures in {}", out.display());
     }
 }

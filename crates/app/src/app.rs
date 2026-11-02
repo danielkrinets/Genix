@@ -22,7 +22,11 @@ use glam::DVec3;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-pub const MSAA: u32 = 4;
+/// Anti-aliasing samples of the 3D view: from the settings (and the computer's memory for «Auto»), read once at start.
+pub fn msaa() -> u32 {
+    static SAMPLES: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *SAMPLES.get_or_init(|| Settings::load().graphics.msaa(crate::sysmem::total_gib()))
+}
 
 enum Mode {
     Idle,
@@ -170,7 +174,7 @@ impl Materials {
         ("PLA (3D-печать)", 1.24, Color32::from_rgb(103, 151, 214), 0.16),
         ("ABS/PETG", 1.05, Color32::from_rgb(103, 111, 126), 0.24),
         // reflection 3.06: the shader's sign for the oak texture (3 + the real reflection); the colour is only the swatch and the tint reference
-        ("Дерево", 0.75, Color32::from_rgb(177, 123, 73), 3.06),
+        ("Дерево", 0.75, Color32::from_rgb(205, 150, 95), 3.06),
         // reflection 2.0 is the shader's sign for frosted glass
         ("Стекло", 2.5, Color32::from_rgb(170, 220, 236), 2.0),
     ];
@@ -244,6 +248,10 @@ pub struct App {
     crash_checked: bool,
     /// sketch picked in the tree: Delete removes it
     tree_sketch: Option<u64>,
+    /// a parameter changed faster than the model can be rebuilt: the rebuild waits for its turn (see `after_param_change`)
+    eval_deferred: bool,
+    last_eval_at: f64,
+    last_eval_secs: f64,
     /// wheel zoom (natural log of the factor) still to be applied, and where it is aimed
     zoom_pending: f64,
     zoom_cursor: Option<egui::Pos2>,
@@ -379,7 +387,7 @@ const ORIGIN_PLANES: [Plane; 3] = [Plane::XY, Plane::XZ, Plane::YZ];
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, open: Option<PathBuf>) -> Self {
         let rs = cc.wgpu_render_state.as_ref().expect("нужен wgpu-рендер");
-        rs.renderer.write().callback_resources.insert(GpuScene::new(&rs.device, &rs.queue, rs.target_format, MSAA));
+        rs.renderer.write().callback_resources.insert(GpuScene::new(&rs.device, rs.target_format, msaa()));
         let mut settings = Settings::load();
         // an existing install has already seen the splash: it skips the first-launch setup
         if !settings.splash_seen.is_empty() { settings.setup_done = true; }
@@ -465,6 +473,9 @@ impl App {
             report: Default::default(),
             crash_checked: false,
             tree_sketch: None,
+            eval_deferred: false,
+            last_eval_at: f64::NEG_INFINITY,
+            last_eval_secs: 0.0,
             zoom_pending: 0.0,
             zoom_cursor: None,
             align_saved: None,
@@ -555,8 +566,37 @@ impl App {
         }
     }
 
+    /// A parameter is being dragged or stepped: rebuild at once when the last rebuild was quick, otherwise at most as often as
+    /// one rebuild costs twice, so a slow model (a fillet on every edge) cannot pile up work and freeze the window.
+    fn after_param_change(&mut self) {
+        let gap = (self.last_eval_secs * 2.0).clamp(0.0, 1.5);
+        if self.now - self.last_eval_at >= gap {
+            self.after_doc_change();
+        } else {
+            self.eval_deferred = true;
+        }
+    }
+
+    /// Runs a rebuild that was held back as soon as it is due (or the pointer is up).
+    fn flush_deferred(&mut self, ctx: &egui::Context) {
+        if !self.eval_deferred {
+            return;
+        }
+        let gap = (self.last_eval_secs * 2.0).clamp(0.0, 1.5);
+        let due = self.last_eval_at + gap;
+        if self.now >= due || !ctx.input(|i| i.pointer.any_down()) {
+            self.after_doc_change();
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64((due - self.now).max(0.01)));
+        }
+    }
+
     fn after_doc_change(&mut self) {
+        self.eval_deferred = false;
+        let started = std::time::Instant::now();
         self.ev.evaluate(&self.doc);
+        self.last_eval_secs = started.elapsed().as_secs_f64();
+        self.last_eval_at = self.now;
         let model = self.ev.model();
         self.selection.retain(|id| model.body(*id).is_some());
     }
@@ -1485,6 +1525,9 @@ impl App {
     }
 
     fn finish_command(&mut self, ok: bool) {
+        if self.eval_deferred {
+            self.after_doc_change();
+        }
         let Mode::Command(cmd) = std::mem::replace(&mut self.mode, Mode::Idle) else { return };
         if ok {
             // использованный чертёж прячем
@@ -1784,7 +1827,7 @@ impl App {
                 // грань для отверстия и ребро для фаски определяем до заимствования документа
                 let extrudes = matches!(self.doc.feature(uid).map(|f| &f.kind), Some(FeatureKind::Extrude { .. }));
                 let face = match (pick, hit) {
-                    (PickTarget::Face | PickTarget::AlignTarget, Some(Hit::Body { slot, tri, t })) => {
+                    (PickTarget::Face | PickTarget::AlignTarget | PickTarget::Edges, Some(Hit::Body { slot, tri, t })) => {
                         let (o,d)=self.last_ray;
                         let is_hole=self.doc.feature(uid).is_some_and(|f|matches!(f.kind,FeatureKind::Hole{..}));
                         if is_hole {self.hole_target(&model,slot,tri,o+d*t,self.viewport).map(|(p,a,_,_,_)|(p,a))}
@@ -1807,6 +1850,20 @@ impl App {
                         all.map(|all| crate::edges::tangent_chain(&all, &e)).unwrap_or_else(|| vec![e])
                     }
                     None => Vec::new(),
+                };
+                // clicking a face (no edge near the click) takes all the edges of that face; Shift takes all the edges of the body
+                let (face_edges, body_edges): (Vec<EdgeRef>, Vec<EdgeRef>) = match (pick, edge, hit_body) {
+                    (PickTarget::Edges, None, Some(id)) => {
+                        let all = model.body(id).map(|b| self.straight_edges(b)).unwrap_or_default();
+                        let on_face = |pl: &Plane, e: &EdgeRef| {
+                            let (o, n) = (DVec3::from(pl.origin), pl.normal());
+                            let flat = |p: [f64; 3]| (DVec3::from(p) - o).dot(n).abs() < 1e-4;
+                            if e.circle { DVec3::from(e.axis).cross(n).length() < 1e-6 && flat(e.b) } else { flat(e.a) && flat(e.b) }
+                        };
+                        let face_edges = face.map(|(pl, _)| all.iter().filter(|e| on_face(&pl, e)).copied().collect()).unwrap_or_default();
+                        (face_edges, all.to_vec())
+                    }
+                    _ => (Vec::new(), Vec::new()),
                 };
                 let path_pick = if pick == PickTarget::Path { self.nearest_sketch_line(self.last_ray) } else { None };
                 let user_planes = self.doc.offset_planes();
@@ -1904,6 +1961,22 @@ impl App {
                                 }
                             }
                             changed = true;
+                        } else if let Some(id) = hit_body.filter(|id| *body == 0 || *body == *id) {
+                            let set = if shift { &body_edges } else { &face_edges };
+                            let same = |x: &EdgeRef, y: &EdgeRef| x.circle == y.circle && (DVec3::from(x.a) - DVec3::from(y.a)).length() < 1e-6 && (DVec3::from(x.b) - DVec3::from(y.b)).length() < 1e-6;
+                            if !set.is_empty() {
+                                *body = id;
+                                if set.iter().all(|c| edges.iter().any(|x| same(x, c))) {
+                                    edges.retain(|x| !set.iter().any(|c| same(x, c)));
+                                } else {
+                                    for c in set {
+                                        if !edges.iter().any(|x| same(x, c)) {
+                                            edges.push(*c);
+                                        }
+                                    }
+                                }
+                                changed = true;
+                            }
                         }
                     }
                     (FeatureKind::Pipe { path, .. }, _, PickTarget::Path) => {
@@ -2029,11 +2102,13 @@ impl App {
                         self.request(Confirm::OpenExample(crate::examples::bushing));
                     }
                 });
-                if menu_item(ui, "tree_folder", tr("Новая папка…")) {
+                if menu_item(ui, "tree_folder", tr("Создать папку")) {
                     ui.close_menu();
                     self.commit_pending_edits();
                     self.home_active = true;
-                    self.home.open_name_dialog(true);
+                    let name = crate::home::unused_folder_name(&self.settings.folders, tr("Новая папка"));
+                    self.settings.folders.push(crate::settings::ProjectFolder { name, ..Default::default() });
+                    self.settings.save();
                 }
                 if menu_item(ui, "add", tr("Новая модель…")) {
                     ui.close_menu();
@@ -3327,6 +3402,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = ctx.input(|i| i.time);
         self.now = now;
+        self.flush_deferred(ctx);
         self.busy_overlay(ctx, now);
         if std::env::var("GENIX_DEBUG_EVENTS").is_ok() {
             ctx.input(|i| {
@@ -3575,7 +3651,7 @@ impl App {
                 let sketch_list: Vec<(u64, String)> = self.doc.features.iter().filter(|f| matches!(f.kind, FeatureKind::Sketch { .. })).map(|f| (f.uid, tr_name(&f.name))).collect();
                 let r = commands::dialog_ui(ui, &mut self.doc, &self.ev, cmd, &body_name, &sketch_list);
                 match r {
-                    CmdResult::Changed => self.after_doc_change(),
+                    CmdResult::Changed => self.after_param_change(),
                     CmdResult::Ok => self.finish_command(true),
                     CmdResult::Cancel => self.finish_command(false),
                     CmdResult::None => {}
@@ -3698,11 +3774,33 @@ impl App {
         }
     }
 
+    /// ⌘A / Ctrl+A while picking edges for a fillet or chamfer: every edge of the body.
+    fn select_all_edges(&mut self) -> bool {
+        let Mode::Command(c) = &self.mode else { return false };
+        if c.pick != PickTarget::Edges { return false; }
+        let uid = c.uid;
+        let model = self.pick_model();
+        let current = match self.doc.feature(uid).map(|f| &f.kind) {
+            Some(FeatureKind::Fillet { body, .. } | FeatureKind::Chamfer { body, .. }) => *body,
+            _ => return false,
+        };
+        let id = if current != 0 { current } else if model.bodies.len() == 1 { model.bodies[0].id } else { return false };
+        let Some(all) = model.body(id).map(|b| self.straight_edges(b)) else { return false };
+        if let Some(FeatureKind::Fillet { body, edges, .. } | FeatureKind::Chamfer { body, edges, .. }) = self.doc.feature_mut(uid).map(|f| &mut f.kind) {
+            *body = id;
+            *edges = all.to_vec();
+        }
+        self.after_doc_change();
+        true
+    }
+
     fn shortcuts(&mut self, ctx: &egui::Context, now: f64) {
         // on a Mac ⌘ is the main modifier, but Ctrl+Z / Ctrl+Y are what most people press: both work
         let cmd = |k: egui::Key| ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, k) || i.consume_key(egui::Modifiers::CTRL, k));
         let cmd_shift = |k: egui::Key| ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, k) || i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, k));
-        if cmd_shift(egui::Key::S) {
+        if !crate::widgets::text_input_active(ctx) && cmd(egui::Key::A) && self.select_all_edges() {
+            // handled: every edge is picked
+        } else if cmd_shift(egui::Key::S) {
             self.save(true, now);
         } else if cmd(egui::Key::S) {
             self.save(false, now);
@@ -4352,6 +4450,12 @@ impl App {
                     row(ui, tr("Толщина линий рёбер"), &mut |ui| {
                         ui.add(egui::Slider::new(&mut st.edge_width, 0.8..=3.0).fixed_decimals(1));
                     });
+                    row(ui, tr("Качество графики"), &mut |ui| {
+                        egui::ComboBox::from_id_salt("graphics").selected_text(tr(st.graphics.name())).show_ui(ui, |ui| {
+                            for g in crate::settings::Graphics::ALL { ui.selectable_value(&mut st.graphics, g, tr(g.name())); }
+                        });
+                        ui.label(RichText::new(tr("после перезапуска")).weak());
+                    });
                     row(ui, tr("Перспектива (угол обзора)"), &mut |ui| {
                         ui.add(egui::Slider::new(&mut st.fov_deg, 10.0..=70.0).suffix("°").fixed_decimals(0));
                     });
@@ -4474,6 +4578,28 @@ mod lifecycle_tests {
         let kind = app.doc.feature(c.uid).unwrap().kind.clone();
         assert!(matches!(kind, FeatureKind::Fillet { body, .. } if body == only), "one body leaves nothing to choose");
         assert!(commands::awaiting_pick(&kind), "no red error before the first pick");
+    }
+
+    #[test]
+    fn a_fillet_on_all_edges_of_a_box_builds_and_has_no_error() {
+        use fusion_core::doc::Shape;
+        let mut app = app();
+        let n = Expr::num;
+        app.doc.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(40.0), d: n(40.0), h: n(40.0) }, at: [n(0.0), n(0.0), n(0.0)], op: fusion_core::Op::NewBody });
+        app.after_doc_change();
+        let before = app.ev.model().bodies[0].mesh().triangles.len();
+        app.start_command("fillet", 0.0);
+        assert!(app.select_all_edges(), "select all picks the edges of the only body");
+        let Mode::Command(c) = &app.mode else { panic!("the command did not start") };
+        let uid = c.uid;
+        let FeatureKind::Fillet { edges, .. } = app.doc.feature(uid).unwrap().kind.clone() else { panic!() };
+        assert_eq!(edges.len(), 12, "a box has twelve straight edges");
+        assert_eq!(app.ev.error(uid), None, "the fillet must build");
+        assert!(app.ev.model().bodies[0].mesh().triangles.len() > before, "rounded edges add triangles");
+        let (lo, hi) = app.ev.model().bodies[0].mesh().bounds().unwrap();
+        assert!((hi - lo).max_element() < 41.0 && lo.min_element() > -1.0, "the rounded box stays where it was: {lo:?} {hi:?}");
+        let (center, radius) = app.scene_sphere();
+        assert!(radius < 80.0 && center.length() < 80.0, "the view must not fly away: {center:?} {radius}");
     }
 
     #[test]

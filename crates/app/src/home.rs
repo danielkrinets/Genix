@@ -78,7 +78,6 @@ impl Gate {
 /// Локальная демонстрация регистрации: пароли не отправляются и не сохраняются.
 pub fn gate_ui(ctx: &egui::Context, st: &mut Settings, g: &mut Gate) -> bool {
     let mut changed = false;
-    let mut shy = false;
     egui::CentralPanel::default().show(ctx, |ui| {
         crate::backgrounds::paint(ui, ui.max_rect(), true);
         let available_width = ui.available_width();
@@ -109,13 +108,11 @@ pub fn gate_ui(ctx: &egui::Context, st: &mut Settings, g: &mut Gate) -> bool {
                     ui.label(tr("Пароль"));
                     let password = ui.add(egui::TextEdit::singleline(&mut g.pass).font(egui::FontId::proportional(16.0)).margin(egui::Margin::symmetric(14,12)).password(true).char_limit(128).hint_text(RichText::new(tr("Не менее 8 символов")).color(muted(ui))).desired_width(f32::INFINITY));
                     let mut enter = password.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    shy |= password.has_focus();
                     if !g.login {
                         ui.add_space(3.0);
                         ui.label(tr("Повторите пароль"));
                         let repeat = ui.add(egui::TextEdit::singleline(&mut g.repeat).font(egui::FontId::proportional(16.0)).margin(egui::Margin::symmetric(14,12)).password(true).char_limit(128).desired_width(f32::INFINITY));
                         enter = repeat.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        shy |= repeat.has_focus();
                     }
                     if let Some(msg) = &g.msg { ui.colored_label(ui.visuals().error_fg_color, msg); }
                     ui.add_space(8.0);
@@ -147,8 +144,15 @@ pub fn gate_ui(ctx: &egui::Context, st: &mut Settings, g: &mut Gate) -> bool {
         });
         if wide {
             let rect = ui.max_rect();
-            let width = (rect.width() * 0.4).min(rect.height() * 0.7).clamp(220.0, 560.0);
-            crate::mascot::paint(ui, egui::pos2(rect.left() + rect.width() * 0.255, rect.bottom() - 28.0), width, shy);
+            let area = egui::Rect::from_center_size(egui::pos2(rect.left() + rect.width() * 0.255, rect.center().y), egui::vec2(440.0, 360.0));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+                ui.vertical_centered(|ui| {
+                    logo(ui, 160.0);
+                    ui.add_space(16.0);
+                    ui.label(RichText::new("Genix").size(44.0).strong());
+                    ui.label(RichText::new(tr("Параметрическое 3D-моделирование")).color(muted(ui)).size(18.0));
+                });
+            });
         }
     });
     changed
@@ -236,8 +240,6 @@ pub struct HomeState {
     sidebar_pinned: bool,
     open_folder: Option<String>,
     focus_rename: bool,
-    fab_open: bool,
-    fab_toggled_at: f64,
     name_dialog: Option<NameDialog>,
     edit_mode: bool,
     edit_since: f64,
@@ -806,7 +808,10 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
                     h.new_project_started = Some(ui.input(|i| i.time));
                     ui.ctx().request_repaint();
                 }
-                plus_button(ui, h);
+                if new_folder_button(ui).clicked() {
+                    st.folders.push(crate::settings::ProjectFolder { name: unused_folder_name(&st.folders, tr("Новая папка")), ..Default::default() });
+                    action = HomeAction::SettingsChanged;
+                }
             }
         });
         ui.add_space(16.0);
@@ -1134,48 +1139,6 @@ fn person_row(ui: &mut egui::Ui, email: &str, role: &str) {
     });
 }
 
-/// Big round «+» on the library background: opens the choice «new model / new folder», each asks for a name.
-/// «+» next to «Новый проект»: round 48 px button, opens a small menu with a new model or a new folder.
-fn plus_button(ui: &mut egui::Ui, h: &mut HomeState) {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(48.0, 48.0), egui::Sense::click());
-    let open = crate::widgets::feedback(ui, response.id.with("open"), h.fab_open);
-    let hover = crate::widgets::feedback(ui, response.id.with("hover"), response.hovered());
-    let press = crate::widgets::feedback(ui, response.id.with("press"), response.is_pointer_button_down_on());
-    let (base, accent) = (crate::theme::surface(ui), crate::theme::accent());
-    ui.painter().circle_filled(rect.center(), 24.0 - press, base.lerp_to_gamma(accent, 0.16 + 0.10 * hover));
-    let (c, k, turn) = (rect.center(), 8.5, open * std::f32::consts::FRAC_PI_4);
-    let stroke = egui::Stroke::new(2.4_f32, accent);
-    for a in [turn, turn + std::f32::consts::FRAC_PI_2] {
-        let d = egui::vec2(a.cos(), a.sin()) * k;
-        ui.painter().line_segment([c - d, c + d], stroke);
-    }
-    // one physical click can arrive twice within a few frames; a short lock keeps the menu from opening and closing at once
-    let now = ui.input(|i| i.time);
-    let tip = tr("Новая модель или папка");
-    if response.clone().on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() && now - h.fab_toggled_at > 0.35 {
-        h.fab_open = !h.fab_open;
-        h.fab_toggled_at = now;
-    }
-    if !h.fab_open { return; }
-    let ctx = ui.ctx().clone();
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) { h.fab_open = false; }
-    let menu = egui::Area::new(egui::Id::new("library-fab-menu")).order(egui::Order::Foreground).fixed_pos(rect.left_bottom() + egui::vec2(0.0, 8.0)).show(&ctx, |ui| {
-        egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(22).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
-            for (icon, label, folder) in [("add", tr("Новая модель"), false), ("tree_folder", tr("Новая папка"), true)] {
-                let (rect, row) = ui.allocate_exact_size(egui::vec2(230.0, 48.0), egui::Sense::click());
-                if row.hovered() { ui.painter().rect_filled(rect, 14.0, crate::theme::tint(30)); }
-                if let Some(img) = crate::icons::icon(icon, 22.0, crate::theme::accent()) { img.paint_at(ui, egui::Rect::from_center_size(rect.left_center() + egui::vec2(26.0, 0.0), egui::vec2(22.0, 22.0))); }
-                ui.painter().text(rect.left_center() + egui::vec2(52.0, 0.0), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(16.0), ui.visuals().text_color());
-                if row.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                    h.name_dialog = Some(NameDialog { folder, text: String::new() });
-                    h.fab_open = false;
-                }
-            }
-        });
-    }).response.rect;
-    if ctx.input(|i| i.pointer.any_pressed()) && ctx.input(|i| i.pointer.interact_pos()).is_some_and(|at| !rect.contains(at) && !menu.contains(at)) { h.fab_open = false; }
-}
-
 /// Name prompt for a new model or folder. Empty name gives a default one; a model made inside an open folder goes into it.
 fn name_dialog(ctx: &egui::Context, h: &mut HomeState, st: &mut Settings, action: &mut HomeAction) {
     let Some(dialog) = h.name_dialog.as_mut() else { return };
@@ -1322,7 +1285,7 @@ fn folders_section(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, acti
 }
 
 /// `base`, а если такая папка уже есть — `base 2`, `base 3`…
-fn unused_folder_name(folders: &[crate::settings::ProjectFolder], base: &str) -> String {
+pub(crate) fn unused_folder_name(folders: &[crate::settings::ProjectFolder], base: &str) -> String {
     let mut name = base.to_string();
     let mut n = 2;
     while folders.iter().any(|f| f.name == name) {
@@ -1433,6 +1396,24 @@ fn folder_card(ui: &mut egui::Ui, name: &str, sub: &str, pills: &[String], sync:
     }
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// «Создать папку»: the outline twin of B15, same 48 px pill, no icon. Makes a folder at once, no form.
+fn new_folder_button(ui: &mut egui::Ui) -> egui::Response {
+    let text = tr("Создать папку");
+    let font = egui::FontId::proportional(15.5);
+    let text_width = ui.painter().layout_no_wrap(text.to_string(), font.clone(), Color32::WHITE).size().x;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(text_width + 56.0, 48.0), egui::Sense::click());
+    let hover = crate::widgets::feedback(ui, response.id.with("hover"), response.hovered());
+    let press = crate::widgets::feedback(ui, response.id.with("press"), response.is_pointer_button_down_on());
+    let paint = rect.shrink(press);
+    let accent = crate::theme::accent();
+    ui.painter().rect_filled(paint, 24.0, accent.gamma_multiply(0.10 * hover));
+    ui.painter().rect_stroke(paint.shrink(0.9), 24.0, egui::Stroke::new(1.8_f32, accent.lerp_to_gamma(Color32::WHITE, 0.10 * hover)), egui::StrokeKind::Inside);
+    let ink = if ui.visuals().dark_mode { accent.lerp_to_gamma(Color32::WHITE, 0.45) } else { accent };
+    ui.painter().text(paint.center(), egui::Align2::CENTER_CENTER, text, font, ink);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tr("Создать папку")));
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// B15 — «Новый проект»: плоская таблетка 48 px, значок и подпись по центру; при загрузке вместо плюса дуга-спиннер.
