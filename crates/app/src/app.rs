@@ -2041,9 +2041,24 @@ impl App {
                             }
                         }
                     }
-                    (FeatureKind::Shell { plane, .. }, _, PickTarget::Face) => {
+                    (FeatureKind::Shell { plane, more, .. }, _, PickTarget::Face) => {
                         if let Some((pl, _)) = face {
-                            *plane = pl;
+                            let same = |a: &Plane, b: &Plane| (a.normal() - b.normal()).length() < 1e-6 && (a.o() - b.o()).dot(b.normal()).abs() < 1e-6;
+                            if shift {
+                                // Shift adds a face to the open ones, a second Shift-click takes it away again
+                                if same(plane, &pl) {
+                                    if let Some(next) = (!more.is_empty()).then(|| more.remove(0)) {
+                                        *plane = next;
+                                    }
+                                } else if let Some(i) = more.iter().position(|x| same(x, &pl)) {
+                                    more.remove(i);
+                                } else {
+                                    more.push(pl);
+                                }
+                            } else {
+                                *plane = pl;
+                                more.clear();
+                            }
                             changed = true;
                         }
                     }

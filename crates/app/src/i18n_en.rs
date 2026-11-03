@@ -1069,4 +1069,8 @@ pub const EN: &[(&str, &str)] = &[
     ("Длина резьбы", "Thread length"),
     ("выберите круглое ребро цилиндра", "choose the round edge of a cylinder"),
     ("у этого ребра нет цилиндрической стенки", "this edge has no cylindrical wall"),
+    ("ОТКРЫТЫЕ ГРАНИ", "OPEN FACES"),
+    ("Щёлкните плоскую грань, которая останется без стенки. Ещё грани — Shift + щелчок, повторный щелчок снимает", "Click a flat face to leave open. More faces: Shift + click, clicking again removes it"),
+    ("Открыто граней: {}", "Open faces: {}"),
+    ("Только первая", "First only"),
 ];

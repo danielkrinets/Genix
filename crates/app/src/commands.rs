@@ -751,11 +751,20 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
             section(ui, tr("УГОЛ"));
             changed |= row(ui, tr("Угол"), |ui| expr_field(ui, ("plane_ang", uid), angle, p, "°"));
         }
-        FeatureKind::Shell { thickness, open, .. } => {
-            section(ui, tr("ОТКРЫТАЯ ГРАНЬ"));
+        FeatureKind::Shell { thickness, open, more, .. } => {
+            section(ui, tr("ОТКРЫТЫЕ ГРАНИ"));
             changed |= crate::widgets::checkbox(ui, open, tr("Оставить грань открытой")).changed();
             if *open {
-                ui.label(RichText::new(tr("Щёлкните плоскую грань, которая останется без стенки")).weak());
+                ui.label(RichText::new(tr("Щёлкните плоскую грань, которая останется без стенки. Ещё грани — Shift + щелчок, повторный щелчок снимает")).weak());
+                if !more.is_empty() {
+                    ui.horizontal(|ui| {
+                        ui.label(tf!("Открыто граней: {}", more.len() + 1));
+                        if ui.small_button(tr("Только первая")).clicked() {
+                            more.clear();
+                            changed = true;
+                        }
+                    });
+                }
             }
             section(ui, tr("ТОЛЩИНА СТЕНКИ"));
             changed |= row(ui, tr("Толщина"), |ui| expr_field(ui, ("shell_t", uid), thickness, p, "мм"));
@@ -883,7 +892,7 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
             let (sketch, profiles) = c.last_sketch.clone().unwrap_or((0, vec![]));
             FeatureKind::Sweep { sketch, profiles, path: 0, op }
         }
-        "shell" => FeatureKind::Shell { plane: c.top_face.map(|f| f.0).unwrap_or(fusion_core::Plane::XY), thickness: num(2.0), open: true },
+        "shell" => FeatureKind::Shell { plane: c.top_face.map(|f| f.0).unwrap_or(fusion_core::Plane::XY), thickness: num(2.0), open: true, more: vec![] },
         "plane" => FeatureKind::OffsetPlane { base: fusion_core::Plane::XY, offset: num(10.0) },
         "angle_plane" => FeatureKind::AnglePlane { base: fusion_core::Plane::XY, angle: num(45.0) },
         "loft" => FeatureKind::Loft { profiles: vec![], op },

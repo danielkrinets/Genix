@@ -175,3 +175,7 @@ Create → «Резьба по цилиндру»: click a round edge (the rim o
 Test (core 129): a boss r=5 gets a ridge reaching about r+depth with the body staying one solid and the volume between the plain and fat cylinder; a through hole r=4 gets a groove (volume drops but less than a full bore); a rim in the air and a straight edge give a message, not a crash.
 Also fixed: my sketch icons sk_ellipse/sk_spline/sk_text/sk_mirror had overwritten the designer's originals (restored from the first commit).
 Not checked by eye in the window: picking the rim with the mouse.
+
+## 0.00.39 — shell with several open faces (checked 2026-11-03)
+
+Shell: Shift-click adds further open faces (click again removes), «Только первая» resets; `Shell.more` (old files: none). Test (core 130): box 30x30x20, wall 2: top open gives 5832 mm3, top + side open gives 4896 mm3 (within 1 %), old JSON without `more` loads. Not checked by eye in the window.

@@ -849,7 +849,7 @@ pub mod offscreen {
         {
             let before = doc(vec![bx(44.0, 44.0, 30.0, [0.0, 0.0, 0.0])]);
             let mut after = before.clone();
-            after.insert(FeatureKind::Shell { plane: Plane { origin: [0.0, 0.0, 30.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] }, thickness: n(4.0), open: true });
+            after.insert(FeatureKind::Shell { plane: Plane { origin: [0.0, 0.0, 30.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] }, thickness: n(4.0), open: true, more: vec![] });
             jobs.push(("shell", Some(before), after));
         }
         // combine (cut a cylinder out of a block)

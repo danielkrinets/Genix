@@ -271,7 +271,14 @@ pub enum FeatureKind {
     /// Вытягивание плоской грани тела: `plane` — плоскость грани (нормаль наружу), `seed` — точка на грани, `distance` > 0 добавляет материал, < 0 вырезает.
     PressPull { plane: Plane, seed: [f64; 3], distance: Expr },
     /// Оболочка: стенки толщиной `thickness`; грань на плоскости `plane` остаётся открытой (если `open`).
-    Shell { plane: Plane, thickness: Expr, open: bool },
+    /// `more` are further faces that stay open as well (Shift-click in the window); old files have none.
+    Shell {
+        plane: Plane,
+        thickness: Expr,
+        open: bool,
+        #[serde(default)]
+        more: Vec<Plane>,
+    },
 }
 
 impl FeatureKind {
@@ -1513,27 +1520,31 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             }
             Ok((Arc::new(m), None))
         }
-        FeatureKind::Shell { plane, thickness, open } => {
+        FeatureKind::Shell { plane, thickness, open, more } => {
             let t = positive(thickness, p, "толщина")?;
-            let (o, n) = (plane.o(), plane.normal());
             let ball = Solid::from_mesh(&geom::sphere_mesh(DVec3::ZERO, t))?;
             let mut m = (**prev).clone();
             let mut done = 0;
+            let faces: Vec<&Plane> = std::iter::once(plane).chain(more.iter()).collect();
             for b in m.bodies.iter_mut() {
                 let mesh = b.solid.mesh.clone();
                 let Some((lo, hi)) = mesh.bounds() else { continue };
-                let on_plane = mesh.vertices.iter().any(|q| (DVec3::from(*q) - o).dot(n).abs() < 1e-6);
-                if *open && !on_plane {
+                let on_body = |pl: &Plane| mesh.vertices.iter().any(|q| (DVec3::from(*q) - pl.o()).dot(pl.normal()).abs() < 1e-6);
+                if *open && !faces.iter().any(|pl| on_body(pl)) {
                     continue;
                 }
                 let mut s = (*b.solid).clone();
                 if *open {
-                    let out = if ((lo + hi) * 0.5 - o).dot(n) > 0.0 { -n } else { n };
-                    let big = (hi - lo).length() * 2.0 + 10.0;
-                    let (xa, ya) = geom::perp_frame(n);
-                    let mat = DMat4::from_cols(xa.extend(0.0), ya.extend(0.0), out.extend(0.0), o.extend(1.0));
-                    let slab = Solid::from_mesh(&geom::box_mesh(DVec3::new(-big, -big, 0.0), DVec3::new(big, big, 2.0 * t + 1.0)))?.transformed(&mat);
-                    s = s.boolean(&slab, BoolOp::Union);
+                    // every open face is continued outwards by a slab, so the hollowing reaches the opening
+                    for pl in faces.iter().filter(|pl| on_body(pl)) {
+                        let (o, n) = (pl.o(), pl.normal());
+                        let out = if ((lo + hi) * 0.5 - o).dot(n) > 0.0 { -n } else { n };
+                        let big = (hi - lo).length() * 2.0 + 10.0;
+                        let (xa, ya) = geom::perp_frame(n);
+                        let mat = DMat4::from_cols(xa.extend(0.0), ya.extend(0.0), out.extend(0.0), o.extend(1.0));
+                        let slab = Solid::from_mesh(&geom::box_mesh(DVec3::new(-big, -big, 0.0), DVec3::new(big, big, 2.0 * t + 1.0)))?.transformed(&mat);
+                        s = s.boolean(&slab, BoolOp::Union);
+                    }
                 }
                 let cavity = s.eroded(&ball);
                 if cavity.is_empty() {
@@ -2024,7 +2035,7 @@ mod new_ops {
     fn shell_open_plate() {
         let top = Plane { origin: [0.0, 0.0, 10.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
         let (mut d, _) = plate();
-        d.insert(FeatureKind::Shell { plane: top, thickness: Expr::num(2.0), open: true });
+        d.insert(FeatureKind::Shell { plane: top, thickness: Expr::num(2.0), open: true, more: vec![] });
         let ev = run(&d);
         let v = ev.model().bodies[0].solid.volume();
         assert!((v - 4512.0).abs() < 60.0, "{v}");
@@ -2543,6 +2554,33 @@ mod modeling_batch_tests {
         assert!(ev2.error(post).is_none(), "{:?}", ev2.error(post));
         let expect = std::f64::consts::PI * 10.0 * 5.0 * 8.0;
         assert!((ev2.model().bodies[0].mesh().volume() - expect).abs() < expect * 0.01);
+    }
+
+    #[test]
+    fn shell_with_several_open_faces_removes_every_chosen_wall() {
+        let build = |more: Vec<Plane>| {
+            let mut d = Document::default();
+            d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(30.0), d: n(30.0), h: n(20.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+            let top = Plane { origin: [0.0, 0.0, 20.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+            let uid = d.insert(FeatureKind::Shell { plane: top, thickness: n(2.0), open: true, more });
+            let ev = run(&d);
+            (ev.error(uid).map(|e| e.to_string()), ev.model().bodies.iter().map(|b| b.mesh().volume()).collect::<Vec<_>>())
+        };
+        // only the top open: cavity 26 x 26 x 18
+        let (err, v) = build(vec![]);
+        assert!(err.is_none(), "{err:?}");
+        assert!((v[0] - (18000.0 - 26.0 * 26.0 * 18.0)).abs() < 18000.0 * 0.01, "{v:?}");
+        // top and the +x wall open: cavity 28 x 26 x 18
+        let side = Plane { origin: [30.0, 0.0, 0.0], x: [0.0, 1.0, 0.0], y: [0.0, 0.0, 1.0] };
+        let (err2, v2) = build(vec![side]);
+        assert!(err2.is_none(), "{err2:?}");
+        assert_eq!(v2.len(), 1);
+        assert!((v2[0] - (18000.0 - 28.0 * 26.0 * 18.0)).abs() < 18000.0 * 0.01, "two open faces: {v2:?}");
+        assert!(v2[0] < v[0], "an extra opening takes away more material");
+        // an old document without `more` still loads and means one open face
+        let json = serde_json::to_string(&FeatureKind::Shell { plane: Plane::XY, thickness: n(1.0), open: true, more: vec![] }).unwrap();
+        let old = json.replace(r#","more":[]"#, "");
+        assert!(serde_json::from_str::<FeatureKind>(&old).is_ok(), "{old}");
     }
 
     #[test]
