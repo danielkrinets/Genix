@@ -804,7 +804,7 @@ pub mod offscreen {
             let mut f = before.clone();
             f.insert(FeatureKind::Fillet { body: id, edges: all_edges(), radius: n(7.0) });
             let mut c = before.clone();
-            c.insert(FeatureKind::Chamfer { body: id, edges: all_edges(), dist: n(5.0) });
+            c.insert(FeatureKind::Chamfer { body: id, edges: all_edges(), dist: n(5.0), second: fusion_core::doc::ChamferSecond::Equal, flip: false });
             jobs.push(("fillet", Some(before.clone()), f));
             jobs.push(("chamfer", Some(before), c));
         }

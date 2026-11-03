@@ -179,3 +179,8 @@ Not checked by eye in the window: picking the rim with the mouse.
 ## 0.00.39 — shell with several open faces (checked 2026-11-03)
 
 Shell: Shift-click adds further open faces (click again removes), «Только первая» resets; `Shell.more` (old files: none). Test (core 130): box 30x30x20, wall 2: top open gives 5832 mm3, top + side open gives 4896 mm3 (within 1 %), old JSON without `more` loads. Not checked by eye in the window.
+
+## 0.00.40 — chamfer with two distances and with a distance and an angle (checked 2026-11-03)
+
+Chamfer panel: «Равные / Два расстояния / Угол», «Расстояние 2» or the angle, «Поменять грани местами». `Chamfer.second` + `flip` (old files: equal chamfer); `EdgeOp::Chamfer2`, `ChamferAngle`, `ChamferAngleFlipped` work for straight and round edges.
+Test (core 131): on a 40 mm cube edge: 4 x 4 removes 320 mm3, 4 x 10 removes 800, flipping keeps the volume, 4 at 45 deg = 4 x 4, 4 at 60 deg gives the leg 4*tan60 (volume matches), 95 deg is refused with a message, old JSON without the new fields loads. Not checked by eye in the window; corners where several asymmetric chamfers meet use the same joins as equal chamfers and were not tested.

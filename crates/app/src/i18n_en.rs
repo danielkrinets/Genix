@@ -1073,4 +1073,11 @@ pub const EN: &[(&str, &str)] = &[
     ("Щёлкните плоскую грань, которая останется без стенки. Ещё грани — Shift + щелчок, повторный щелчок снимает", "Click a flat face to leave open. More faces: Shift + click, clicking again removes it"),
     ("Открыто граней: {}", "Open faces: {}"),
     ("Только первая", "First only"),
+    ("Равные", "Equal"),
+    ("Два расстояния", "Two distances"),
+    ("Расстояние 2", "Distance 2"),
+    ("Поменять грани местами", "Swap the faces"),
+    ("Первое расстояние откладывается по первой грани ребра; «Поменять» переносит его на вторую", "The first distance goes along the edge's first face; «Swap» moves it to the second"),
+    ("второе расстояние", "second distance"),
+    ("угол фаски слишком велик или мал для этого ребра", "the chamfer angle is too large or too small for this edge"),
 ];

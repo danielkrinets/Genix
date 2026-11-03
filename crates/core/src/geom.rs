@@ -520,6 +520,12 @@ pub fn loft_loops(loops: &[Vec<DVec3>]) -> Result<Mesh, String> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EdgeOp {
     Chamfer(f64),
+    /// Two different distances: along the first and along the second face of the edge.
+    Chamfer2(f64, f64),
+    /// A distance along the first face and the angle (degrees) between the chamfer and that face.
+    ChamferAngle(f64, f64),
+    /// The same with the roles of the two faces swapped.
+    ChamferAngleFlipped(f64, f64),
     Fillet(f64),
 }
 
@@ -569,18 +575,32 @@ fn section_points(eo: DVec3, f: &[(DVec3, DVec3); 2], op: EdgeOp) -> Result<(Vec
     if theta < 0.05 || theta > std::f64::consts::PI - 0.05 {
         return Err("грани слишком близки к параллельным".into());
     }
-    let size = match op {
-        EdgeOp::Chamfer(d) => d,
-        EdgeOp::Fillet(r) => r / (theta / 2.0).tan(),
+    let (d1, d2) = match op {
+        EdgeOp::Chamfer(d) => (d, d),
+        EdgeOp::Chamfer2(a, b) => (a, b),
+        EdgeOp::ChamferAngle(d, angle) | EdgeOp::ChamferAngleFlipped(d, angle) => {
+            let alpha = angle.to_radians();
+            // triangle edge / first leg / second leg: the sine rule gives the second leg
+            if alpha <= 1e-3 || alpha >= std::f64::consts::PI - theta - 1e-3 {
+                return Err("угол фаски слишком велик или мал для этого ребра".into());
+            }
+            let other = d * alpha.sin() / (theta + alpha).sin();
+            if matches!(op, EdgeOp::ChamferAngleFlipped(..)) { (other, d) } else { (d, other) }
+        }
+        EdgeOp::Fillet(r) => {
+            let s = r / (theta / 2.0).tan();
+            (s, s)
+        }
     };
-    if size <= 0.0 {
+    if d1 <= 0.0 || d2 <= 0.0 {
         return Err("размер должен быть больше нуля".into());
     }
+    let size = d1.max(d2);
     let slack = size.max(0.5) * 0.5;
-    let (t1, t2) = (eo + u1 * size, eo + u2 * size);
+    let (t1, t2) = (eo + u1 * d1, eo + u2 * d2);
     let mut poly: Vec<DVec3> = Vec::new();
     match op {
-        EdgeOp::Chamfer(_) => poly.extend([t1, t2]),
+        EdgeOp::Chamfer(_) | EdgeOp::Chamfer2(..) | EdgeOp::ChamferAngle(..) | EdgeOp::ChamferAngleFlipped(..) => poly.extend([t1, t2]),
         EdgeOp::Fillet(r) => {
             let c = eo + (u1 + u2).normalize() * (r / (theta / 2.0).sin());
             let (v1, v2) = ((t1 - c) / r, (t2 - c) / r);

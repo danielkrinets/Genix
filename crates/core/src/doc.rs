@@ -165,6 +165,18 @@ fn one_expr() -> Expr {
     Expr::num(1.0)
 }
 
+/// How the second leg of a chamfer is given.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ChamferSecond {
+    /// Equal distance on both faces.
+    #[default]
+    Equal,
+    /// Another distance on the second face.
+    Distance(Expr),
+    /// The angle (degrees) between the chamfer and the first face.
+    Angle(Expr),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum PipeShape {
     #[default]
@@ -250,7 +262,16 @@ pub enum FeatureKind {
     /// Лофт: плавный переход между профилями разных чертежей.
     Loft { profiles: Vec<(u64, ProfileRef)>, op: Op },
     Scale { bodies: Vec<u64>, factor: [Expr; 3], uniform: bool },
-    Chamfer { body: u64, edges: Vec<EdgeRef>, dist: Expr },
+    /// `second` makes it a chamfer with two distances or with a distance and an angle; `flip` swaps which face gets which.
+    Chamfer {
+        body: u64,
+        edges: Vec<EdgeRef>,
+        dist: Expr,
+        #[serde(default)]
+        second: ChamferSecond,
+        #[serde(default)]
+        flip: bool,
+    },
     Fillet { body: u64, edges: Vec<EdgeRef>, radius: Expr },
     /// Вспомогательная плоскость на расстоянии от другой плоскости (вдоль её нормали).
     OffsetPlane { base: Plane, offset: Expr },
@@ -1396,8 +1417,12 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             }
             Ok((Arc::new(m), None))
         }
-        FeatureKind::Chamfer { body, edges, dist: size } | FeatureKind::Fillet { body, edges, radius: size } => {
+        FeatureKind::Chamfer { body, edges, dist: size, .. } | FeatureKind::Fillet { body, edges, radius: size } => {
             let is_fillet = matches!(f.kind, FeatureKind::Fillet { .. });
+            let (second, flip) = match &f.kind {
+                FeatureKind::Chamfer { second, flip, .. } => (second.clone(), *flip),
+                _ => (ChamferSecond::Equal, false),
+            };
             let b = prev.body(*body).ok_or("тело не найдено")?;
             if edges.is_empty() {
                 return Err("не выбрано ни одного ребра".into());
@@ -1413,7 +1438,21 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             if edges.len().saturating_mul(b.mesh().triangles.len()) > MAX_EDGE_WORK {
                 return Err("слишком много рёбер для такого тела: выберите меньше".into());
             }
-            let op = if is_fillet { EdgeOp::Fillet(v) } else { EdgeOp::Chamfer(v) };
+            let op = if is_fillet {
+                EdgeOp::Fillet(v)
+            } else {
+                match &second {
+                    ChamferSecond::Equal => EdgeOp::Chamfer(v),
+                    ChamferSecond::Distance(d2) => {
+                        let v2 = positive(d2, p, "второе расстояние")?;
+                        if flip { EdgeOp::Chamfer2(v2, v) } else { EdgeOp::Chamfer2(v, v2) }
+                    }
+                    ChamferSecond::Angle(a) => {
+                        let ang = a.eval(p)?;
+                        if flip { EdgeOp::ChamferAngleFlipped(v, ang) } else { EdgeOp::ChamferAngle(v, ang) }
+                    }
+                }
+            };
             let (mut cuts, mut adds) = (Vec::new(), Vec::new());
             // ends where a fillet meets one made earlier, or a corner of three selected edges (see `blend_vertices`)
             let spots = if is_fillet {
@@ -2100,7 +2139,7 @@ mod new_ops {
             EdgeRef::line([0.0, 0.0, 10.0], [40.0, 0.0, 10.0]),
             EdgeRef::line([0.0, 30.0, 10.0], [40.0, 30.0, 10.0]),
         ];
-        d.insert(FeatureKind::Chamfer { body, edges: edges.clone(), dist: Expr::num(2.0) });
+        d.insert(FeatureKind::Chamfer { body, edges: edges.clone(), dist: Expr::num(2.0), second: ChamferSecond::Equal, flip: false });
         let ev = run(&d);
         assert!((ev.model().bodies[0].solid.volume() - (12000.0 - 2.0 * 0.5 * 4.0 * 40.0)).abs() < 1e-6);
         let (mut d, body) = plate();
@@ -2121,7 +2160,7 @@ mod new_ops {
         assert!(v2 < v1 - 20.0, "радиус не повлиял: {v1} -> {v2}");
         // нет ребра -> ошибка, а не паника
         let (mut d, body) = plate();
-        d.insert(FeatureKind::Chamfer { body, edges: vec![EdgeRef::line([1.0, 1.0, 1.0], [2.0, 1.0, 1.0])], dist: Expr::num(1.0) });
+        d.insert(FeatureKind::Chamfer { body, edges: vec![EdgeRef::line([1.0, 1.0, 1.0], [2.0, 1.0, 1.0])], dist: Expr::num(1.0), second: ChamferSecond::Equal, flip: false });
         let mut ev = Evaluator::default();
         ev.evaluate(&d);
         assert!(ev.steps()[1].error.is_some());
@@ -2554,6 +2593,49 @@ mod modeling_batch_tests {
         assert!(ev2.error(post).is_none(), "{:?}", ev2.error(post));
         let expect = std::f64::consts::PI * 10.0 * 5.0 * 8.0;
         assert!((ev2.model().bodies[0].mesh().volume() - expect).abs() < expect * 0.01);
+    }
+
+    #[test]
+    fn chamfer_with_two_distances_and_with_a_distance_and_an_angle() {
+        let box_edge = |second: ChamferSecond, flip: bool| {
+            let mut d = Document::default();
+            d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(40.0), d: n(40.0), h: n(40.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+            let id = run(&d).model().bodies[0].id;
+            // the top front edge: along x at y = 0, z = 40
+            let edge = EdgeRef::line([0.0, 0.0, 40.0], [40.0, 0.0, 40.0]);
+            let uid = d.insert(FeatureKind::Chamfer { body: id, edges: vec![edge], dist: n(4.0), second, flip });
+            let ev = run(&d);
+            (ev.error(uid).map(|e| e.to_string()), ev.model().bodies[0].mesh().volume())
+        };
+        // equal 4 x 4: a triangle prism of area 8, 40 long
+        let (e0, v0) = box_edge(ChamferSecond::Equal, false);
+        assert!(e0.is_none(), "{e0:?}");
+        assert!((64000.0 - v0 - 8.0 * 40.0).abs() < 1.0, "{v0}");
+        // 4 and 10: triangle of area 20
+        let (e1, v1) = box_edge(ChamferSecond::Distance(n(10.0)), false);
+        assert!(e1.is_none(), "{e1:?}");
+        assert!((64000.0 - v1 - 20.0 * 40.0).abs() < 1.0, "{v1}");
+        // flipped the legs swap but the removed volume stays the same
+        let (_, v1f) = box_edge(ChamferSecond::Distance(n(10.0)), true);
+        assert!((v1 - v1f).abs() < 1.0, "{v1} vs {v1f}");
+        // 4 along the first face at 45 degrees: the other leg is 4 too (90 degree edge), at 60 degrees it is 4 * tan 60 = 6.93
+        let (e2, v2) = box_edge(ChamferSecond::Angle(n(45.0)), false);
+        assert!(e2.is_none(), "{e2:?}");
+        assert!((64000.0 - v2 - 8.0 * 40.0).abs() < 1.0, "{v2}");
+        let (_, v3) = box_edge(ChamferSecond::Angle(n(60.0)), false);
+        let leg = 4.0 * 60f64.to_radians().tan();
+        assert!((64000.0 - v3 - 0.5 * 4.0 * leg * 40.0).abs() < 1.0, "{v3}");
+        // flipped angle chamfer: the 4 mm leg is on the other face, the volume is the same triangle mirrored
+        let (_, v3f) = box_edge(ChamferSecond::Angle(n(60.0)), true);
+        assert!((v3 - v3f).abs() < 1.0);
+        // an impossible angle gives a message
+        let (e4, _) = box_edge(ChamferSecond::Angle(n(95.0)), false);
+        assert!(e4.is_some());
+        // old files without the new fields load as an equal chamfer
+        let json = serde_json::to_string(&FeatureKind::Chamfer { body: 1, edges: vec![], dist: n(2.0), second: ChamferSecond::Equal, flip: false }).unwrap();
+        let old = json.replace(r#","second":"Equal""#, "").replace(r#","flip":false"#, "");
+        assert!(!old.contains("second") && !old.contains("flip"), "{old}");
+        assert!(matches!(serde_json::from_str::<FeatureKind>(&old), Ok(FeatureKind::Chamfer { second: ChamferSecond::Equal, flip: false, .. })), "{old}");
     }
 
     #[test]

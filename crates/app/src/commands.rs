@@ -122,6 +122,11 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
     let f_is_fillet = matches!(f.kind, FeatureKind::Fillet { .. });
     let p = &params;
     let uid = cmd.uid;
+    // a chamfer's second leg is edited on a copy and written back after the match (the arm is shared with the fillet)
+    let mut chamfer_extra = match &f.kind {
+        FeatureKind::Chamfer { second, flip, .. } => Some((second.clone(), *flip)),
+        _ => None,
+    };
     match &mut f.kind {
         FeatureKind::Extrude { sketch: _, profiles, extent, op, face, taper, thin, start } => {
             section(ui, tr("ПРОФИЛИ"));
@@ -714,7 +719,7 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                 }
             }
         }
-        FeatureKind::Chamfer { body, edges, dist: size } | FeatureKind::Fillet { body, edges, radius: size } => {
+        FeatureKind::Chamfer { body, edges, dist: size, .. } | FeatureKind::Fillet { body, edges, radius: size } => {
             let fillet = matches!(f_is_fillet, true);
             let _ = fillet;
             section(ui, tr("ТЕЛО"));
@@ -736,7 +741,29 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                 }
             }
             section(ui, tr("РАЗМЕР"));
-            changed |= row(ui, if f_is_fillet { tr("Радиус") } else { tr("Расстояние") }, |ui| expr_field(ui, ("edge_size", uid), size, p, "мм"));
+            if let Some((second, flip)) = chamfer_extra.as_mut() {
+                use fusion_core::doc::ChamferSecond;
+                let which = match second { ChamferSecond::Equal => 0, ChamferSecond::Distance(_) => 1, ChamferSecond::Angle(_) => 2 };
+                if let Some(i) = crate::widgets::segmented(ui, ("chamfer_kind", uid), &[tr("Равные"), tr("Два расстояния"), tr("Угол")], which) {
+                    if i != which {
+                        *second = match i { 0 => ChamferSecond::Equal, 1 => ChamferSecond::Distance(size.clone()), _ => ChamferSecond::Angle(num(45.0)) };
+                        changed = true;
+                    }
+                }
+                ui.add_space(2.0);
+                changed |= row(ui, tr("Расстояние"), |ui| expr_field(ui, ("edge_size", uid), size, p, "мм"));
+                match second {
+                    ChamferSecond::Distance(d2) => changed |= row(ui, tr("Расстояние 2"), |ui| expr_field(ui, ("chamfer_d2", uid), d2, p, "мм")),
+                    ChamferSecond::Angle(a) => changed |= row(ui, tr("Угол"), |ui| expr_field(ui, ("chamfer_ang", uid), a, p, "°")),
+                    ChamferSecond::Equal => {}
+                }
+                if !matches!(second, ChamferSecond::Equal) {
+                    changed |= crate::widgets::checkbox(ui, flip, tr("Поменять грани местами")).changed();
+                    ui.label(RichText::new(tr("Первое расстояние откладывается по первой грани ребра; «Поменять» переносит его на вторую")).weak().small());
+                }
+            } else {
+                changed |= row(ui, tr("Радиус"), |ui| expr_field(ui, ("edge_size", uid), size, p, "мм"));
+            }
             ui.label(RichText::new(tr("Работают прямые и круглые рёбра между гранями, выпуклые и вогнутые")).weak().small());
         }
         FeatureKind::OffsetPlane { offset, .. } => {
@@ -773,6 +800,10 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
         FeatureKind::Sketch { .. } => {}
     }
 
+    if let (Some((s, fl)), FeatureKind::Chamfer { second, flip, .. }) = (chamfer_extra, &mut f.kind) {
+        *second = s;
+        *flip = fl;
+    }
     if let Some(err) = ev.error(uid).filter(|_| !awaiting_pick(&f.kind)) {
         ui.add_space(4.0);
         ui.label(RichText::new(format!("⚠ {}", tr_dyn(err))).color(Color32::from_rgb(200, 40, 40)));
@@ -922,7 +953,7 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
         "thread_on" => FeatureKind::ThreadOn { body: 0, edge: fusion_core::doc::EdgeRef::round([1.0, 0.0, 0.0], [0.0; 3], [0.0, 0.0, 1.0]), length: num(10.0), pitch: num(1.5), depth: num(0.8) },
         "thread" => FeatureKind::Thread { at: zero(), axis: Axis3::Z, dia: num(10.0), pitch: num(1.5), length: num(15.0), depth: num(0.8), op: Op::NewBody },
         "pattern" => FeatureKind::Pattern { bodies: selected.to_vec(), kind: PatternKind::Rect { nx: num(3.0), dx: num(30.0), ny: num(1.0), dy: num(30.0), nz: Expr::num(1.0), dz: Expr::num(0.0) } },
-        "chamfer" => FeatureKind::Chamfer { body: selected.first().copied().unwrap_or(0), edges: vec![], dist: num(1.0) },
+        "chamfer" => FeatureKind::Chamfer { body: selected.first().copied().unwrap_or(0), edges: vec![], dist: num(1.0), second: fusion_core::doc::ChamferSecond::Equal, flip: false },
         "fillet" => FeatureKind::Fillet { body: selected.first().copied().unwrap_or(0), edges: vec![], radius: num(2.0) },
         "combine" => FeatureKind::Combine {
             target: selected.first().copied().unwrap_or(0),
