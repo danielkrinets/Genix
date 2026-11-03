@@ -820,6 +820,26 @@ impl Sketch {
     pub fn regions(&self) -> Vec<Region> {
         regions(self)
     }
+
+    /// Turns text `i` into ordinary closed polylines (a line per outline segment), so the letters can be selected, trimmed and
+    /// dimensioned like any sketch curve. The text itself is removed. Returns the number of lines added.
+    pub fn explode_text(&mut self, i: usize) -> usize {
+        if i >= self.texts.len() {
+            return 0;
+        }
+        let t = self.texts.remove(i);
+        let mut lines = 0;
+        for r in crate::text::regions(&t) {
+            for ring in std::iter::once(&r.outer).chain(r.holes.iter()) {
+                let ids: Vec<usize> = ring.iter().map(|p| self.add_point(*p)).collect();
+                for k in 0..ids.len() {
+                    self.add(Entity::Line { a: ids[k], b: ids[(k + 1) % ids.len()], construction: false });
+                    lines += 1;
+                }
+            }
+        }
+        lines
+    }
 }
 
 fn solve_dense(a: &mut [f64], b: &[f64], m: usize) -> Option<Vec<f64>> {
@@ -1774,6 +1794,22 @@ mod freeform_tests {
         let back: Sketch = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back.entities.len(), 2);
         assert_eq!(back.regions().len(), 1);
+    }
+
+    #[test]
+    fn exploded_text_becomes_lines_with_the_same_regions() {
+        let mut s = Sketch::default();
+        s.texts.push(crate::text::SketchText { text: "O".into(), pos: [0.0, 0.0], height: 20.0, angle: 0.0 });
+        let before = s.regions();
+        assert_eq!((before.len(), before[0].holes.len()), (1, 1));
+        let area = before[0].area();
+        let n = s.explode_text(0);
+        assert!(n > 20 && s.texts.is_empty());
+        let after = s.regions();
+        assert_eq!(after.len(), 2, "the ring and the hole are separate closed loops of lines now");
+        let biggest = after.iter().map(|r| r.area()).fold(0.0, f64::max);
+        assert!(biggest > area, "the outer loop alone is larger than the ring");
+        assert_eq!(s.explode_text(5), 0);
     }
 
     #[test]

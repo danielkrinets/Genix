@@ -167,6 +167,8 @@ pub struct SketchSession {
     spline_pts: Vec<P2>,
     /// Text being placed or edited: (index in the sketch's texts if it exists already, the text).
     text_draft: Option<(Option<usize>, fusion_core::text::SketchText)>,
+    /// The text field takes the keyboard (with its text selected) on the next frame.
+    text_focus: bool,
 }
 
 const PICK_PX: f32 = 7.0;
@@ -203,6 +205,7 @@ impl SketchSession {
             grid_step: 1.0,
             spline_pts: Vec::new(),
             text_draft: None,
+            text_focus: false,
         };
         if uid.is_some() {
             s.tool = Tool::Select;
@@ -424,7 +427,7 @@ impl SketchSession {
         self.hover = if matches!(self.pending, Pending::Drag { .. }) { None } else { mouse.and_then(|m| self.pick(cam, rect, m)) };
 
         // ---------- клавиатура (если не набираем текст в поле)
-        if !crate::widgets::text_input_active(&ctx) && self.edit_dim.is_none() {
+        if !crate::widgets::text_input_active(&ctx) && self.edit_dim.is_none() && self.text_draft.is_none() {
             // Tab в чертеже переключает поля ввода, а не фокус кнопок
             crate::widgets::release_button_focus(&ctx);
             let mut action = SketchAction::None;
@@ -736,7 +739,14 @@ impl SketchSession {
                 }
             }
             Tool::Text => {
-                self.text_draft = Some((None, fusion_core::text::SketchText { text: tr("Текст").to_string(), pos: s.pos, height: 10.0, angle: 0.0 }));
+                match &mut self.text_draft {
+                    // a second click only moves the line, what was typed stays
+                    Some((_, t)) => t.pos = s.pos,
+                    None => {
+                        self.text_draft = Some((None, fusion_core::text::SketchText { text: tr("Текст").to_string(), pos: s.pos, height: 10.0, angle: 0.0 }));
+                        self.text_focus = true;
+                    }
+                }
             }
             Tool::CenterRect => match self.pending {
                 Pending::None => self.pending = Pending::CRect { c: s.pos, pt: s.point },
@@ -1294,7 +1304,17 @@ impl SketchSession {
     fn text_ui(&mut self, ui: &mut egui::Ui, params: &Params) {
         if let Some((index, mut t)) = self.text_draft.take() {
             ui.label(RichText::new(tr("ТЕКСТ")).small().weak());
-            ui.add(egui::TextEdit::singleline(&mut t.text).desired_width(f32::INFINITY).char_limit(200).hint_text(RichText::new(tr("Введите текст")).weak()).margin(egui::Margin::symmetric(10, 8)));
+            let field = ui.add(egui::TextEdit::singleline(&mut t.text).id(egui::Id::new("sketch-text-field")).desired_width(f32::INFINITY).char_limit(200).hint_text(RichText::new(tr("Введите текст")).weak()).margin(egui::Margin::symmetric(10, 8)));
+            if std::mem::take(&mut self.text_focus) {
+                // ready to type at once, the placeholder word selected so the first letter replaces it
+                field.request_focus();
+                if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), field.id) {
+                    st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(t.text.chars().count()))));
+                    st.store(ui.ctx(), field.id);
+                }
+            }
+            let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
             ui.horizontal(|ui| {
                 ui.label(tr("Высота"));
                 ui.add(egui::DragValue::new(&mut t.height).range(0.5..=500.0).speed(0.2).suffix(" мм"));
@@ -1304,8 +1324,9 @@ impl SketchSession {
             let (mut ok, mut cancel) = (false, false);
             ui.horizontal(|ui| {
                 ok = crate::ui_kit::b01(ui, tr("Добавить"), 120.0).clicked();
-                cancel = crate::ui_kit::b03(ui, tr("Отмена")).clicked();
+                cancel = crate::ui_kit::b03(ui, tr("Отмена")).clicked() || escape;
             });
+            ok |= enter;
             if ok && !t.text.trim().is_empty() {
                 self.checkpoint();
                 match index {
@@ -1320,10 +1341,13 @@ impl SketchSession {
         }
         if !self.sketch.texts.is_empty() {
             ui.label(RichText::new(tr("ТЕКСТЫ ЧЕРТЕЖА")).small().weak());
-            let (mut edit, mut delete) = (None, None);
+            let (mut edit, mut delete, mut explode) = (None, None, None);
             for (i, t) in self.sketch.texts.iter().enumerate() {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("«{}»", t.text.chars().take(18).collect::<String>())).strong());
+                    if ui.small_button("⛓").on_hover_text(tr("Разложить в кривые: буквы станут обычными линиями эскиза")).clicked() {
+                        explode = Some(i);
+                    }
                     if ui.small_button("✎").on_hover_text(tr("Изменить текст")).clicked() {
                         edit = Some(i);
                     }
@@ -1339,6 +1363,12 @@ impl SketchSession {
                 self.checkpoint();
                 self.sketch.texts.remove(i);
                 self.resolve(params);
+            }
+            if let Some(i) = explode {
+                self.checkpoint();
+                let n = self.sketch.explode_text(i);
+                self.resolve(params);
+                self.message = Some(tf!("Текст разложен в кривые: {}", n));
             }
             ui.separator();
         }
@@ -1407,6 +1437,8 @@ impl SketchSession {
             ui.separator();
         }
         ui.label(RichText::new(tr("ОГРАНИЧЕНИЯ")).small().weak());
+        // the hint of a button is shown in one line under the grid: a pop-up tooltip would cover the neighbouring buttons
+        let mut hovered_hint: Option<&'static str> = None;
         egui::Grid::new("cons_grid").num_columns(2).spacing([4.0, 4.0]).show(ui, |ui| {
             for (i, k) in ConsKind::ALL.iter().enumerate() {
                 let sel = self.tool == Tool::Cons(*k);
@@ -1427,7 +1459,11 @@ impl SketchSession {
                     Some(img) => egui::Button::image_and_text(img, k.label()),
                     None => egui::Button::new(k.label()),
                 };
-                if ui.add_sized([124.0, 30.0], cbtn.selected(sel)).on_hover_text(k.hint()).clicked() {
+                let resp = ui.add_sized([124.0, 30.0], cbtn.selected(sel));
+                if resp.hovered() {
+                    hovered_hint = Some(k.hint());
+                }
+                if resp.clicked() {
                     self.set_tool(Tool::Cons(*k));
                 }
                 if i % 2 == 1 {
@@ -1435,7 +1471,10 @@ impl SketchSession {
                 }
             }
         });
-        ui.add_space(6.0);
+        let selected_hint = match self.tool { Tool::Cons(k) => Some(k.hint()), _ => None };
+        // one line is always reserved, so the panel below does not jump when a hint appears
+        ui.add_sized([ui.available_width(), 18.0], egui::Label::new(RichText::new(hovered_hint.or(selected_hint).unwrap_or("")).small().color(crate::theme::secondary(ui))).wrap());
+        ui.add_space(4.0);
         if self.tool == Tool::Polygon {
             ui.horizontal(|ui| {
                 ui.label(tr("Сторон"));

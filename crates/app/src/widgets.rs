@@ -254,6 +254,34 @@ pub fn field_label(ui: &mut egui::Ui, text: &str) {
     ui.add_sized([110.0, 20.0], egui::Label::new(text).truncate());
 }
 
+/// A row of equal-width choices in one rounded bar (like an iOS segmented control); returns the index that was clicked.
+pub fn segmented(ui: &mut egui::Ui, id: impl std::hash::Hash, labels: &[&str], selected: usize) -> Option<usize> {
+    let id = ui.make_persistent_id(id);
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 34.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 12.0, ui.visuals().extreme_bg_color);
+    let cell = (rect.width() - 6.0) / labels.len() as f32;
+    let mut clicked = None;
+    for (i, label) in labels.iter().enumerate() {
+        let r = egui::Rect::from_min_size(rect.min + egui::vec2(3.0 + cell * i as f32, 3.0), egui::vec2(cell, 28.0));
+        let resp = ui.interact(r, id.with(i), egui::Sense::click());
+        let on = feedback(ui, id.with(("on", i)), i == selected);
+        let hover = feedback(ui, id.with(("hover", i)), resp.hovered() && i != selected);
+        if on > 0.0 {
+            ui.painter().rect_filled(r, 10.0, crate::theme::accent().gamma_multiply(on));
+        } else if hover > 0.0 {
+            ui.painter().rect_filled(r, 10.0, crate::theme::tint((28.0 * hover) as u8));
+        }
+        let ink = ui.visuals().text_color().lerp_to_gamma(crate::theme::on_accent(), on);
+        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, *label, egui::FontId::proportional(13.5), ink);
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, i == selected, *label));
+        if resp.clicked() {
+            clicked = Some(i);
+        }
+    }
+    clicked
+}
+
 pub fn section(ui: &mut egui::Ui, text: &str) {
     ui.add_space(4.0);
     ui.label(RichText::new(text).small().strong().color(ui.visuals().weak_text_color()));

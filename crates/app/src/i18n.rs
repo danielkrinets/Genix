@@ -78,54 +78,9 @@ fn he_visual(s: &'static str) -> &'static str {
     out
 }
 
-/// Упрощённый двунаправленный порядок: иврит справа налево, числа и латиница слева направо.
-/// egui рисует символы слева направо, поэтому порядок серий меняем заранее.
+/// Упрощённый двунаправленный порядок: иврит справа налево, числа и латиница слева направо (реализация — в ядре, её же использует текст в чертеже).
 pub fn visual_rtl(s: &str) -> String {
-    let is_he = |c: char| ('\u{0590}'..='\u{05FF}').contains(&c);
-    if !s.chars().any(is_he) {
-        return s.to_string();
-    }
-    let s = s.replace("{}", "\u{E000}");
-    let chars: Vec<char> = s.chars().collect();
-    // 0 = влево-вправо, 1 = справа-налево
-    let strong: Vec<Option<u8>> = chars.iter().map(|&c| if is_he(c) { Some(1) } else if c.is_alphanumeric() || c == '\u{E000}' { Some(0) } else { None }).collect();
-    let mut dir = vec![1u8; chars.len()];
-    for i in 0..chars.len() {
-        dir[i] = match strong[i] {
-            Some(d) => d,
-            None => {
-                let prev = (0..i).rev().find_map(|j| strong[j]);
-                let next = (i + 1..chars.len()).find_map(|j| strong[j]);
-                if prev == Some(0) && next == Some(0) { 0 } else { 1 }
-            }
-        };
-    }
-    let mut runs: Vec<(u8, String)> = Vec::new();
-    for (i, &c) in chars.iter().enumerate() {
-        if let Some(last) = runs.last_mut().filter(|r| r.0 == dir[i]) {
-            last.1.push(c);
-        } else {
-            runs.push((dir[i], c.to_string()));
-        }
-    }
-    let mirror = |c: char| match c {
-        '(' => ')',
-        ')' => '(',
-        '[' => ']',
-        ']' => '[',
-        '«' => '»',
-        '»' => '«',
-        c => c,
-    };
-    let mut out = String::new();
-    for (d, run) in runs.into_iter().rev() {
-        if d == 1 {
-            out.extend(run.chars().rev().map(mirror));
-        } else {
-            out.push_str(&run);
-        }
-    }
-    out.replace('\u{E000}', "{}")
+    fusion_core::text::visual_rtl(s)
 }
 
 /// Перевод строки, известной только во время работы (сообщения об ошибках ядра).

@@ -3519,6 +3519,15 @@ fn marker(ui: &mut egui::Ui) {
 }
 
 fn draw_sketch(ov: &mut Overlay, sk: &SketchResult, c: &crate::theme::ViewColors) {
+    // letters of the sketch's texts: their outlines, so a finished sketch shows them in the 3D view
+    for t in &sk.sketch.texts {
+        for r in fusion_core::text::regions(t) {
+            for ring in std::iter::once(&r.outer).chain(r.holes.iter()) {
+                let pts: Vec<DVec3> = ring.iter().map(|p| sk.plane.to_world(*p)).collect();
+                polyline(&mut ov.lines, &pts, c.sketch, 1.6, true);
+            }
+        }
+    }
     for (i, e) in sk.sketch.entities.iter().enumerate() {
         let pts: Vec<DVec3> = sk.sketch.tessellate(i).iter().map(|p| sk.plane.to_world(*p)).collect();
         let col = if e.construction() { c.sketch_construction } else { c.sketch };
@@ -4513,25 +4522,10 @@ impl App {
             return;
         }
         let Some(source) = before.body(body).and_then(|b| fusion_core::geom::face_region(b.mesh(), &face, DVec3::from(seed))) else { return };
-        let (mut slo, mut shi) = ([f64::MAX; 2], [f64::MIN; 2]);
-        for q in &source.outer {
-            for a in 0..2 {
-                slo[a] = slo[a].min(q[a]);
-                shi[a] = shi[a].max(q[a]);
-            }
-        }
-        // a point guaranteed to lie on the face (the plain middle of its bounds may fall into a hole)
-        let centre = face.to_world(source.interior_point());
-        let inset = ((shi[0] - slo[0]).min(shi[1] - slo[1]) / 2.0).min((hi[0] - lo[0]).min(hi[1] - lo[1]) / 2.0);
         let Some((rx, ry)) = snap_card(ui, "place_snap_box", Pos2::new(rect.center().x, rect.top() + 14.0), tr("Поставить к краю или углу целевой грани")) else { return };
-        let pick = |a: usize, r: usize| match r {
-            0 => lo[a] + inset,
-            1 => (lo[a] + hi[a]) / 2.0,
-            _ => hi[a] - inset,
-        };
-        let to = target.to_world([pick(0, rx), pick(1, ry)]);
-        if let Some(FeatureKind::PlaceOnPlane { seed, to: t, .. }) = self.doc.feature_mut(uid).map(|f| &mut f.kind) {
-            *seed = centre.to_array();
+        // the turn the body makes is replayed: the footprint of the placed face ends up flush against the chosen edge or corner
+        let to = fusion_core::doc::place_anchor(&face, &source.outer, DVec3::from(seed), &target, lo, hi, (rx, ry));
+        if let Some(FeatureKind::PlaceOnPlane { to: t, .. }) = self.doc.feature_mut(uid).map(|f| &mut f.kind) {
             *t = Some(to.to_array());
         }
         self.align_saved = Some((target, Some(to.to_array())));

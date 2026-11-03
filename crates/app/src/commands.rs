@@ -485,49 +485,117 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
             for (i, a) in ["X", "Y"].iter().enumerate() {
                 changed |= row(ui, a, |ui| expr_field(ui, ("hole_at", uid, i), &mut at[i], p, "мм"));
             }
-            section(ui, tr("ПОД БОЛТ"));
-            {
-                use fusion_core::fasteners::{Fit, METRIC};
-                let sel_id = egui::Id::new(("hole_bolt", uid));
-                let (mut size, mut fit) = ui.data(|d| d.get_temp::<(usize, usize)>(sel_id)).unwrap_or((5, 1));
+            use fusion_core::fasteners::{Fit, METRIC};
+            // what the panel remembers while it is open: screw size, fit, and whether the sizes are typed by hand
+            let state_id = egui::Id::new(("hole_state", uid));
+            let default_custom = {
+                // an existing hole whose sizes do not come from the table is edited by hand
+                let m = &METRIC[5];
+                let (d, cur) = (dia.eval(p).unwrap_or(0.0), kind.clone());
+                let ok = |v: f64| METRIC.iter().any(|m| (m.clearance.iter().any(|c| (c - v).abs() < 1e-9)) || (m.tap_drill - v).abs() < 1e-9) || v == 8.0 && (m.d - 6.0).abs() < 1e9 && matches!(cur, HoleKind::Simple);
+                !ok(d)
+            };
+            let (mut size, mut fit, mut custom) = ui.data(|d| d.get_temp::<(usize, usize, bool)>(state_id)).unwrap_or((5, 1, default_custom));
+            let mut which = match kind {
+                HoleKind::Simple => 0,
+                HoleKind::Counterbore { .. } => 1,
+                HoleKind::Countersink { .. } => 2,
+                HoleKind::Tapped { .. } => 3,
+            };
+            section(ui, tr("ТИП ОТВЕРСТИЯ"));
+            let mut new_which = which;
+            if let Some(i) = crate::widgets::segmented(ui, ("hole_type", uid), &[tr("Простое"), tr("Цековка"), tr("Зенковка"), tr("Резьба")], which) {
+                new_which = i;
+            }
+            let mut touched = new_which != which;
+            if !custom {
+                section(ui, tr("ВИНТ"));
                 ui.horizontal(|ui| {
-                    egui::ComboBox::from_id_salt(("hole_bolt_size", uid)).selected_text(METRIC[size].name).show_ui(ui, |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    ui.label(tr("Размер"));
+                    egui::ComboBox::from_id_salt(("hole_bolt_size", uid)).width(86.0).selected_text(METRIC[size].name).show_ui(ui, |ui| {
                         for (i, m) in METRIC.iter().enumerate() {
-                            ui.selectable_value(&mut size, i, m.name);
-                        }
-                    });
-                    egui::ComboBox::from_id_salt(("hole_bolt_fit", uid)).selected_text(tr(Fit::ALL[fit].label())).show_ui(ui, |ui| {
-                        for (i, f) in Fit::ALL.iter().enumerate() {
-                            ui.selectable_value(&mut fit, i, tr(f.label()));
+                            touched |= ui.selectable_value(&mut size, i, m.name).changed();
                         }
                     });
                 });
-                ui.data_mut(|d| d.insert_temp(sel_id, (size, fit)));
-                let m = &METRIC[size];
-                let clearance = m.clearance_dia(Fit::ALL[fit]);
-                if ui.button(tr("Проходное отверстие")).on_hover_text(tr("Диаметр по ISO 273 для выбранной посадки")).clicked() {
-                    *dia = num(clearance);
-                    *kind = HoleKind::Simple;
-                    changed = true;
-                }
-                if ui.button(tr("Под винт с цилиндрической головкой")).on_hover_text(tr("Цековка по DIN 974 (ISO 4762)")).clicked() {
-                    *dia = num(clearance);
-                    *kind = HoleKind::Counterbore { dia: num(m.cbore.0), depth: num(m.cbore.1) };
-                    changed = true;
-                }
-                if ui.button(tr("Под винт с потайной головкой")).on_hover_text(tr("Зенковка 90° (ISO 10642)")).clicked() {
-                    *dia = num(clearance);
-                    *kind = HoleKind::Countersink { dia: num(m.csk), angle: num(90.0) };
-                    changed = true;
-                }
-                if ui.button(tr("Резьбовое отверстие")).on_hover_text(tr("Сверло под метчик, резьба крупная ISO")).clicked() {
-                    *dia = num(m.tap_drill);
-                    *kind = HoleKind::Tapped { major: num(m.d), pitch: num(m.pitch), modeled: false };
-                    changed = true;
+                if new_which != 3 {
+                    ui.add_space(2.0);
+                    if let Some(i) = crate::widgets::segmented(ui, ("hole_fit", uid), &[tr("Плотная"), tr("Обычная"), tr("Свободная")], fit) {
+                        touched |= i != fit;
+                        fit = i;
+                    }
                 }
             }
-            section(ui, tr("РАЗМЕРЫ"));
-            changed |= row(ui, tr("Диаметр"), |ui| expr_field(ui, ("hole_d", uid), dia, p, "мм"));
+            which = new_which;
+            // the first frame of a new hole writes the table sizes; later only a click on the type, size or fit does
+            let first_frame = ui.data(|d| d.get_temp::<bool>(state_id.with("seen"))).is_none();
+            if !custom && (touched || first_frame && matches!(kind, HoleKind::Simple) && (dia.eval(p).unwrap_or(0.0) - 8.0).abs() < 1e-9) {
+                let m = &METRIC[size];
+                let clearance = m.clearance_dia(Fit::ALL[fit]);
+                match which {
+                    0 => { *dia = num(clearance); *kind = HoleKind::Simple; }
+                    1 => { *dia = num(clearance); *kind = HoleKind::Counterbore { dia: num(m.cbore.0), depth: num(m.cbore.1) }; }
+                    2 => { *dia = num(clearance); *kind = HoleKind::Countersink { dia: num(m.csk), angle: num(90.0) }; }
+                    _ => {
+                        let modeled = matches!(kind, HoleKind::Tapped { modeled: true, .. });
+                        *dia = num(m.tap_drill);
+                        *kind = HoleKind::Tapped { major: num(m.d), pitch: num(m.pitch), modeled };
+                    }
+                }
+                changed = true;
+            } else if custom && touched {
+                *kind = match which {
+                    0 => HoleKind::Simple,
+                    1 => HoleKind::Counterbore { dia: num(16.0), depth: num(3.0) },
+                    2 => HoleKind::Countersink { dia: num(16.0), angle: num(90.0) },
+                    _ => HoleKind::Tapped { major: num(8.0), pitch: num(1.25), modeled: false },
+                };
+                changed = true;
+            }
+            ui.data_mut(|d| d.insert_temp(state_id.with("seen"), true));
+            // one line that says what will be cut
+            let fmt = |e: &Expr| fusion_core::expr::format_num(e.eval(p).unwrap_or(0.0));
+            let summary = match kind {
+                HoleKind::Simple => format!("Ø{} мм", fmt(dia)),
+                HoleKind::Counterbore { dia: d2, depth: h2 } => format!("Ø{} мм · {} Ø{} × {}", fmt(dia), tr("цековка"), fmt(d2), fmt(h2)),
+                HoleKind::Countersink { dia: d2, angle } => format!("Ø{} мм · {} Ø{}, {}°", fmt(dia), tr("зенковка"), fmt(d2), fmt(angle)),
+                HoleKind::Tapped { major, pitch, .. } => format!("M{} × {} · {} Ø{}", fmt(major), fmt(pitch), tr("сверло"), fmt(dia)),
+            };
+            egui::Frame::new().fill(ui.visuals().extreme_bg_color).corner_radius(10).inner_margin(egui::Margin::symmetric(10, 7)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new(summary).strong());
+            });
+            ui.add_space(2.0);
+            if crate::widgets::checkbox(ui, &mut custom, tr("Свои размеры")).changed() {
+                changed = true;
+            }
+            ui.data_mut(|d| d.insert_temp(state_id, (size, fit, custom)));
+            if custom {
+                changed |= row(ui, tr("Диаметр"), |ui| expr_field(ui, ("hole_d", uid), dia, p, "мм"));
+                match kind {
+                    HoleKind::Simple => {}
+                    HoleKind::Counterbore { dia: d2, depth: h2 } => {
+                        changed |= row(ui, tr("Диаметр цековки"), |ui| expr_field(ui, ("cb_d", uid), d2, p, "мм"));
+                        changed |= row(ui, tr("Глубина цековки"), |ui| expr_field(ui, ("cb_h", uid), h2, p, "мм"));
+                    }
+                    HoleKind::Countersink { dia: d2, angle } => {
+                        changed |= row(ui, tr("Диаметр зенковки"), |ui| expr_field(ui, ("cs_d", uid), d2, p, "мм"));
+                        changed |= row(ui, tr("Угол конуса"), |ui| expr_field(ui, ("cs_a", uid), angle, p, "°"));
+                    }
+                    HoleKind::Tapped { major, pitch, .. } => {
+                        changed |= row(ui, tr("Диаметр резьбы"), |ui| expr_field(ui, ("tap_d", uid), major, p, "мм"));
+                        changed |= row(ui, tr("Шаг резьбы"), |ui| expr_field(ui, ("tap_p", uid), pitch, p, "мм"));
+                    }
+                }
+            }
+            if let HoleKind::Tapped { modeled, .. } = kind {
+                changed |= crate::widgets::checkbox(ui, modeled, tr("Смоделировать резьбу (медленнее)")).changed();
+                if *modeled {
+                    ui.label(RichText::new(tr("Резьба вырезается винтовой канавкой, глубиной до 40 мм")).weak().small());
+                }
+            }
+            section(ui, tr("ГЛУБИНА"));
             let mut through = depth.is_none();
             if crate::widgets::checkbox(ui, &mut through, tr("Насквозь")).changed() {
                 *depth = if through { None } else { Some(num(10.0)) };
@@ -535,45 +603,6 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
             }
             if let Some(d) = depth {
                 changed |= row(ui, tr("Глубина"), |ui| expr_field(ui, ("hole_depth", uid), d, p, "мм"));
-            }
-            section(ui, tr("ТИП"));
-            let mut which = match kind {
-                HoleKind::Simple => 0,
-                HoleKind::Counterbore { .. } => 1,
-                HoleKind::Countersink { .. } => 2,
-                HoleKind::Tapped { .. } => 3,
-            };
-            let names = [tr("Простое"), tr("С цековкой"), tr("С зенковкой"), tr("Резьбовое")];
-            ui.horizontal(|ui| {
-                for (i, n) in names.iter().enumerate() {
-                    if ui.selectable_label(which == i, *n).clicked() && which != i {
-                        which = i;
-                        *kind = match i {
-                            0 => HoleKind::Simple,
-                            1 => HoleKind::Counterbore { dia: num(16.0), depth: num(3.0) },
-                            2 => HoleKind::Countersink { dia: num(16.0), angle: num(90.0) },
-                            _ => HoleKind::Tapped { major: num(8.0), pitch: num(1.25), modeled: false },
-                        };
-                        changed = true;
-                    }
-                }
-            });
-            match kind {
-                HoleKind::Simple => {}
-                HoleKind::Counterbore { dia: d2, depth: h2 } => {
-                    changed |= row(ui, tr("Диаметр цековки"), |ui| expr_field(ui, ("cb_d", uid), d2, p, "мм"));
-                    changed |= row(ui, tr("Глубина цековки"), |ui| expr_field(ui, ("cb_h", uid), h2, p, "мм"));
-                }
-                HoleKind::Countersink { dia: d2, angle } => {
-                    changed |= row(ui, tr("Диаметр зенковки"), |ui| expr_field(ui, ("cs_d", uid), d2, p, "мм"));
-                    changed |= row(ui, tr("Угол конуса"), |ui| expr_field(ui, ("cs_a", uid), angle, p, "°"));
-                }
-                HoleKind::Tapped { major, pitch, modeled } => {
-                    changed |= row(ui, tr("Диаметр резьбы"), |ui| expr_field(ui, ("tap_d", uid), major, p, "мм"));
-                    changed |= row(ui, tr("Шаг резьбы"), |ui| expr_field(ui, ("tap_p", uid), pitch, p, "мм"));
-                    changed |= crate::widgets::checkbox(ui, modeled, tr("Смоделировать резьбу (медленнее)")).changed();
-                    ui.label(RichText::new(tr("Диаметр отверстия выше — это сверло под резьбу. Резьба глубиной до 40 мм")).weak().small());
-                }
             }
         }
         FeatureKind::Coil { at, axis, dia, pitch, turns, section: sec, op } => {

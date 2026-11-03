@@ -2,6 +2,7 @@
 
 Every change, even a small fix, gets a new version: `0.00.N — what was added` (up to five words, English only). Newest first.
 
+- 0.00.35 — Text fixes, flush placing, Hebrew
 - 0.00.34 — STEP and DXF export
 - 0.00.33 — Sketch text, ellipse, spline
 - 0.00.32 — Extrude to body, start offset

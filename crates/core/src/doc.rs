@@ -647,6 +647,31 @@ fn find_sketch(uid: u64, steps: &[StepResult], feats: &[Feature]) -> Result<Arc<
 }
 
 /// Объединить несколько кусков в одно тело-инструмент.
+/// Destination point for "Place on plane" so that the placed face lands flush against an anchor of the target face:
+/// `anchor` = (column, row) with 0 = low edge, 1 = middle, 2 = high edge along the target plane's axes; `lo`/`hi` are the
+/// bounds of the target face in its plane coordinates. The turn the body makes is replayed here, so a source face that
+/// ends up rotated is still aligned by its real footprint. The returned point is where the picked `seed` has to land.
+pub fn place_anchor(face: &Plane, source: &[[f64; 2]], seed: DVec3, target: &Plane, lo: [f64; 2], hi: [f64; 2], anchor: (usize, usize)) -> DVec3 {
+    let (from, to) = (face.normal().normalize(), target.normal().normalize());
+    let q = DQuat::from_rotation_arc(from, -to);
+    let (xa, ya) = (target.xa(), target.ya());
+    let (mut umin, mut umax, mut vmin, mut vmax) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+    for p in source {
+        let rel = q * (face.to_world(*p) - seed);
+        let (u, v) = (rel.dot(xa), rel.dot(ya));
+        umin = umin.min(u);
+        umax = umax.max(u);
+        vmin = vmin.min(v);
+        vmax = vmax.max(v);
+    }
+    let place = |a: usize, lo: f64, hi: f64, min: f64, max: f64| match a {
+        0 => lo - min,
+        1 => (lo + hi) / 2.0 - (min + max) / 2.0,
+        _ => hi - max,
+    };
+    target.to_world([place(anchor.0, lo[0], hi[0], umin, umax), place(anchor.1, lo[1], hi[1], vmin, vmax)])
+}
+
 /// Distance from `plane` along its normal to the nearest side of body `id` (the extrusion stops there).
 fn distance_to_body(model: &Model, plane: &Plane, id: u64) -> Result<f64, String> {
     let b = model.body(id).ok_or("тело, до которого строится выдавливание, не найдено")?;
@@ -2642,6 +2667,39 @@ mod interference_tests {
 #[cfg(test)]
 mod place_anchor_tests {
     use super::*;
+
+    #[test]
+    fn place_anchor_puts_the_face_flush_in_every_corner_even_when_turned() {
+        let n = Expr::num;
+        let top = Plane { origin: [0.0, 0.0, 10.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+        for (rx, ry) in [(0, 0), (2, 0), (0, 2), (2, 2), (1, 1), (1, 2), (0, 1)] {
+            // a 16 x 6 x 12 bar lying at x = 100 stands on one of its long sides: the footprint is turned relative to its own axes
+            let mut d = Document::default();
+            d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(40.0), d: n(40.0), h: n(10.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+            d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(16.0), d: n(6.0), h: n(12.0) }, at: [n(100.0), n(0.0), n(0.0)], op: Op::NewBody });
+            let id = {
+                let mut ev = Evaluator::default();
+                ev.evaluate(&d);
+                ev.model().bodies[1].id
+            };
+            // the side wall at y = 0 (normal -Y): 16 wide in x, 12 high in z
+            let face = Plane { origin: [100.0, 0.0, 0.0], x: [1.0, 0.0, 0.0], y: [0.0, 0.0, 1.0] };
+            let outer = [[0.0, 0.0], [16.0, 0.0], [16.0, 12.0], [0.0, 12.0]];
+            let seed = DVec3::new(108.0, 0.0, 6.0);
+            let to = place_anchor(&face, &outer, seed, &top, [0.0, 0.0], [40.0, 40.0], (rx, ry));
+            d.insert(FeatureKind::PlaceOnPlane { body: id, face, seed: seed.to_array(), target: top, to: Some(to.to_array()) });
+            let mut ev = Evaluator::default();
+            ev.evaluate(&d);
+            assert!(ev.steps().iter().all(|s| s.error.is_none()), "{:?}", ev.steps().iter().filter_map(|s| s.error.clone()).collect::<Vec<_>>());
+            let (lo, hi) = ev.model().body(id).unwrap().mesh().bounds().unwrap();
+            let (x_ok, y_ok) = (
+                match rx { 0 => lo.x.abs() < 1e-6, 2 => (hi.x - 40.0).abs() < 1e-6, _ => ((lo.x + hi.x) / 2.0 - 20.0).abs() < 1e-6 },
+                match ry { 0 => lo.y.abs() < 1e-6, 2 => (hi.y - 40.0).abs() < 1e-6, _ => ((lo.y + hi.y) / 2.0 - 20.0).abs() < 1e-6 },
+            );
+            assert!(x_ok && y_ok, "anchor ({rx},{ry}): body {lo:?} .. {hi:?}");
+            assert!(lo.z >= 10.0 - 1e-6, "it stands on the plate, not inside it: {lo:?}");
+        }
+    }
 
     #[test]
     fn placed_face_keeps_its_footprint_around_the_destination_point() {

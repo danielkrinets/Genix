@@ -16,6 +16,56 @@ pub struct SketchText {
     pub angle: f64,
 }
 
+/// Упрощённый двунаправленный порядок: иврит справа налево, числа и латиница слева направо.
+/// egui рисует символы слева направо, поэтому порядок серий меняем заранее.
+pub fn visual_rtl(s: &str) -> String {
+    let is_he = |c: char| ('\u{0590}'..='\u{05FF}').contains(&c);
+    if !s.chars().any(is_he) {
+        return s.to_string();
+    }
+    let s = s.replace("{}", "\u{E000}");
+    let chars: Vec<char> = s.chars().collect();
+    // 0 = влево-вправо, 1 = справа-налево
+    let strong: Vec<Option<u8>> = chars.iter().map(|&c| if is_he(c) { Some(1) } else if c.is_alphanumeric() || c == '\u{E000}' { Some(0) } else { None }).collect();
+    let mut dir = vec![1u8; chars.len()];
+    for i in 0..chars.len() {
+        dir[i] = match strong[i] {
+            Some(d) => d,
+            None => {
+                let prev = (0..i).rev().find_map(|j| strong[j]);
+                let next = (i + 1..chars.len()).find_map(|j| strong[j]);
+                if prev == Some(0) && next == Some(0) { 0 } else { 1 }
+            }
+        };
+    }
+    let mut runs: Vec<(u8, String)> = Vec::new();
+    for (i, &c) in chars.iter().enumerate() {
+        if let Some(last) = runs.last_mut().filter(|r| r.0 == dir[i]) {
+            last.1.push(c);
+        } else {
+            runs.push((dir[i], c.to_string()));
+        }
+    }
+    let mirror = |c: char| match c {
+        '(' => ')',
+        ')' => '(',
+        '[' => ']',
+        ']' => '[',
+        '«' => '»',
+        '»' => '«',
+        c => c,
+    };
+    let mut out = String::new();
+    for (d, run) in runs.into_iter().rev() {
+        if d == 1 {
+            out.extend(run.chars().rev().map(mirror));
+        } else {
+            out.push_str(&run);
+        }
+    }
+    out.replace('\u{E000}', "{}")
+}
+
 fn flatten(curve: &OutlineCurve, out: &mut Vec<[f64; 2]>) {
     let pt = |p: ab_glyph::Point| [p.x as f64, p.y as f64];
     match curve {
@@ -60,6 +110,9 @@ fn inside(poly: &[P2], p: P2) -> bool {
 /// All closed contours of the string in sketch coordinates (baseline start at the origin, before rotation and shift).
 fn contours(text: &str, height: f64) -> Vec<Vec<P2>> {
     let Ok(font) = FontRef::try_from_slice(FONT_BYTES) else { return Vec::new() };
+    // Hebrew runs are laid out right to left; points (niqqud, cantillation) are dropped: the font has no mark positioning
+    let text: String = visual_rtl(text).chars().filter(|c| !('\u{0591}'..='\u{05C7}').contains(c)).collect();
+    let text = text.as_str();
     let units = font.units_per_em().unwrap_or(2048.0) as f64;
     let scale = height / units;
     let scaled = font.as_scaled(ab_glyph::PxScale::from(units as f32));
@@ -141,6 +194,28 @@ pub fn regions(t: &SketchText) -> Vec<Region> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hebrew_is_laid_out_right_to_left_and_numbers_stay_readable() {
+        assert_eq!(visual_rtl("שלום"), "םולש");
+        assert_eq!(visual_rtl("abc"), "abc");
+        // the first Hebrew letter ends up on the right: the outline of "שלום" is the mirror order of the logical string
+        let he = regions(&SketchText { text: "של".into(), pos: [0.0, 0.0], height: 10.0, angle: 0.0 });
+        let logical_first = regions(&SketchText { text: "ש".into(), pos: [0.0, 0.0], height: 10.0, angle: 0.0 });
+        let right_edge = |rs: &[Region]| rs.iter().flat_map(|r| r.outer.iter()).map(|p| p[0]).fold(f64::MIN, f64::max);
+        let shin_width = right_edge(&logical_first);
+        assert!(right_edge(&he) > shin_width, "a second letter lies to the left or right of the first, never on top of it");
+        let leftmost_shin = regions(&SketchText { text: "ש".into(), pos: [0.0, 0.0], height: 10.0, angle: 0.0 }).iter().flat_map(|r| r.outer.iter()).map(|p| p[0]).fold(f64::MAX, f64::min);
+        let leftmost_he = he.iter().flat_map(|r| r.outer.iter()).map(|p| p[0]).fold(f64::MAX, f64::min);
+        assert!(leftmost_he >= leftmost_shin - 1e-9);
+        // a Hebrew word has regions (the font covers the block) and mixed text keeps the digits in order
+        assert!(!regions(&SketchText { text: "שלום 123".into(), pos: [0.0, 0.0], height: 10.0, angle: 0.0 }).is_empty());
+        assert_eq!(visual_rtl("גופים 12"), "12 םיפוג");
+        // niqqud do not add stray regions
+        let plain = regions(&SketchText { text: "שלום".into(), pos: [0.0, 0.0], height: 10.0, angle: 0.0 }).len();
+        let pointed = regions(&SketchText { text: "שָׁלוֹם".into(), pos: [0.0, 0.0], height: 10.0, angle: 0.0 }).len();
+        assert_eq!(plain, pointed);
+    }
 
     fn t(text: &str, height: f64) -> SketchText {
         SketchText { text: text.into(), pos: [0.0, 0.0], height, angle: 0.0 }
