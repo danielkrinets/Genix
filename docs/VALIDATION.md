@@ -197,3 +197,7 @@ Test (core 133): three holes r=3 in a 60x30x10 plate remove 3 x pi*9*10 mm3 with
 
 ## Status of the user's list (2026-11-03, versions 0.00.36–0.00.42)
 Done: sketch mirror and patterns, symmetric and collinear constraints, thread on an existing cylinder, shell with several open faces, chamfer with two distances / distance + angle, measuring angles and areas, several holes at once. Every item passed its automated tests before the next was started; none of them was exercised by eye in the window (the QA window was shared with the user's own clicks).
+
+## 0.00.43 — tooltip pictures for every toolbar tool (checked 2026-11-03)
+
+Added before/after pictures drawn by the renderer for pipe, sweep, loft, place, interference, thread on a cylinder, offset plane, plane at angle, sketch and measure (the planes and the measured edge are shown as thin sheets/bars). All 31 toolbar tools now have a picture; the test decodes the new ones. Regenerate with `cargo test -p fusion-app render_tutorial_pictures -- --ignored` + `python3 tools/make_tips.py`. Not checked by eye on hover.

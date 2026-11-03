@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn every_listed_picture_decodes() {
-        for id in ["extrude", "fillet", "draft", "thread", "split", "box"] {
+        for id in ["extrude", "fillet", "draft", "thread", "split", "box", "pipe", "sweep", "loft", "place", "interference", "thread_on", "plane", "angle_plane"] {
             let (before, after) = bytes(id).unwrap_or_else(|| panic!("нет картинки для {id}"));
             assert!(image::load_from_memory(after).is_ok(), "{id} after");
             if let Some(b) = before {

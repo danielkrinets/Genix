@@ -895,6 +895,101 @@ pub mod offscreen {
             after.insert(FeatureKind::Move { bodies: vec![upper], translate: [n(0.0), n(0.0), n(10.0)], rotate: [n(0.0), n(0.0), n(0.0)], copy: false });
             jobs.push(("split", Some(before), after));
         }
+        // pipe, sweep: before = the path (drawn as a thin rod), after = the tube / the swept bar
+        {
+            let rod = |d: &mut Document| {
+                d.insert(bx(1.2, 1.2, 30.6, [-0.6, -0.6, 0.0]));
+                d.insert(bx(30.0, 1.2, 1.2, [0.0, -0.6, 29.4]));
+            };
+            let path_sketch = || {
+                let mut path = Sketch::default();
+                let pts = [[0.0, 0.0], [0.0, 30.0], [30.0, 30.0]].map(|q| path.add_point(q));
+                path.add(Entity::Line { a: pts[0], b: pts[1], construction: false });
+                path.add(Entity::Line { a: pts[1], b: pts[2], construction: false });
+                path
+            };
+            let mut before = Document::default();
+            rod(&mut before);
+            let mut after = Document::default();
+            let ps = after.insert(FeatureKind::Sketch { plane: Plane::XZ, sketch: path_sketch() });
+            after.insert(FeatureKind::Pipe { path: ps, outer: n(9.0), wall: n(1.5), op: Op::NewBody, shape: fusion_core::doc::PipeShape::Round, corner: n(0.0), bend: n(0.0) });
+            jobs.push(("pipe", Some(before.clone()), after));
+            let mut prof = Sketch::default();
+            prof.add_rect([-3.5, -3.5], [3.5, 3.5]);
+            let pr = ProfileRef::of(&prof.regions()[0]);
+            let mut sweep_before = before.clone();
+            sweep_before.insert(bx(7.0, 7.0, 0.6, [-3.5, -3.5, -0.6]));
+            let mut sweep_after = Document::default();
+            let ps = sweep_after.insert(FeatureKind::Sketch { plane: Plane::XZ, sketch: path_sketch() });
+            let s2 = sweep_after.insert(FeatureKind::Sketch { plane: Plane::XY, sketch: prof });
+            sweep_after.insert(FeatureKind::Sweep { sketch: s2, profiles: vec![pr], path: ps, op: Op::NewBody });
+            jobs.push(("sweep", Some(sweep_before), sweep_after));
+        }
+        // loft: two flat profiles at different heights become one smooth body
+        {
+            let mut a = Sketch::default();
+            a.add_rect([-10.0, -10.0], [10.0, 10.0]);
+            let ra = ProfileRef::of(&a.regions()[0]);
+            let mut b = Sketch::default();
+            b.add_circle([0.0, 0.0], 5.0);
+            let rb = ProfileRef::of(&b.regions()[0]);
+            let mut up = Plane::XY;
+            up.origin = [0.0, 0.0, 28.0];
+            let mut after = Document::default();
+            let sa = after.insert(FeatureKind::Sketch { plane: Plane::XY, sketch: a });
+            let sb = after.insert(FeatureKind::Sketch { plane: up, sketch: b });
+            after.insert(FeatureKind::Loft { profiles: vec![(sa, ra), (sb, rb)], op: Op::NewBody });
+            let before = doc(vec![bx(20.0, 20.0, 0.6, [-10.0, -10.0, 0.0]), cyl(5.0, 0.6, [0.0, 0.0, 28.0])]);
+            jobs.push(("loft", Some(before), after));
+        }
+        // place: a small block comes to lie on a big one
+        {
+            let before = doc(vec![bx(44.0, 44.0, 10.0, [0.0, 0.0, 0.0]), bx(16.0, 16.0, 14.0, [70.0, 14.0, 0.0])]);
+            let mut ev = Evaluator::default();
+            ev.evaluate(&before);
+            let small = ev.model().bodies[1].id;
+            let mut after = before.clone();
+            let face = Plane { origin: [70.0, 14.0, 0.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+            let top = Plane { origin: [0.0, 0.0, 10.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+            after.insert(FeatureKind::PlaceOnPlane { body: small, face: Plane { origin: [70.0, 14.0, 14.0], ..face }, seed: [78.0, 22.0, 14.0], target: top, to: Some([22.0, 22.0, 10.0]) });
+            jobs.push(("place", Some(before), after));
+        }
+        // interference: two bodies that share volume (apart / overlapping)
+        {
+            let apart = doc(vec![bx(26.0, 26.0, 26.0, [0.0, 0.0, 0.0]), bx(26.0, 26.0, 26.0, [40.0, 0.0, 0.0])]);
+            let near = doc(vec![bx(26.0, 26.0, 26.0, [0.0, 0.0, 0.0]), bx(26.0, 26.0, 26.0, [14.0, 8.0, 6.0])]);
+            jobs.push(("interference", Some(apart), near));
+        }
+        // thread on an existing rod
+        {
+            let before = doc(vec![cyl(8.0, 30.0, [0.0, 0.0, 0.0])]);
+            let id = first_id(&before);
+            let mut after = before.clone();
+            after.insert(FeatureKind::ThreadOn { body: id, edge: fusion_core::doc::EdgeRef::round([8.0, 0.0, 30.0], [0.0, 0.0, 30.0], [0.0, 0.0, 1.0]), length: n(22.0), pitch: n(3.0), depth: n(1.2) });
+            jobs.push(("thread_on", Some(before), after));
+        }
+        // construction planes (drawn as thin sheets): offset and tilted
+        {
+            let before = doc(vec![bx(40.0, 40.0, 20.0, [0.0, 0.0, 0.0])]);
+            let mut after = before.clone();
+            after.insert(bx(70.0, 70.0, 0.5, [-15.0, -15.0, 20.0 + 14.0]));
+            jobs.push(("plane", Some(before.clone()), after));
+            let mut tilted = before.clone();
+            tilted.insert(bx(70.0, 70.0, 0.5, [-15.0, -15.0, 20.0]));
+            let mut ev = Evaluator::default();
+            ev.evaluate(&tilted);
+            let sheet = ev.model().bodies[1].id;
+            tilted.insert(FeatureKind::Move { bodies: vec![sheet], translate: [n(0.0), n(0.0), n(0.0)], rotate: [n(35.0), n(0.0), n(0.0)], copy: false });
+            jobs.push(("angle_plane", Some(before), tilted));
+        }
+        // sketch: a flat profile on a plane (one picture); measure: a body with a bar laid along the measured edge
+        jobs.push(("sketch", None, doc(vec![bx(46.0, 30.0, 0.6, [0.0, 0.0, 0.0])])));
+        {
+            let before = doc(vec![bx(40.0, 26.0, 20.0, [0.0, 0.0, 0.0])]);
+            let mut after = before.clone();
+            after.insert(bx(40.0, 1.4, 1.4, [0.0, -1.4, 20.0 - 0.0]));
+            jobs.push(("measure", Some(before), after));
+        }
         // delete
         {
             let before = doc(vec![bx(26.0, 26.0, 26.0, [0.0, 0.0, 0.0]), cyl(11.0, 26.0, [48.0, 13.0, 0.0])]);
