@@ -794,7 +794,7 @@ pub mod offscreen {
         {
             let before = doc(vec![bx(50.0, 36.0, 20.0, [0.0, 0.0, 0.0])]);
             let mut after = before.clone();
-            after.insert(FeatureKind::Hole { plane: Plane { origin: [0.0, 0.0, 20.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] }, at: [n(25.0), n(18.0)], dia: n(14.0), depth: None, kind: fusion_core::doc::HoleKind::Simple });
+            after.insert(FeatureKind::Hole { plane: Plane { origin: [0.0, 0.0, 20.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] }, at: [n(25.0), n(18.0)], dia: n(14.0), depth: None, kind: fusion_core::doc::HoleKind::Simple, more: vec![] });
             jobs.push(("hole", Some(before), after));
         }
         // fillet and chamfer on every edge of a cube

@@ -189,3 +189,11 @@ Test (core 131): on a 40 mm cube edge: 4 x 4 removes 320 mm3, 4 x 10 removes 800
 
 Inspect → «Измерить» now has four kinds: «Расстояние» (as before), «Угол» (three points: start, vertex, end), «Площадь» (click a flat face: sum of its triangles) and «Между гранями» (two flat faces: 90° at a box corner, 180° for faces in one plane).
 Test (core 132): box 40x30x20: top face 1200, side 600, whole surface 2*(1200+800+600) exactly; angles 90/45/180 from three points; faces 90/180/135 from their normals. Not checked by eye in the window.
+
+## 0.00.42 — several holes in one operation (checked 2026-11-03)
+
+Hole: Shift-click on the same face adds another centre, «+ Ещё отверстие» adds one by numbers, a list «ЕЩЁ ОТВЕРСТИЯ» with ✕; all share diameter, depth and kind (counterbore, countersink, tapped). `Hole.more` (old files: none), at most 200 extra centres.
+Test (core 133): three holes r=3 in a 60x30x10 plate remove 3 x pi*9*10 mm3 within 2 %, counterbored pair builds, 300 centres are refused, old JSON loads. Not checked by eye in the window.
+
+## Status of the user's list (2026-11-03, versions 0.00.36–0.00.42)
+Done: sketch mirror and patterns, symmetric and collinear constraints, thread on an existing cylinder, shell with several open faces, chamfer with two distances / distance + angle, measuring angles and areas, several holes at once. Every item passed its automated tests before the next was started; none of them was exercised by eye in the window (the QA window was shared with the user's own clicks).

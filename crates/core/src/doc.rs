@@ -239,7 +239,16 @@ pub enum FeatureKind {
     Combine { target: u64, tools: Vec<u64>, op: BoolOp, keep_tools: bool },
     Remove { bodies: Vec<u64> },
     /// Отверстие на плоской грани: центр в координатах плоскости (нормаль наружу), глубина `None` — насквозь.
-    Hole { plane: Plane, at: [Expr; 2], dia: Expr, depth: Option<Expr>, kind: HoleKind },
+    /// `more` are further centres on the same face (same size and kind); old files have none.
+    Hole {
+        plane: Plane,
+        at: [Expr; 2],
+        dia: Expr,
+        depth: Option<Expr>,
+        kind: HoleKind,
+        #[serde(default)]
+        more: Vec<[Expr; 2]>,
+    },
     /// Пружина/спираль: круглое сечение вдоль винтовой линии вокруг оси.
     Coil { at: [Expr; 3], axis: Axis3, dia: Expr, pitch: Expr, turns: Expr, section: Expr, op: Op },
     /// Труба вдоль пути из чертежа: внешний диаметр и толщина стенки.
@@ -1241,16 +1250,21 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             }
             Ok((Arc::new(m), None))
         }
-        FeatureKind::Hole { plane, at, dia, depth, kind } => {
+        FeatureKind::Hole { plane, at, dia, depth, kind, more } => {
             let r = positive(dia, p, "диаметр")? / 2.0;
-            let center = plane.to_world([at[0].eval(p)?, at[1].eval(p)?]);
             let n = plane.normal();
             let big = prev.bodies.iter().filter_map(|b| b.mesh().bounds()).fold(0.0f64, |m, (l, h)| m.max((h - l).length())) + 10.0;
             let d = match depth {
                 Some(e) => positive(e, p, "глубина")?,
                 None => big,
             };
-            let mut parts = vec![Solid::from_mesh(&geom::frustum_mesh(center, n, r, -d, r, 1.0))?];
+            let mut parts: Vec<Solid> = Vec::new();
+            if more.len() > 200 {
+                return Err("слишком много отверстий в одной операции".into());
+            }
+            for uv in std::iter::once(at).chain(more.iter()) {
+            let center = plane.to_world([uv[0].eval(p)?, uv[1].eval(p)?]);
+            parts.push(Solid::from_mesh(&geom::frustum_mesh(center, n, r, -d, r, 1.0))?);
             match kind {
                 HoleKind::Simple => {}
                 HoleKind::Counterbore { dia: d2, depth: h2 } => {
@@ -1287,6 +1301,7 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                         parts.push(groove.boolean(&envelope, BoolOp::Intersect).transformed(&mat));
                     }
                 }
+            }
             }
             let tool = if parts.len() == 1 { parts.remove(0) } else { Solid::union_all(&parts) };
             let mut m = (**prev).clone();
@@ -1885,7 +1900,7 @@ mod new_ops {
             (HoleKind::Countersink { dia: Expr::num(14.0), angle: Expr::num(90.0) }, None, 0.0),
         ] {
             let (mut d, _) = plate();
-            d.insert(FeatureKind::Hole { plane: top, at: [Expr::num(20.0), Expr::num(15.0)], dia: Expr::num(10.0), depth, kind });
+            d.insert(FeatureKind::Hole { plane: top, at: [Expr::num(20.0), Expr::num(15.0)], dia: Expr::num(10.0), depth, kind, more: vec![] });
             let ev = run(&d);
             let v = ev.model().bodies[0].solid.volume();
             assert!(v < 12000.0 - 100.0 && v > 12000.0 - 1500.0 && v >= expect_min - 80.0, "{v} {expect_min}");
@@ -2041,7 +2056,7 @@ mod new_ops {
     fn press_pull_keeps_the_hole_of_a_face_with_an_opening() {
         let top = Plane { origin: [0.0, 0.0, 10.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
         let (mut d, _) = plate();
-        d.insert(FeatureKind::Hole { plane: top, at: [Expr::num(20.0), Expr::num(15.0)], dia: Expr::num(10.0), depth: None, kind: HoleKind::Simple });
+        d.insert(FeatureKind::Hole { plane: top, at: [Expr::num(20.0), Expr::num(15.0)], dia: Expr::num(10.0), depth: None, kind: HoleKind::Simple, more: vec![] });
         let before = run(&d).model().bodies[0].solid.volume();
         d.insert(FeatureKind::PressPull { plane: top, seed: [1.0, 1.0, 10.0], distance: Expr::num(5.0) });
         let after = run(&d).model().bodies[0].solid.volume();
@@ -2054,7 +2069,7 @@ mod new_ops {
         // правка числа в уже созданном шаге (отверстие, масштаб) должна менять модель при том же Evaluator
         let top = Plane { origin: [0.0, 0.0, 10.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
         let (mut d, body) = plate();
-        let hole = d.insert(FeatureKind::Hole { plane: top, at: [Expr::num(20.0), Expr::num(15.0)], dia: Expr::num(6.0), depth: None, kind: HoleKind::Simple });
+        let hole = d.insert(FeatureKind::Hole { plane: top, at: [Expr::num(20.0), Expr::num(15.0)], dia: Expr::num(6.0), depth: None, kind: HoleKind::Simple, more: vec![] });
         d.insert(FeatureKind::Scale { bodies: vec![body], factor: [Expr::num(1.0), Expr::num(1.0), Expr::num(1.0)], uniform: true });
         let mut ev = Evaluator::default();
         ev.evaluate(&d);
@@ -2524,7 +2539,7 @@ mod modeling_batch_tests {
         let mut d = Document::default();
         d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(30.0), d: n(30.0), h: n(12.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
         let top = Plane { origin: [0.0, 0.0, 12.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
-        let uid = d.insert(FeatureKind::Hole { plane: top, at: [n(15.0), n(15.0)], dia: n(dia), depth: depth.map(n), kind });
+        let uid = d.insert(FeatureKind::Hole { plane: top, at: [n(15.0), n(15.0)], dia: n(dia), depth: depth.map(n), kind, more: vec![] });
         (run(&d), uid)
     }
 
@@ -2593,6 +2608,36 @@ mod modeling_batch_tests {
         assert!(ev2.error(post).is_none(), "{:?}", ev2.error(post));
         let expect = std::f64::consts::PI * 10.0 * 5.0 * 8.0;
         assert!((ev2.model().bodies[0].mesh().volume() - expect).abs() < expect * 0.01);
+    }
+
+    #[test]
+    fn several_holes_in_one_operation_share_size_and_kind() {
+        let mut d = Document::default();
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(60.0), d: n(30.0), h: n(10.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        let top = Plane { origin: [0.0, 0.0, 10.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+        let before = run(&d).model().bodies[0].mesh().volume();
+        let uid = d.insert(FeatureKind::Hole { plane: top, at: [n(10.0), n(15.0)], dia: n(6.0), depth: None, kind: HoleKind::Simple, more: vec![[n(30.0), n(15.0)], [n(50.0), n(15.0)]] });
+        let ev = run(&d);
+        assert!(ev.error(uid).is_none(), "{:?}", ev.error(uid));
+        let one = std::f64::consts::PI * 9.0 * 10.0;
+        let v = ev.model().bodies[0].mesh().volume();
+        assert!((before - v - 3.0 * one).abs() < 3.0 * one * 0.02, "three holes of r = 3: removed {}", before - v);
+        assert_eq!(ev.model().bodies.len(), 1);
+        // counterbored and tapped holes repeat too
+        let mut e = Document::default();
+        e.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(60.0), d: n(30.0), h: n(10.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        let cb = e.insert(FeatureKind::Hole { plane: top, at: [n(10.0), n(15.0)], dia: n(5.0), depth: None, kind: HoleKind::Counterbore { dia: n(9.0), depth: n(3.0) }, more: vec![[n(40.0), n(15.0)]] });
+        assert!(run(&e).error(cb).is_none(), "{:?}", run(&e).error(cb));
+        let (lo, _) = run(&e).model().bodies[0].mesh().bounds().unwrap();
+        assert!(lo.x.abs() < 1e-9, "the plate keeps its size");
+        // a limit protects against runaway lists
+        let many: Vec<[Expr; 2]> = (0..300).map(|i| [n(1.0 + (i % 50) as f64), n(5.0)]).collect();
+        let bad = e.insert(FeatureKind::Hole { plane: top, at: [n(5.0), n(5.0)], dia: n(0.2), depth: None, kind: HoleKind::Simple, more: many });
+        assert!(run(&e).error(bad).is_some());
+        // old JSON without `more` loads
+        let json = serde_json::to_string(&FeatureKind::Hole { plane: top, at: [n(1.0), n(1.0)], dia: n(2.0), depth: None, kind: HoleKind::Simple, more: vec![] }).unwrap();
+        let old = json.replace(r#","more":[]"#, "");
+        assert!(!old.contains("more") && serde_json::from_str::<FeatureKind>(&old).is_ok(), "{old}");
     }
 
     #[test]
@@ -2686,7 +2731,7 @@ mod modeling_batch_tests {
         let mut h = Document::default();
         h.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(30.0), d: n(30.0), h: n(14.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
         let top = Plane { origin: [0.0, 0.0, 14.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
-        h.insert(FeatureKind::Hole { plane: top, at: [n(15.0), n(15.0)], dia: n(8.0), depth: None, kind: HoleKind::Simple });
+        h.insert(FeatureKind::Hole { plane: top, at: [n(15.0), n(15.0)], dia: n(8.0), depth: None, kind: HoleKind::Simple, more: vec![] });
         let pid = run(&h).model().bodies[0].id;
         let before = run(&h).model().bodies[0].mesh().volume();
         let rim2 = EdgeRef::round([19.0, 15.0, 14.0], [15.0, 15.0, 14.0], [0.0, 0.0, 1.0]);

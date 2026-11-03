@@ -2126,11 +2126,18 @@ impl App {
                             face_done = true;
                         }
                     }
-                    (FeatureKind::Hole { plane, at, .. }, _, PickTarget::Face) => {
+                    (FeatureKind::Hole { plane, at, more, .. }, _, PickTarget::Face) => {
                         if let Some((pl, loc)) = face {
-                            *plane = pl;
-                            at[0] = Expr::num(loc[0]);
-                            at[1] = Expr::num(loc[1]);
+                            let same_face = (pl.normal() - plane.normal()).length() < 1e-6 && (pl.o() - plane.o()).dot(plane.normal()).abs() < 1e-6;
+                            if shift && same_face {
+                                // Shift adds one more hole on the same face
+                                more.push([Expr::num(loc[0]), Expr::num(loc[1])]);
+                            } else {
+                                *plane = pl;
+                                at[0] = Expr::num(loc[0]);
+                                at[1] = Expr::num(loc[1]);
+                                more.clear();
+                            }
                             changed = true;
                         }
                     }

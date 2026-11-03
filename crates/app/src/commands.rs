@@ -496,11 +496,37 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                 changed = true;
             }
         }
-        FeatureKind::Hole { at, dia, depth, kind, .. } => {
+        FeatureKind::Hole { at, dia, depth, kind, more, .. } => {
             section(ui, tr("ПОЛОЖЕНИЕ"));
-            ui.label(RichText::new(tr("Щёлкните грань: центр и оси привязываются автоматически")).weak());
+            ui.label(RichText::new(tr("Щёлкните грань: центр и оси привязываются автоматически. Shift + щелчок добавляет ещё отверстие")).weak());
             for (i, a) in ["X", "Y"].iter().enumerate() {
                 changed |= row(ui, a, |ui| expr_field(ui, ("hole_at", uid, i), &mut at[i], p, "мм"));
+            }
+            if !more.is_empty() {
+                section(ui, tr("ЕЩЁ ОТВЕРСТИЯ"));
+                let mut remove = None;
+                for (k, uv) in more.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{}.", k + 2));
+                        ui.spacing_mut().text_edit_width = 54.0;
+                        changed |= expr_field(ui, ("hole_more", uid, k, 0), &mut uv[0], p, "");
+                        changed |= expr_field(ui, ("hole_more", uid, k, 1), &mut uv[1], p, "");
+                        if ui.small_button("✕").on_hover_text(tr("Убрать это отверстие")).clicked() {
+                            remove = Some(k);
+                        }
+                    });
+                }
+                if let Some(k) = remove {
+                    more.remove(k);
+                    changed = true;
+                }
+            }
+            if ui.button(tr("+ Ещё отверстие")).on_hover_text(tr("Добавить отверстие рядом, его положение можно задать числами")).clicked() {
+                let step = dia.eval(p).unwrap_or(8.0) * 2.5;
+                let last = more.last().unwrap_or(at);
+                let next = [Expr::num(last[0].eval(p).unwrap_or(0.0) + step), last[1].clone()];
+                more.push(next);
+                changed = true;
             }
             use fusion_core::fasteners::{Fit, METRIC};
             // what the panel remembers while it is open: screw size, fit, and whether the sizes are typed by hand
@@ -935,7 +961,7 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
         "coil" => FeatureKind::Coil { at: zero(), axis: Axis3::Z, dia: num(20.0), pitch: num(6.0), turns: num(5.0), section: num(2.0), op: Op::NewBody },
         "hole" => {
             let (plane, at) = c.top_face.unwrap_or((fusion_core::Plane::XY, [0.0, 0.0]));
-            FeatureKind::Hole { plane, at: [num(at[0].round()), num(at[1].round())], dia: num(8.0), depth: None, kind: HoleKind::Simple }
+            FeatureKind::Hole { plane, at: [num(at[0].round()), num(at[1].round())], dia: num(8.0), depth: None, kind: HoleKind::Simple, more: vec![] }
         }
         "place" => {
             let (face, at) = c.top_face.unwrap_or((fusion_core::Plane::XY, [0.0, 0.0]));

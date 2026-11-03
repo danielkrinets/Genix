@@ -1087,4 +1087,10 @@ pub const EN: &[(&str, &str)] = &[
     ("Щёлкните грань тела", "Click a face of a body"),
     ("Угол между гранями: 90° у прямого угла коробки, 180° у граней в одной плоскости", "Angle between faces: 90° at a box corner, 180° for faces in one plane"),
     ("Щёлкните две грани ({} из 2)", "Click two faces ({} of 2)"),
+    ("Щёлкните грань: центр и оси привязываются автоматически. Shift + щелчок добавляет ещё отверстие", "Click a face: the centre and axes snap automatically. Shift + click adds another hole"),
+    ("ЕЩЁ ОТВЕРСТИЯ", "MORE HOLES"),
+    ("Убрать это отверстие", "Remove this hole"),
+    ("+ Ещё отверстие", "+ Another hole"),
+    ("Добавить отверстие рядом, его положение можно задать числами", "Add a hole next to it; its position can be typed"),
+    ("слишком много отверстий в одной операции", "too many holes in one operation"),
 ];
