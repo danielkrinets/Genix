@@ -352,6 +352,8 @@ pub enum HomeAction {
     SignOut,
     /// «Пожаловаться на баг» в боковой панели.
     Report,
+    /// Open the subscription / licence window.
+    License,
 }
 
 impl HomeState {
@@ -591,50 +593,14 @@ fn hub_content_inner(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, pr
                 HomePage::Team => team_page(ui, h, st, &mut action),
                 HomePage::Updates => h.updates.ui(ui),
                 HomePage::Server => {
-                    ui.heading(tr("Сервер Genix"));
-                    ui.label(RichText::new(tr("Демонстрационная подписка")).color(muted(ui)));
-                    ui.add_space(CONTENT_LEFT);
-                    ui.label(RichText::new(tr("Ваше пространство для моделей")).size(20.0).strong());
-                    ui.label(tr("Будущий сервер для хранения проектов и работы с ними на разных устройствах."));
-                    ui.add_space(12.0);
-                    ui.label(tr("Сейчас сервер не подключён. Модели хранятся только на этом устройстве."));
-                    ui.label(tr("Цена и тарифы пока не определены. Оплата не производится."));
-                    ui.add_space(CONTENT_LEFT);
-                    let active = st.account.is_some() && st.server_demo_account == st.account;
-                    if active {
-                        ui.label(RichText::new(tr("Демо-подписка активна")).strong());
-                        ui.label(tr("Это локальный статус для проверки интерфейса. Загрузка на сервер недоступна."));
-                        ui.add_space(12.0);
-                        if st.ticket.is_none() {
-                            st.ticket = Some(crate::settings::Ticket { number: crate::ticket::number_for(st.account.as_deref().unwrap_or_default()), activated: false });
-                        }
-                        if let Some(ticket) = st.ticket.clone() {
-                            if crate::ticket::show(ui, &ticket.number, ticket.activated) {
-                                st.ticket = Some(crate::settings::Ticket { activated: true, ..ticket });
-                                action = HomeAction::SettingsChanged;
-                            }
-                        }
-                        ui.add_space(12.0);
-                        if crate::ui_kit::b04(ui, tr("Отключить демо-подписку")).clicked() {
-                            st.server_demo_account = None;
-                            st.ticket = None;
-                            action = HomeAction::SettingsChanged;
-                        }
-                    } else if st.account.is_none() {
-                        ui.label(tr("Для демо-подписки войдите в аккаунт."));
-                        if crate::ui_kit::b02(ui, tr("Перейти в профиль")).clicked() { h.navigate(HomePage::Profile); }
-                    } else if h.checkout {
-                        ui.separator();
-                        ui.label(RichText::new(tr("Подтверждение демо-покупки")).strong());
-                        ui.label(tr("Деньги не списываются. Банковские данные не требуются."));
-                        if crate::ui_kit::b01(ui, tr("Подтвердить демо-подписку"), 260.0).clicked() {
-                            st.server_demo_account = st.account.clone();
-                            h.checkout = false;
-                            action = HomeAction::SettingsChanged;
-                        }
-                        if crate::ui_kit::b03(ui, tr("Отмена")).clicked() { h.checkout = false; }
-                    } else if primary(ui, tr("Купить подписку на сервер (мок)")).clicked() {
-                        h.checkout = true;
+                    ui.heading(tr("Подписка Genix Pro"));
+                    ui.label(RichText::new(tf!("${} в месяц · пробная версия 7 дней", crate::license::PRICE_USD)).color(muted(ui)));
+                    ui.add_space(20.0);
+                    ui.label(tr("В пробной версии всё работает, кроме сохранения и экспорта. Подписка снимает это ограничение."));
+                    ui.label(tr("Ключ лицензии проверяется на вашем компьютере, интернет для работы не нужен."));
+                    ui.add_space(16.0);
+                    if primary(ui, tr("Открыть подписку и лицензию")).clicked() {
+                        action = HomeAction::License;
                     }
                 }
                 HomePage::Settings => settings_page(ui, st, &mut action),

@@ -23,6 +23,7 @@ mod version;
 mod updates;
 mod icons;
 mod keys;
+mod license;
 mod trace_ui;
 mod i18n;
 mod i18n_en;

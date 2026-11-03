@@ -272,6 +272,11 @@ pub struct App {
     align_saved: Option<(fusion_core::Plane, Option<[f64; 3]>)>,
     /// The pointer is over a floating card (value fields, placement card): the model underneath must not react to it.
     over_overlay: bool,
+    /// The plan right now (trial / expired / paid) and the state of the licence window.
+    plan: crate::license::Plan,
+    license_open: bool,
+    license_key_input: String,
+    license_msg: Option<String>,
     /// Measure mode: 0 distance, 1 angle of three points, 2 area of a face, 3 angle between two faces.
     measure_kind: usize,
     /// Faces clicked in the measure modes: (plane with outward normal, area in mm²).
@@ -437,8 +442,32 @@ impl App {
         app
     }
 
-    fn from_settings(settings: Settings, theme: Theme) -> Self {
+    fn from_settings(mut settings: Settings, theme: Theme) -> Self {
+        // the trial starts at the first launch and is remembered twice (settings + a marker file)
+        let now_s = crate::license::now_unix();
+        #[cfg(not(test))]
+        {
+            let marker = crate::license::marker_path();
+            let started = match &marker {
+                Some(m) => crate::license::remember_trial_start(settings.trial_started, m, now_s),
+                None => if settings.trial_started > 0 { settings.trial_started } else { now_s },
+            };
+            if settings.trial_started != started || settings.trial_last_seen < now_s {
+                settings.trial_started = started;
+                settings.trial_last_seen = settings.trial_last_seen.max(now_s);
+                settings.save();
+            }
+        }
+        #[cfg(not(test))]
+        let plan = crate::license::status(now_s, settings.trial_started, settings.trial_last_seen, &settings.license_token, &crate::license::public_key());
+        // the unit tests exercise saving and exporting, so they run as a paid plan
+        #[cfg(test)]
+        let plan = crate::license::Plan::Pro { email: "test@example.com".into(), until: u64::MAX };
         Self {
+            plan,
+            license_open: false,
+            license_key_input: String::new(),
+            license_msg: None,
             doc: Document::default(),
             ev: Evaluator::default(),
             path: None,
@@ -756,9 +785,13 @@ impl App {
             self.report.show(false);
             return;
         }
+        if matches!(action, crate::home::HomeAction::License) {
+            self.license_open = true;
+            return;
+        }
         use crate::home::HomeAction;
         match action {
-            HomeAction::None | HomeAction::Report => {},
+            HomeAction::None | HomeAction::Report | HomeAction::License => {},
             HomeAction::New => self.new_blank_tab(),
             HomeAction::NewIn(folder) => {
                 self.new_blank_tab();
@@ -864,7 +897,20 @@ impl App {
         }
     }
 
+    /// Saving and exporting belong to the paid plan: in the trial (and after it) the licence window opens instead.
+    fn require_pro(&mut self, now: f64) -> bool {
+        if self.plan.can_save() {
+            return true;
+        }
+        self.license_open = true;
+        self.toast(tr("Сохранение и экспорт доступны в Genix Pro. В пробной версии модели не сохраняются"), true, now);
+        false
+    }
+
     fn save(&mut self, as_new: bool, now: f64) -> bool {
+        if !self.require_pro(now) {
+            return false;
+        }
         self.commit_pending_edits();
         let path = match (&self.path, as_new) {
             (Some(p), false) => Some(p.clone()),
@@ -904,6 +950,9 @@ impl App {
 
     /// Автосохранение всех именованных вкладок без переключения текущей.
     fn autosave(&mut self, now: f64) {
+        if !self.plan.can_save() {
+            return;
+        }
         let mut error = None;
         if self.dirty() {
             if let Some(path) = &self.path {
@@ -931,6 +980,9 @@ impl App {
 
     /// Снимок выбранных (или всех видимых) тел с текущего ракурса — PNG с прозрачным фоном.
     fn export_png(&mut self, now: f64) {
+        if !self.require_pro(now) {
+            return;
+        }
         let model = self.ev.model();
         let mut bodies: Vec<&fusion_core::doc::Body> = model.bodies.iter().filter(|b| self.selection.contains(&b.id)).collect();
         if bodies.is_empty() {
@@ -974,6 +1026,9 @@ impl App {
     }
 
     fn export(&mut self, fmt: &str, now: f64) {
+        if !self.require_pro(now) {
+            return;
+        }
         if self.model_bytes(fmt).is_none() {
             self.toast(tr("Нет тел для экспорта"), true, now);
             return;
@@ -990,6 +1045,9 @@ impl App {
 
     /// Writes the model to a temporary file and opens it in the chosen slicer app.
     fn open_in_slicer(&mut self, index: usize, now: f64) {
+        if !self.require_pro(now) {
+            return;
+        }
         let slicer = &crate::slicers::SLICERS[index];
         let Some(app) = crate::slicers::installed(slicer) else {
             self.toast(tf!("{} не установлен", slicer.name), true, now);
@@ -1652,6 +1710,12 @@ impl App {
 
     /// Нажатие на кнопку панели инструментов.
     fn run_tool(&mut self, id: &str, now: f64) {
+        if !self.plan.can_edit() {
+            // the trial is over: the editor only shows models until a licence is activated
+            self.license_open = true;
+            self.toast(tr("Пробный период закончился. Оформите подписку, чтобы продолжить"), true, now);
+            return;
+        }
         match id {
             "sketch" => self.start_sketch(),
             "measure" => {
@@ -2433,6 +2497,10 @@ impl App {
                 if ui.button(tr("Сообщить о проблеме…")).clicked() {
                     ui.close_menu();
                     self.report.show(false);
+                }
+                if ui.button(tr("Подписка и лицензия…")).clicked() {
+                    ui.close_menu();
+                    self.license_open = true;
                 }
             });
             ui.separator();
@@ -3790,11 +3858,13 @@ impl eframe::App for App {
             let mut act = crate::home::HomeAction::None;
             let list = self.project_list();
             let viewer = self.device == Device::Phone;
+            self.trial_banner(ctx);
             egui::CentralPanel::default().show(ctx, |ui| act = crate::home::home_ui(ui, &mut self.home, &mut self.settings, &list, viewer));
             self.handle_home_action(act);
             self.show_dialogs(ctx);
             return;
         }
+        self.trial_banner(ctx);
         egui::TopBottomPanel::top("toolbar").frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(10, 10))).show(ctx, |ui| self.toolbar(ui, now));
         egui::TopBottomPanel::bottom("timeline").frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(8, 6))).show(ctx, |ui| self.timeline(ui, now));
         if self.settings.show_left_panel {
@@ -3870,6 +3940,10 @@ impl App {
 
     fn show_dialogs(&mut self, ctx: &egui::Context) {
         let now = self.now;
+        self.refresh_plan();
+        if self.license_open {
+            self.license_window(ctx);
+        }
         if self.params_open {
             if !crate::widgets::text_input_active(ctx) && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                 self.params_open = false;
@@ -4934,6 +5008,132 @@ fn snap_card(ui: &mut egui::Ui, id: &str, pos: Pos2, edge_tip: &str) -> Option<(
     chosen
 }
 
+impl App {
+    /// Recomputes the plan about once a second: the trial days, an expired key, the latest time seen (the clock cannot go back).
+    fn refresh_plan(&mut self) {
+        #[cfg(not(test))]
+        {
+            let now_s = crate::license::now_unix();
+            if now_s > self.settings.trial_last_seen + 3600 {
+                self.settings.trial_last_seen = now_s;
+                self.settings.save();
+            }
+            self.plan = crate::license::status(now_s, self.settings.trial_started, self.settings.trial_last_seen, &self.settings.license_token, &crate::license::public_key());
+        }
+    }
+
+    /// A slim strip under the menu while the plan is not paid: what is limited and a button to the licence window.
+    fn trial_banner(&mut self, ctx: &egui::Context) {
+        let (text, bad) = match &self.plan {
+            crate::license::Plan::Pro { .. } => return,
+            crate::license::Plan::Trial { days_left } => (tf!("Пробная версия · осталось дней: {} · сохранение и экспорт отключены", days_left), false),
+            crate::license::Plan::Expired => (tr("Пробный период закончился · редактирование и сохранение отключены").to_string(), true),
+        };
+        let mut open = false;
+        egui::TopBottomPanel::top("trial-banner").frame(egui::Frame::NONE.fill(if bad { Color32::from_rgb(190, 55, 55) } else { crate::theme::accent() }).inner_margin(egui::Margin::symmetric(12, 6))).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(text).color(Color32::WHITE).strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(egui::Button::new(RichText::new(tf!("Подписка ${} в месяц", crate::license::PRICE_USD)).color(Color32::BLACK).strong()).fill(Color32::WHITE).corner_radius(10)).clicked() {
+                        open = true;
+                    }
+                });
+            });
+        });
+        if open {
+            self.license_open = true;
+        }
+    }
+
+    /// Plan, price, buying and activating a key.
+    fn license_window(&mut self, ctx: &egui::Context) {
+        let mut open = true;
+        let mut activate = false;
+        let mut buy = false;
+        egui::Window::new(tr("Подписка Genix Pro")).open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).fixed_size([440.0, 0.0]).show(ctx, |ui| {
+            let (title, detail) = match &self.plan {
+                crate::license::Plan::Trial { days_left } => (tr("Пробная версия").to_string(), tf!("Осталось дней: {}. Всё работает, кроме сохранения и экспорта.", days_left)),
+                crate::license::Plan::Expired => (tr("Пробный период закончился").to_string(), tr("Модели можно только смотреть. Оформите подписку, чтобы вернуть редактирование, сохранение и экспорт.").to_string()),
+                crate::license::Plan::Pro { email, until } => (tr("Genix Pro активна").to_string(), tf!("{} · до {}", email, date_text(*until))),
+            };
+            ui.label(RichText::new(title).size(22.0).strong());
+            ui.label(RichText::new(detail).color(crate::theme::secondary(ui)));
+            ui.add_space(10.0);
+            egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(18).inner_margin(16).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new(tf!("${} в месяц", crate::license::PRICE_USD)).size(26.0).strong());
+                ui.add_space(4.0);
+                for line in [tr("Сохранение проектов"), tr("Экспорт STL, 3MF, OBJ, STEP, DXF"), tr("Без ограничения по времени"), tr("Отмена подписки в любой момент")] {
+                    ui.label(format!("✓  {line}"));
+                }
+            });
+            ui.add_space(10.0);
+            if !self.plan.can_save() && crate::ui_kit::b01(ui, tr("Купить подписку"), 200.0).clicked() {
+                buy = true;
+            }
+            ui.add_space(6.0);
+            ui.label(RichText::new(tr("Уже есть ключ")).small().strong().color(crate::theme::secondary(ui)));
+            ui.horizontal(|ui| {
+                let field = ui.add(egui::TextEdit::singleline(&mut self.license_key_input).desired_width(ui.available_width() - 130.0).hint_text(RichText::new(tr("Вставьте ключ лицензии")).weak()).margin(egui::Margin::symmetric(10, 8)));
+                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (crate::ui_kit::b02(ui, tr("Активировать")).clicked() || enter) && !self.license_key_input.trim().is_empty() {
+                    activate = true;
+                }
+            });
+            if let Some(m) = &self.license_msg {
+                ui.label(RichText::new(m.as_str()).color(if m.starts_with('✓') { Color32::from_rgb(40, 150, 70) } else { Color32::from_rgb(200, 60, 60) }));
+            }
+            ui.add_space(8.0);
+            ui.separator();
+            ui.label(RichText::new(tr("Ключ проверяется на этом компьютере и не требует интернета. Войти через Google: скоро.")).small().color(crate::theme::secondary(ui)));
+        });
+        if buy {
+            open_url(crate::license::BUY_URL);
+        }
+        if activate {
+            let key = self.license_key_input.trim().to_string();
+            match crate::license::verify(&key, &crate::license::public_key()) {
+                Ok(c) if c.until > crate::license::now_unix().max(self.settings.trial_last_seen) => {
+                    self.settings.license_token = key;
+                    self.settings.save();
+                    self.license_msg = Some(format!("✓ {}", tf!("Ключ принят: {}", c.email)));
+                    self.license_key_input.clear();
+                    self.refresh_plan();
+                }
+                Ok(_) => self.license_msg = Some(tr("Срок действия ключа истёк").into()),
+                Err(e) => self.license_msg = Some(tr_dyn(&e)),
+            }
+        }
+        if !open {
+            self.license_open = false;
+            self.license_msg = None;
+        }
+    }
+}
+
+/// `YYYY-MM-DD` of a unix time (civil date from days since the epoch).
+fn date_text(unix: u64) -> String {
+    let z = (unix / 86_400) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    format!("{:04}-{:02}-{:02}", y + (m <= 2) as i64, m, d)
+}
+
+fn open_url(url: &str) {
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
@@ -5342,6 +5542,41 @@ mod lifecycle_tests {
         assert_eq!(app.tabs[0].doc, app.tabs[0].saved);
         let restored = Document::from_json(&std::fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(restored, expected);
+    }
+
+    #[test]
+    fn nothing_is_saved_or_exported_without_a_paid_plan() {
+        use crate::license::Plan;
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app();
+        let path = dir.path().join("trial.genix");
+        app.path = Some(path.clone());
+        app.doc.params.set("width", "42");
+        for plan in [Plan::Trial { days_left: 7 }, Plan::Trial { days_left: 1 }, Plan::Expired] {
+            app.plan = plan.clone();
+            app.license_open = false;
+            assert!(!app.save(false, 1.0), "{plan:?}");
+            assert!(app.license_open, "the licence window opens instead");
+            assert!(!path.exists(), "no file may appear in {plan:?}");
+            app.autosave(10.0);
+            assert!(!path.exists(), "autosave stays off in {plan:?}");
+            assert!(app.dirty(), "the changes stay in the window");
+        }
+        // an expired plan also stops the tools
+        app.plan = Plan::Expired;
+        app.license_open = false;
+        app.run_tool("extrude", 2.0);
+        assert!(app.license_open && matches!(app.mode, Mode::Idle));
+        // the trial may still edit
+        app.plan = Plan::Trial { days_left: 3 };
+        app.license_open = false;
+        app.run_tool("measure", 2.0);
+        assert!(!app.license_open && matches!(app.mode, Mode::Measure(_)));
+        // a paid plan saves
+        app.mode = Mode::Idle;
+        app.plan = Plan::Pro { email: "a@b.c".into(), until: u64::MAX };
+        assert!(app.save(false, 3.0));
+        assert!(path.exists());
     }
 
     #[test]

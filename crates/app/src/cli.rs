@@ -129,6 +129,43 @@ pub fn run(args: &[String]) -> Option<i32> {
             }
         }
         "--features" => { print_json(&fusion_core::agent::catalog()); Some(0) }
+        // vendor tools for licence keys: the private key lives only with the vendor, never in the repository
+        "--license-keygen" => {
+            let Some(out) = arg(2) else { eprintln!("usage: genix --license-keygen private_key_file"); return Some(2) };
+            if Path::new(out).exists() {
+                return fail(format!("{out} already exists: refusing to overwrite a private key"));
+            }
+            match crate::license::generate_keypair() {
+                Ok((private, public)) => match crate::files::write_atomic(Path::new(out), &private) {
+                    Ok(()) => {
+                        let hex: String = public.iter().map(|b| format!("{b:02x}")).collect();
+                        println!("private key written to {out} (keep it secret and backed up)\npublic key (put it in PUBLIC_KEY_HEX): {hex}");
+                        Some(0)
+                    }
+                    Err(e) => fail(e.to_string()),
+                },
+                Err(e) => fail(e),
+            }
+        }
+        "--license-sign" => {
+            let (Some(key), Some(email), Some(days)) = (arg(2), arg(3), arg(4).and_then(|d| d.parse::<u64>().ok())) else {
+                eprintln!("usage: genix --license-sign private_key_file email days");
+                return Some(2);
+            };
+            let pkcs8 = match std::fs::read(key) { Ok(b) => b, Err(e) => return fail(format!("{key}: {e}")) };
+            let claims = crate::license::Claims { email: email.to_string(), until: crate::license::now_unix() + days * 86_400 };
+            match crate::license::sign(&pkcs8, &claims) {
+                Ok(token) => { println!("{token}"); Some(0) }
+                Err(e) => fail(e),
+            }
+        }
+        "--license-check" => {
+            let Some(token) = arg(2) else { eprintln!("usage: genix --license-check token"); return Some(2) };
+            match crate::license::verify(token, &crate::license::public_key()) {
+                Ok(c) => { println!("valid: {} until unix {}", c.email, c.until); Some(0) }
+                Err(e) => fail(e),
+            }
+        }
         _ => None,
     }
 }

@@ -175,6 +175,11 @@ pub struct Settings {
     pub setup_done: bool,
     /// Время (unix) последнего отчёта о сбое, о котором уже спросили.
     pub last_crash_seen: u64,
+    /// When the 7-day trial began (unix seconds, 0 = not started) and the latest time the app has seen: the clock cannot go back.
+    pub trial_started: u64,
+    pub trial_last_seen: u64,
+    /// Signed licence key of the paid plan (empty = none).
+    pub license_token: String,
 }
 
 impl Default for Settings {
@@ -215,6 +220,9 @@ impl Default for Settings {
             decimals: 2,
             setup_done: false,
             last_crash_seen: 0,
+            trial_started: 0,
+            trial_last_seen: 0,
+            license_token: String::new(),
         }
     }
 }

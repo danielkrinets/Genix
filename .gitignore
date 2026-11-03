@@ -1,3 +1,7 @@
 target
 dist
 .DS_Store
+
+# licence private keys never belong in the repository
+*.pk8
+*.pem

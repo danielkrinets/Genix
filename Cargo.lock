@@ -824,6 +824,7 @@ dependencies = [
 name = "fusion-app"
 version = "0.1.0"
 dependencies = [
+ "base64 0.21.7",
  "bytemuck",
  "eframe",
  "egui_extras",
@@ -836,6 +837,7 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "png 0.17.16",
  "rfd",
+ "ring",
  "serde",
  "serde_json",
  "tempfile",
