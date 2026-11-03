@@ -277,6 +277,10 @@ pub struct App {
     license_open: bool,
     license_key_input: String,
     license_msg: Option<String>,
+    /// An answer awaited from the licence server (renewal); `renew_silent` hides its result when the app asked by itself.
+    renew_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    renew_silent: bool,
+    renew_checked: bool,
     /// Measure mode: 0 distance, 1 angle of three points, 2 area of a face, 3 angle between two faces.
     measure_kind: usize,
     /// Faces clicked in the measure modes: (plane with outward normal, area in mm²).
@@ -470,6 +474,9 @@ impl App {
             license_open: false,
             license_key_input: String::new(),
             license_msg: None,
+            renew_rx: None,
+            renew_silent: false,
+            renew_checked: false,
             doc: Document::default(),
             ev: Evaluator::default(),
             path: None,
@@ -3943,6 +3950,7 @@ impl App {
     fn show_dialogs(&mut self, ctx: &egui::Context) {
         let now = self.now;
         self.refresh_plan();
+        self.poll_renewal(ctx);
         if self.license_open {
             self.license_window(ctx);
         }
@@ -5024,6 +5032,47 @@ impl App {
         }
     }
 
+    /// Starts a renewal request for the current key; `silent` when the app asks by itself in the background.
+    fn start_renewal(&mut self, ctx: &egui::Context, silent: bool) {
+        if self.renew_rx.is_none() && !self.settings.license_token.trim().is_empty() {
+            self.renew_rx = Some(crate::license::request_renewal(&self.settings.license_token, ctx));
+            self.renew_silent = silent;
+        }
+    }
+
+    /// Takes the server's answer to a renewal: a new valid key replaces the old one.
+    fn poll_renewal(&mut self, ctx: &egui::Context) {
+        #[cfg(not(test))]
+        if !self.renew_checked {
+            self.renew_checked = true;
+            if crate::license::should_renew(&self.settings.license_token, &crate::license::public_key(), crate::license::now_unix()) {
+                self.start_renewal(ctx, true);
+            }
+        }
+        let Some(rx) = &self.renew_rx else { return };
+        let answer = match rx.try_recv() {
+            Ok(a) => a,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(_) => Err("связь прервана".to_string()),
+        };
+        self.renew_rx = None;
+        let _ = ctx;
+        match answer {
+            Ok(key) => match crate::license::verify(&key, &crate::license::public_key()) {
+                Ok(c) if c.until > crate::license::now_unix() => {
+                    self.settings.license_token = key;
+                    self.settings.save();
+                    self.refresh_plan();
+                    if !self.renew_silent {
+                        self.license_msg = Some(format!("✓ {}", tf!("Ключ обновлён до {}", date_text(c.until))));
+                    }
+                }
+                _ => if !self.renew_silent { self.license_msg = Some(tr("Сервер прислал негодный ключ").into()) },
+            },
+            Err(e) => if !self.renew_silent { self.license_msg = Some(tr_dyn(&e)) },
+        }
+    }
+
     /// A slim strip under the menu while the plan is not paid: what is limited and a button to the licence window.
     fn trial_banner(&mut self, ctx: &egui::Context) {
         let (text, bad) = match &self.plan {
@@ -5036,7 +5085,7 @@ impl App {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(text).color(Color32::WHITE).strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(egui::Button::new(RichText::new(tf!("Подписка ${} в месяц", crate::license::PRICE_USD)).color(Color32::BLACK).strong()).fill(Color32::WHITE).corner_radius(10)).clicked() {
+                    if ui.add(egui::Button::new(RichText::new(tf!("Подписка {} в месяц", crate::license::price_text())).color(Color32::BLACK).strong()).fill(Color32::WHITE).corner_radius(10)).clicked() {
                         open = true;
                     }
                 });
@@ -5052,6 +5101,8 @@ impl App {
         let mut open = true;
         let mut activate = false;
         let mut buy = false;
+        let mut renew = false;
+        let mut manage = false;
         egui::Window::new(tr("Подписка Genix Pro")).open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).fixed_size([440.0, 0.0]).show(ctx, |ui| {
             let (title, detail) = match &self.plan {
                 crate::license::Plan::Trial { days_left } => (tr("Пробная версия").to_string(), tf!("Осталось дней: {}. Всё работает, кроме сохранения и экспорта.", days_left)),
@@ -5063,7 +5114,7 @@ impl App {
             ui.add_space(10.0);
             egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(18).inner_margin(16).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(RichText::new(tf!("${} в месяц", crate::license::PRICE_USD)).size(26.0).strong());
+                ui.label(RichText::new(tf!("{} в месяц", crate::license::price_text())).size(26.0).strong());
                 ui.add_space(4.0);
                 for line in [tr("Сохранение проектов"), tr("Экспорт STL, 3MF, OBJ, STEP, DXF"), tr("Без ограничения по времени"), tr("Отмена подписки в любой момент")] {
                     ui.label(format!("✓  {line}"));
@@ -5072,6 +5123,16 @@ impl App {
             ui.add_space(10.0);
             if !self.plan.can_save() && crate::ui_kit::b01(ui, tr("Купить подписку"), 200.0).clicked() {
                 buy = true;
+            }
+            if let crate::license::Plan::Pro { .. } = &self.plan {
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(self.renew_rx.is_none(), egui::Button::new(tr("Обновить ключ"))).clicked() {
+                        renew = true;
+                    }
+                    if ui.button(tr("Управление подпиской")).clicked() {
+                        manage = true;
+                    }
+                });
             }
             ui.add_space(6.0);
             ui.label(RichText::new(tr("Уже есть ключ")).small().strong().color(crate::theme::secondary(ui)));
@@ -5087,10 +5148,17 @@ impl App {
             }
             ui.add_space(8.0);
             ui.separator();
-            ui.label(RichText::new(tr("Ключ проверяется на этом компьютере и не требует интернета. Войти через Google: скоро.")).small().color(crate::theme::secondary(ui)));
+            ui.label(RichText::new(tr("Ключ проверяется на этом компьютере и не требует интернета. Оплата и отмена подписки идут через Stripe.")).small().color(crate::theme::secondary(ui)));
         });
         if buy {
-            open_url(crate::license::BUY_URL);
+            open_url(&crate::license::buy_url());
+        }
+        if manage {
+            open_url(&crate::license::manage_url(&self.settings.license_token));
+        }
+        if renew {
+            self.start_renewal(ctx, false);
+            self.license_msg = Some(tr("Запрашиваем обновление…").into());
         }
         if activate {
             let key = self.license_key_input.trim().to_string();

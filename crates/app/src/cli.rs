@@ -153,7 +153,7 @@ pub fn run(args: &[String]) -> Option<i32> {
                 return Some(2);
             };
             let pkcs8 = match std::fs::read(key) { Ok(b) => b, Err(e) => return fail(format!("{key}: {e}")) };
-            let claims = crate::license::Claims { email: email.to_string(), until: crate::license::now_unix() + days * 86_400 };
+            let claims = crate::license::Claims { email: email.to_string(), cid: String::new(), until: crate::license::now_unix() + days * 86_400 };
             match crate::license::sign(&pkcs8, &claims) {
                 Ok(token) => { println!("{token}"); Some(0) }
                 Err(e) => fail(e),

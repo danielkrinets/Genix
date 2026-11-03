@@ -1,0 +1,10 @@
+name = "genix-license"
+main = "src/worker.js"
+compatibility_date = "2025-01-01"
+
+[vars]
+# Fill in after creating the product in Stripe (see README.md).
+STRIPE_PRICE_ID = "price_REPLACE_ME"
+PUBLIC_BASE_URL = "https://api.genix.app"
+LICENSE_PUBLIC_KEY = "700b1face14718b2fc9a0f50b4bf6ddde0a59dfab437c591bf917b02c6a5188f"
+GRACE_DAYS = "3"

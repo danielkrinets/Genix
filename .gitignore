@@ -5,3 +5,6 @@ dist
 # licence private keys never belong in the repository
 *.pk8
 *.pem
+server/node_modules/
+server/.dev.vars
+server/.wrangler/

@@ -1,5 +1,5 @@
 //! Plans and licence keys. A 7-day trial runs from the first launch; during it (and after it ends) nothing can be saved or
-//! exported. A paid key (USD 5 per month) is an Ed25519-signed token checked offline against the public key built into the app,
+//! exported. A paid key (USD 0.99 per month) is an Ed25519-signed token checked offline against the public key built into the app,
 //! so a key cannot be forged without the vendor's private key and the app needs no server to start.
 //!
 //! The trial start is remembered in two places (settings and a marker file) and the clock may not go backwards, which stops
@@ -9,11 +9,39 @@ use ring::signature::{Ed25519KeyPair, KeyPair, UnparsedPublicKey, ED25519};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-pub const PRICE_USD: u32 = 5;
+/// Subscription price in US cents (USD 0.99 per month).
+pub const PRICE_CENTS: u32 = 99;
 pub const TRIAL_DAYS: u64 = 7;
 const DAY: u64 = 86_400;
-/// Where the "buy" button leads (replace with the real checkout address before release).
-pub const BUY_URL: &str = "https://genix.app/buy";
+/// Base address of the licence server (`server/`, a Cloudflare Worker in front of Stripe). Replace it with the deployed address
+/// before release, or point `GENIX_LICENSE_API` at a local server for testing.
+pub const API_URL: &str = "https://api.genix.app";
+/// A key that ends within this many days is renewed from the server in the background while the app is online.
+pub const RENEW_WITHIN_DAYS: u64 = 5;
+
+/// Price as shown to people, e.g. `$0.99`.
+pub fn price_text() -> String {
+    format!("${}.{:02}", PRICE_CENTS / 100, PRICE_CENTS % 100)
+}
+
+pub fn api_url() -> String {
+    std::env::var("GENIX_LICENSE_API").ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| API_URL.to_string()).trim_end_matches('/').to_string()
+}
+
+/// Where the "buy" button leads: the server creates a Stripe Checkout session and redirects to it.
+pub fn buy_url() -> String {
+    format!("{}/buy", api_url())
+}
+
+/// Where people manage or cancel the subscription (Stripe customer portal), for a given key.
+pub fn manage_url(token: &str) -> String {
+    format!("{}/manage?key={}", api_url(), token.trim())
+}
+
+/// True when a key is valid now but ends soon enough to ask the server for a fresh one.
+pub fn should_renew(token: &str, key: &[u8], now: u64) -> bool {
+    verify(token, key).map_or(false, |c| c.until > now && c.until - now < RENEW_WITHIN_DAYS * DAY)
+}
 
 /// Vendor public key (hex, 32 bytes). The matching private key stays with the vendor and is never part of the repository.
 pub const PUBLIC_KEY_HEX: &str = "700b1face14718b2fc9a0f50b4bf6ddde0a59dfab437c591bf917b02c6a5188f";
@@ -41,6 +69,9 @@ impl Plan {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Claims {
     pub email: String,
+    /// Stripe customer id: what the server needs to renew the key. Old keys have none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cid: String,
     /// Unix seconds when the key stops working.
     pub until: u64,
 }
@@ -121,6 +152,36 @@ pub fn marker_path() -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(home).join(".genix-trial"))
 }
 
+/// Asks the server for a fresh key for the current one (`POST /refresh`). The answer arrives on the channel: the new key or an error text.
+pub fn request_renewal(token: &str, ctx: &eframe::egui::Context) -> std::sync::mpsc::Receiver<Result<String, String>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let ctx = ctx.clone();
+    let body = serde_json::json!({ "key": token.trim() }).to_string().into_bytes();
+    let mut request = ehttp::Request::post(format!("{}/refresh", api_url()), body);
+    request.headers.insert("Content-Type", "application/json");
+    request.timeout = Some(std::time::Duration::from_secs(15));
+    ehttp::fetch(request, move |response| {
+        let result = response.map_err(|e| format!("нет связи с сервером: {e}")).and_then(|r| parse_renewal(r.status, &r.bytes));
+        let _ = tx.send(result);
+        ctx.request_repaint();
+    });
+    rx
+}
+
+/// The server answers `{"key": "..."}` on success and `{"error": "..."}` otherwise.
+pub fn parse_renewal(status: u16, body: &[u8]) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Reply {
+        key: Option<String>,
+        error: Option<String>,
+    }
+    let reply: Reply = serde_json::from_slice(body).map_err(|_| format!("сервер ответил непонятно (HTTP {status})"))?;
+    match (status, reply.key) {
+        (200, Some(key)) if !key.trim().is_empty() => Ok(key),
+        _ => Err(reply.error.unwrap_or_else(|| format!("сервер отказал (HTTP {status})"))),
+    }
+}
+
 pub fn now_unix() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
@@ -155,7 +216,7 @@ mod tests {
     fn a_signed_key_unlocks_pro_until_it_expires_and_cannot_be_forged() {
         let (private, public) = generate_keypair().unwrap();
         let now = 1_800_000_000;
-        let token = sign(&private, &Claims { email: "me@example.com".into(), until: now + 30 * DAY }).unwrap();
+        let token = sign(&private, &Claims { email: "me@example.com".into(), cid: String::new(), until: now + 30 * DAY }).unwrap();
         let claims = verify(&token, &public).unwrap();
         assert_eq!(claims.email, "me@example.com");
         match status(now, now - 20 * DAY, now, &token, &public) {
@@ -166,7 +227,7 @@ mod tests {
         assert_eq!(status(now + 31 * DAY, now - 20 * DAY, 0, &token, &public), Plan::Expired);
         // another vendor's key, a changed payload, a changed signature and junk are all refused
         let (other_private, _) = generate_keypair().unwrap();
-        let forged = sign(&other_private, &Claims { email: "me@example.com".into(), until: now + 999 * DAY }).unwrap();
+        let forged = sign(&other_private, &Claims { email: "me@example.com".into(), cid: String::new(), until: now + 999 * DAY }).unwrap();
         assert!(verify(&forged, &public).is_err());
         let (payload, sig) = token.split_once('.').unwrap();
         let tampered_payload = URL_SAFE_NO_PAD.encode(br#"{"email":"me@example.com","until":9999999999}"#);
@@ -184,9 +245,45 @@ mod tests {
         let t0 = 1_800_000_000;
         // the trial ended on day 8; the user sets the clock back to day 2 but the app has seen day 8
         assert_eq!(status(t0 + 2 * DAY, t0, t0 + 8 * DAY, "", &public), Plan::Expired);
-        let token = sign(&private, &Claims { email: "x@y.z".into(), until: t0 + 10 * DAY }).unwrap();
+        let token = sign(&private, &Claims { email: "x@y.z".into(), cid: String::new(), until: t0 + 10 * DAY }).unwrap();
         assert!(matches!(status(t0 + 9 * DAY, t0, t0 + 9 * DAY, &token, &public), Plan::Pro { .. }));
         assert_eq!(status(t0 + 5 * DAY, t0, t0 + 12 * DAY, &token, &public), Plan::Expired, "a key past its end stays past it");
+    }
+
+    #[test]
+    fn the_price_is_ninety_nine_cents_and_a_key_near_its_end_asks_for_renewal() {
+        assert_eq!(price_text(), "$0.99");
+        let (private, public) = generate_keypair().unwrap();
+        let now = 1_800_000_000;
+        let near = sign(&private, &Claims { email: "a@b.c".into(), cid: "cus_1".into(), until: now + 2 * DAY }).unwrap();
+        let far = sign(&private, &Claims { email: "a@b.c".into(), cid: "cus_1".into(), until: now + 20 * DAY }).unwrap();
+        assert!(should_renew(&near, &public, now));
+        assert!(!should_renew(&far, &public, now));
+        assert!(!should_renew(&near, &public, now + 3 * DAY), "an ended key is not renewed silently");
+        assert!(!should_renew("junk", &public, now));
+        assert_eq!(verify(&near, &public).unwrap().cid, "cus_1");
+        // keys issued before the customer id existed still verify
+        let old = sign(&private, &Claims { email: "o@d.c".into(), cid: String::new(), until: now + DAY }).unwrap();
+        assert_eq!(verify(&old, &public).unwrap().cid, "");
+    }
+
+    #[test]
+    fn server_replies_are_read_strictly() {
+        assert_eq!(parse_renewal(200, br#"{"key":"abc.def"}"#), Ok("abc.def".into()));
+        assert_eq!(parse_renewal(402, r#"{"error":"Подписка не оплачена"}"#.as_bytes()), Err("Подписка не оплачена".into()));
+        assert!(parse_renewal(200, br#"{"key":""}"#).is_err());
+        assert!(parse_renewal(500, b"<html>").unwrap_err().contains("500"));
+        assert!(parse_renewal(200, br#"{"error":"x"}"#).is_err(), "a 200 without a key is not a success");
+    }
+
+    #[test]
+    fn a_key_issued_by_the_node_server_verifies_in_the_app() {
+        // produced by server/test/worker.test.mjs (PRINT_FIXTURE=1) with a throw-away key pair
+        let token = "eyJlbWFpbCI6ImZpeEB4LnkiLCJjaWQiOiJjdXNfZiIsInVudGlsIjo0MDAwMDAwMDAwfQ.8mEWDP5Wc5d3V4mPqlEMbfWjQJn9BRNnNC6afwHUvw9WqFG0QFwoHBD-xWeHe4QYE32ApiDjrrY8mUPi-59HDA";
+        let public = hex_decode("9cd60ad3b310d49611cca4609088d295744754e6ae86c16425e27703233e0bed").unwrap();
+        let claims = verify(token, &public).unwrap();
+        assert_eq!((claims.email.as_str(), claims.cid.as_str(), claims.until), ("fix@x.y", "cus_f", 4_000_000_000));
+        assert!(verify(token, &self::public_key()).is_err(), "not valid under the real vendor key");
     }
 
     #[test]

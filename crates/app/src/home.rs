@@ -594,7 +594,7 @@ fn hub_content_inner(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, pr
                 HomePage::Updates => h.updates.ui(ui),
                 HomePage::Server => {
                     ui.heading(tr("Подписка Genix Pro"));
-                    ui.label(RichText::new(tf!("${} в месяц · пробная версия 7 дней", crate::license::PRICE_USD)).color(muted(ui)));
+                    ui.label(RichText::new(tf!("{} в месяц · пробная версия 7 дней", crate::license::price_text())).color(muted(ui)));
                     ui.add_space(20.0);
                     ui.label(tr("В пробной версии всё работает, кроме сохранения и экспорта. Подписка снимает это ограничение."));
                     ui.label(tr("Ключ лицензии проверяется на вашем компьютере, интернет для работы не нужен."));
