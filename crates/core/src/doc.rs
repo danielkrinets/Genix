@@ -2558,3 +2558,27 @@ mod interference_tests {
         assert!(ev.model().interferences().is_empty());
     }
 }
+
+#[cfg(test)]
+mod place_anchor_tests {
+    use super::*;
+
+    #[test]
+    fn placed_face_keeps_its_footprint_around_the_destination_point() {
+        let n = Expr::num;
+        let mut d = Document::default();
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(40.0), d: n(40.0), h: n(10.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(16.0), d: n(16.0), h: n(12.0) }, at: [n(100.0), n(0.0), n(0.0)], op: Op::NewBody });
+        let mut ev = Evaluator::default();
+        ev.evaluate(&d);
+        let id = ev.model().bodies[1].id;
+        let top = Plane { origin: [0.0, 0.0, 10.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+        let face = Plane { origin: [100.0, 0.0, 12.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+        let uid = d.insert(FeatureKind::PlaceOnPlane { body: id, face, seed: [108.0, 8.0, 12.0], target: top, to: Some([8.0, 32.0, 10.0]) });
+        ev.evaluate(&d);
+        assert!(ev.error(uid).is_none(), "{:?}", ev.error(uid));
+        let (lo, hi) = ev.model().body(id).unwrap().mesh().bounds().unwrap();
+        assert!((lo.x - 0.0).abs() < 1e-6 && (hi.x - 16.0).abs() < 1e-6, "x {lo:?} {hi:?}");
+        assert!((lo.y - 24.0).abs() < 1e-6 && (hi.y - 40.0).abs() < 1e-6, "y {lo:?} {hi:?}");
+    }
+}

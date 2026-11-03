@@ -124,3 +124,9 @@ Tooltips now show before/after pictures drawn by the renderer (`cargo test -p fu
 Fix: OK/Cancel of every command now sit in a footer outside the scrolling fields (the side panel had no scroll, tall dialogs pushed OK off the screen).
 Tests: core 109 + app 97. Live (QA copy): Hole panel shows the bolt block, tapped preset sets Ø5 / thread Ø6 / pitch 1; the corner button gave X 6, Y 34 on a 40x40 face; OK/Cancel stay at the bottom of the panel.
 Not checked by eye: a modeled thread in a hole on screen, tooltips with pictures on hover, scrolling of a very tall panel.
+
+## 0.00.30 — place card, value dragging (checked 2026-11-03)
+
+«Наложить» got the same 3x3 card as the hole (middle / edge / corner of the target face). Fixed along the way: floating cards no longer let the model underneath react to the pointer (the origin plane below the card used to override the chosen target); the chosen anchor is kept as the state to return to.
+Dragging a value by its unit or caption now scales with the value (5 mm moves 0.1 per 6 px, 400 mm moves 10; counts stay whole; at most 20 ticks per frame), so a value no longer flies away.
+Tests: core 110 + app 98. Live (QA copy): the corner button put the 16 mm block into the corner of the 40 mm plate (top view); not checked: other anchors, rotated source faces (the inset assumes aligned axes).

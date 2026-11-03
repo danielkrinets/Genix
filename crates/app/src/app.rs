@@ -270,6 +270,8 @@ pub struct App {
     zoom_cursor: Option<egui::Pos2>,
     /// Align: the target as it was before hover previews started changing it
     align_saved: Option<(fusion_core::Plane, Option<[f64; 3]>)>,
+    /// The pointer is over a floating card (value fields, placement card): the model underneath must not react to it.
+    over_overlay: bool,
     confirm: Option<Confirm>,
     allow_close: bool,
     need_fit: bool,
@@ -495,6 +497,7 @@ impl App {
             zoom_pending: 0.0,
             zoom_cursor: None,
             align_saved: None,
+            over_overlay: false,
             confirm: None,
             allow_close: false,
             need_fit: false,
@@ -552,6 +555,9 @@ impl App {
     /// Lay on: while the target is being chosen, the body is shown already lying on the face or plane under the cursor.
     /// Moving away gives back the target chosen before; a click keeps the previewed one.
     fn align_hover_preview(&mut self) {
+        if self.over_overlay {
+            return;
+        }
         let uid = match &self.mode {
             Mode::Command(c) if c.pick == PickTarget::AlignTarget => c.uid,
             _ => {
@@ -3018,8 +3024,10 @@ impl App {
 
         // ---- выбор
         let picking = !matches!(self.mode, Mode::Sketch(_));
+        // floating cards sit over the model: the pointer on them neither previews nor picks what is underneath
+        self.over_overlay = ui.ctx().is_pointer_over_area();
         self.hover = None;
-        if picking && !resp.dragged() {
+        if picking && !resp.dragged() && !self.over_overlay {
             if let Some(m) = resp.hover_pos() {
                 let (o, dir) = self.cam.ray(rect, m);
                 self.last_ray = (o, dir);
@@ -3036,7 +3044,7 @@ impl App {
                 self.hover_edge = self.pick_edge(&self.pick_model(), rect, m);
             }
         }
-        if picking && resp.clicked() {
+        if picking && resp.clicked() && !self.over_overlay {
             self.handle_click(self.hover, shift, now);
             // the click changes the selection after this frame was drawn: draw again at once, so highlights do not wait for the next mouse move
             ui.ctx().request_repaint();
@@ -3185,6 +3193,7 @@ impl App {
         self.nav_bar(ui, rect, now);
         self.value_box(ui, rect);
         self.hole_snap_box(ui, rect);
+        self.place_snap_box(ui, rect);
         match viewcube::show(ui, rect, &self.cam, self.theme == Theme::Dark) {
             CubeAction::View(n, r) => {
                 let (yaw, pitch) = Camera::angles_for(n, r);
@@ -4464,6 +4473,60 @@ impl App {
         }
     }
 
+    /// "Наложить": the same card puts the picked point of the source face onto the middle, an edge or a corner of the target face.
+    /// The source face's centre is the pivot, the target anchor is kept `min(half size)` away from the edge so the faces end up about flush.
+    fn place_snap_box(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        let Mode::Command(cmd) = &self.mode else { return };
+        let uid = cmd.uid;
+        let Some(idx) = self.doc.index_of(uid) else { return };
+        let Some(FeatureKind::PlaceOnPlane { body, face, seed, target, .. }) = self.doc.feature(uid).map(|f| f.kind.clone()) else { return };
+        if body == 0 {
+            return;
+        }
+        let before = self.ev.model_before(idx);
+        let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+        for b in before.bodies.iter().filter(|b| b.id != body) {
+            for v in &b.mesh().vertices {
+                let v = DVec3::from(*v);
+                if (v - target.o()).dot(target.normal()).abs() > 1e-4 {
+                    continue;
+                }
+                let q = target.to_local(v);
+                for a in 0..2 {
+                    lo[a] = lo[a].min(q[a]);
+                    hi[a] = hi[a].max(q[a]);
+                }
+            }
+        }
+        if lo[0] >= hi[0] || lo[1] >= hi[1] {
+            return;
+        }
+        let Some(source) = before.body(body).and_then(|b| fusion_core::geom::face_region(b.mesh(), &face, DVec3::from(seed))) else { return };
+        let (mut slo, mut shi) = ([f64::MAX; 2], [f64::MIN; 2]);
+        for q in &source.outer {
+            for a in 0..2 {
+                slo[a] = slo[a].min(q[a]);
+                shi[a] = shi[a].max(q[a]);
+            }
+        }
+        // a point guaranteed to lie on the face (the plain middle of its bounds may fall into a hole)
+        let centre = face.to_world(source.interior_point());
+        let inset = ((shi[0] - slo[0]).min(shi[1] - slo[1]) / 2.0).min((hi[0] - lo[0]).min(hi[1] - lo[1]) / 2.0);
+        let Some((rx, ry)) = snap_card(ui, "place_snap_box", Pos2::new(rect.center().x, rect.top() + 14.0), tr("Поставить к краю или углу целевой грани")) else { return };
+        let pick = |a: usize, r: usize| match r {
+            0 => lo[a] + inset,
+            1 => (lo[a] + hi[a]) / 2.0,
+            _ => hi[a] - inset,
+        };
+        let to = target.to_world([pick(0, rx), pick(1, ry)]);
+        if let Some(FeatureKind::PlaceOnPlane { seed, to: t, .. }) = self.doc.feature_mut(uid).map(|f| &mut f.kind) {
+            *seed = centre.to_array();
+            *t = Some(to.to_array());
+        }
+        self.align_saved = Some((target, Some(to.to_array())));
+        self.after_doc_change();
+    }
+
     /// Hole placement: a small card at the top centre under the value fields. Nine buttons put the hole into the middle of the face
     /// or against one of its edges/corners (offset from the edge: radius + 2 mm); arrows point towards where the hole goes.
     fn hole_snap_box(&mut self, ui: &mut egui::Ui, rect: Rect) {
@@ -4489,43 +4552,7 @@ impl App {
             return;
         }
         let inset = dia.eval(&self.doc.params).unwrap_or(8.0) / 2.0 + 2.0;
-        let mut chosen: Option<(usize, usize)> = None;
-        let pos = Pos2::new(rect.center().x, rect.top() + 58.0);
-        egui::Area::new(egui::Id::new("hole_snap_box")).fixed_pos(pos).pivot(egui::Align2::CENTER_TOP).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
-            egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(18).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
-                for ry in (0..3).rev() {
-                    ui.horizontal(|ui| {
-                        for rx in 0..3 {
-                            let (r, resp) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
-                            let hover = crate::widgets::feedback(ui, resp.id.with("hover"), resp.hovered());
-                            let press = crate::widgets::feedback(ui, resp.id.with("press"), resp.is_pointer_button_down_on());
-                            let r = r.shrink(press);
-                            let p = ui.painter();
-                            p.rect_filled(r, 10.0, ui.visuals().extreme_bg_color.lerp_to_gamma(crate::theme::accent(), 0.18 * hover));
-                            let ink = ui.visuals().text_color().lerp_to_gamma(crate::theme::accent(), hover);
-                            let stroke = egui::Stroke::new(1.7_f32, ink);
-                            let c = r.center();
-                            let dir = egui::vec2(rx as f32 - 1.0, ry as f32 - 1.0);
-                            if dir == egui::Vec2::ZERO {
-                                p.circle_filled(c, 3.6, ink);
-                            } else {
-                                // the sketch plane's y grows upwards on the card, like on a map
-                                let d = egui::vec2(dir.x, -dir.y).normalized();
-                                let (tail, tip) = (c - d * 6.0, c + d * 6.0);
-                                let side = egui::vec2(-d.y, d.x);
-                                p.line_segment([tail, tip], stroke);
-                                p.line_segment([tip, tip - d * 5.0 + side * 3.6], stroke);
-                                p.line_segment([tip, tip - d * 5.0 - side * 3.6], stroke);
-                            }
-                            if resp.on_hover_text(if dir == egui::Vec2::ZERO { tr("Поставить в центр грани") } else { tr("Поставить к краю или углу грани (отступ — радиус + 2 мм)") }).clicked() {
-                                chosen = Some((rx, ry));
-                            }
-                        }
-                    });
-                }
-            });
-        });
+        let chosen = snap_card(ui, "hole_snap_box", Pos2::new(rect.center().x, rect.top() + 58.0), tr("Поставить к краю или углу грани (отступ — радиус + 2 мм)"));
         if let Some((rx, ry)) = chosen {
             let pick = |a: usize, r: usize| match r {
                 0 => lo[a] + inset,
@@ -4763,6 +4790,47 @@ fn line_param(base: DVec3, dir: DVec3, o: DVec3, d: DVec3) -> f64 {
     if den.abs() < 1e-9 { 0.0 } else { (b * e - dd) / den }
 }
 
+
+/// A small card of nine buttons (arrows towards the edges and corners, a dot for the middle) at `pos`; returns the clicked cell
+/// as (column, row) with row 0 at the bottom, like the axes of a sketch plane.
+fn snap_card(ui: &mut egui::Ui, id: &str, pos: Pos2, edge_tip: &str) -> Option<(usize, usize)> {
+    let mut chosen = None;
+    egui::Area::new(egui::Id::new(id)).fixed_pos(pos).pivot(egui::Align2::CENTER_TOP).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
+        egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(18).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+            for ry in (0..3).rev() {
+                ui.horizontal(|ui| {
+                    for rx in 0..3 {
+                        let (r, resp) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
+                        let hover = crate::widgets::feedback(ui, resp.id.with("hover"), resp.hovered());
+                        let press = crate::widgets::feedback(ui, resp.id.with("press"), resp.is_pointer_button_down_on());
+                        let r = r.shrink(press);
+                        let p = ui.painter();
+                        p.rect_filled(r, 10.0, ui.visuals().extreme_bg_color.lerp_to_gamma(crate::theme::accent(), 0.18 * hover));
+                        let ink = ui.visuals().text_color().lerp_to_gamma(crate::theme::accent(), hover);
+                        let stroke = egui::Stroke::new(1.7_f32, ink);
+                        let c = r.center();
+                        let dir = egui::vec2(rx as f32 - 1.0, ry as f32 - 1.0);
+                        if dir == egui::Vec2::ZERO {
+                            p.circle_filled(c, 3.6, ink);
+                        } else {
+                            let d = egui::vec2(dir.x, -dir.y).normalized();
+                            let (tail, tip) = (c - d * 6.0, c + d * 6.0);
+                            let side = egui::vec2(-d.y, d.x);
+                            p.line_segment([tail, tip], stroke);
+                            p.line_segment([tip, tip - d * 5.0 + side * 3.6], stroke);
+                            p.line_segment([tip, tip - d * 5.0 - side * 3.6], stroke);
+                        }
+                        if resp.on_hover_text(if dir == egui::Vec2::ZERO { tr("Поставить в центр грани") } else { edge_tip }).clicked() {
+                            chosen = Some((rx, ry));
+                        }
+                    }
+                });
+            }
+        });
+    });
+    chosen
+}
 
 #[cfg(test)]
 mod lifecycle_tests {

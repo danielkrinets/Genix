@@ -1006,4 +1006,5 @@ pub const EN: &[(&str, &str)] = &[
     ("диаметр резьбы должен быть больше диаметра отверстия под резьбу", "the thread diameter must exceed the tap drill diameter"),
     ("Поставить в центр грани", "Put in the middle of the face"),
     ("Поставить к краю или углу грани (отступ — радиус + 2 мм)", "Put against an edge or corner of the face (offset: radius + 2 mm)"),
+    ("Поставить к краю или углу целевой грани", "Put against an edge or corner of the target face"),
 ];

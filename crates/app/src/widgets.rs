@@ -81,8 +81,9 @@ pub fn expr_field(ui: &mut egui::Ui, id: impl std::hash::Hash, e: &mut Expr, par
     if let (Some(v), true) = (current, dragged_px != 0.0) {
         // every 6 px is one step; Shift makes it ten times finer. No spring while the hand is on it.
         let acc = ui.data_mut(|d| { let a = d.get_temp::<f32>(id.with("px")).unwrap_or(0.0) + dragged_px; d.insert_temp(id.with("px"), a); a });
-        let step = step_base * if ui.input(|i| i.modifiers.shift) { 0.1 } else { 1.0 };
-        let n = (acc / 6.0).trunc();
+        let step = scrub_step(v, step_base, is_len || unit == "°" || unit == "×", ui.input(|i| i.modifiers.shift));
+        // a quick flick must not throw the value far away in one frame
+        let n = (acc / 6.0).trunc().clamp(-20.0, 20.0);
         if n != 0.0 {
             ui.data_mut(|d| d.insert_temp(id.with("px"), acc - n * 6.0));
             let nv = ((v + n as f64 * step) * 1e6).round() / 1e6;
@@ -124,6 +125,13 @@ pub fn expr_field(ui: &mut egui::Ui, id: impl std::hash::Hash, e: &mut Expr, par
         match spring { Some(s) => d.insert_temp(spring_id, s), None => { d.remove_temp::<Spring>(spring_id); } }
     });
     changed
+}
+
+/// Value change per 6 px of dragging. Lengths, angles and factors scale with the value (a 5 mm size moves by 0.1 per tick, a
+/// 400 mm one by 10), so a drag stays controllable at any magnitude; counts keep whole steps. Shift is ten times finer.
+fn scrub_step(value: f64, step_base: f64, adaptive: bool, fine: bool) -> f64 {
+    let scale = if adaptive { 10f64.powf(value.abs().max(1.0).log10().floor() - 1.0) } else { 1.0 };
+    step_base * scale * if fine { 0.1 } else { 1.0 }
 }
 
 /// Hands a horizontal drag made on some caption to the field that is drawn next with the same id.
@@ -465,6 +473,24 @@ pub fn loading(ui: &mut egui::Ui, label: &str) {
         else { ui.painter().circle_filled(ui.next_widget_position() + egui::vec2(5.0, 10.0), 3.0, crate::theme::accent()); ui.add_space(14.0); }
         ui.label(RichText::new(label).color(crate::theme::secondary(ui)));
     });
+}
+
+#[cfg(test)]
+mod scrub_tests {
+    use super::scrub_step;
+
+    #[test]
+    fn dragging_scales_with_the_value_and_keeps_counts_whole() {
+        assert!((scrub_step(5.0, 1.0, true, false) - 0.1).abs() < 1e-12);
+        assert!((scrub_step(40.0, 1.0, true, false) - 1.0).abs() < 1e-12);
+        assert!((scrub_step(400.0, 1.0, true, false) - 10.0).abs() < 1e-12);
+        assert!((scrub_step(0.2, 1.0, true, false) - 0.1).abs() < 1e-12);
+        assert!((scrub_step(40.0, 1.0, true, true) - 0.1).abs() < 1e-12);
+        assert_eq!(scrub_step(3.0, 1.0, false, false), 1.0);
+        // 300 px is 50 ticks: from 40 mm that is +50 mm, not +300 as before
+        let ticks = 300.0 / 6.0;
+        assert!(40.0 + ticks * scrub_step(40.0, 1.0, true, false) <= 100.0);
+    }
 }
 
 #[cfg(test)]
