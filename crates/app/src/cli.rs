@@ -44,17 +44,91 @@ pub fn render_frames(model: &Path, out: &Path, size: (usize, usize), turn_frames
     Ok(written)
 }
 
-/// Handles `--render-frames`; `Some(exit code)` when the command line was a headless command.
-pub fn run(args: &[String]) -> Option<i32> {
-    if args.get(1).map(String::as_str) != Some("--render-frames") { return None; }
-    let (Some(model), Some(out)) = (args.get(2), args.get(3)) else {
-        eprintln!("usage: genix --render-frames model.genix out_dir");
-        return Some(2);
+fn load(path: &str) -> Result<fusion_core::Document, String> {
+    fusion_core::Document::from_json(&std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?)
+}
+
+fn export(doc: &fusion_core::Document, out: &str) -> Result<usize, String> {
+    let mut ev = fusion_core::Evaluator::default();
+    ev.evaluate(doc);
+    let model = ev.model();
+    let named: Vec<(String, &fusion_core::Mesh)> = model.bodies.iter().map(|b| (doc.body_name(b).to_string(), b.mesh())).collect();
+    if named.is_empty() {
+        return Err("the model has no bodies".into());
+    }
+    let ext = Path::new(out).extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let data: Vec<u8> = match ext.as_str() {
+        "stl" => {
+            let mut v = Vec::new();
+            fusion_core::Mesh::write_stl_binary(&named.iter().map(|(_, m)| *m).collect::<Vec<_>>(), &mut v);
+            v
+        }
+        "obj" => fusion_core::Mesh::write_obj(&named.iter().map(|(n, m)| (n.as_str(), *m)).collect::<Vec<_>>()).into_bytes(),
+        "3mf" => fusion_core::Mesh::write_3mf(&named.iter().map(|(n, m)| (n.as_str(), *m)).collect::<Vec<_>>()),
+        _ => return Err("export format must be .stl, .obj or .3mf".into()),
     };
-    Some(match render_frames(Path::new(model), Path::new(out), (WIDTH, HEIGHT), TURN_FRAMES) {
-        Ok(n) => { println!("{n} frames written to {out}"); 0 }
-        Err(e) => { eprintln!("error: {e}"); 1 }
-    })
+    crate::files::write_atomic(Path::new(out), &data).map_err(|e| e.to_string())?;
+    Ok(named.len())
+}
+
+fn print_json(v: &serde_json::Value) {
+    println!("{}", serde_json::to_string_pretty(v).unwrap_or_default());
+}
+
+/// Handles the headless commands; `Some(exit code)` when the command line was one of them.
+/// `--render-frames model out_dir`, `--eval model`, `--add model feature_json`, `--export model out.stl|obj|3mf`,
+/// `--new out.genix`, `--features`. Results are JSON on stdout, errors go to stderr with a non-zero exit code.
+pub fn run(args: &[String]) -> Option<i32> {
+    let cmd = args.get(1).map(String::as_str)?;
+    let arg = |i: usize| args.get(i).map(String::as_str);
+    let fail = |msg: String| { eprintln!("error: {msg}"); Some(1) };
+    match cmd {
+        "--render-frames" => {
+            let (Some(model), Some(out)) = (arg(2), arg(3)) else {
+                eprintln!("usage: genix --render-frames model.genix out_dir");
+                return Some(2);
+            };
+            Some(match render_frames(Path::new(model), Path::new(out), (WIDTH, HEIGHT), TURN_FRAMES) {
+                Ok(n) => { println!("{n} frames written to {out}"); 0 }
+                Err(e) => { eprintln!("error: {e}"); 1 }
+            })
+        }
+        "--eval" => {
+            let Some(model) = arg(2) else { eprintln!("usage: genix --eval model.genix"); return Some(2) };
+            match load(model) {
+                Ok(doc) => { let r = fusion_core::agent::report(&doc); print_json(&r); Some(if r["ok"] == true { 0 } else { 3 }) }
+                Err(e) => fail(e),
+            }
+        }
+        "--add" => {
+            let (Some(model), Some(feature)) = (arg(2), arg(3)) else { eprintln!("usage: genix --add model.genix '<feature json>'  (use - to read the JSON from stdin)"); return Some(2) };
+            let feature = if feature == "-" { std::io::read_to_string(std::io::stdin()).unwrap_or_default() } else { feature.to_string() };
+            let mut doc = match load(model) { Ok(d) => d, Err(e) => return fail(e) };
+            match fusion_core::agent::add_feature(&mut doc, &feature) {
+                Ok(r) => match crate::files::write_atomic(Path::new(model), doc.to_json().as_bytes()) {
+                    Ok(()) => { print_json(&r); Some(0) }
+                    Err(e) => fail(e.to_string()),
+                },
+                Err(e) => fail(e),
+            }
+        }
+        "--export" => {
+            let (Some(model), Some(out)) = (arg(2), arg(3)) else { eprintln!("usage: genix --export model.genix out.stl|out.obj|out.3mf"); return Some(2) };
+            match load(model).and_then(|d| export(&d, out)) {
+                Ok(n) => { println!("{n} bodies written to {out}"); Some(0) }
+                Err(e) => fail(e),
+            }
+        }
+        "--new" => {
+            let Some(out) = arg(2) else { eprintln!("usage: genix --new out.genix"); return Some(2) };
+            match crate::files::write_atomic(Path::new(out), fusion_core::Document::default().to_json().as_bytes()) {
+                Ok(()) => { println!("{out} created"); Some(0) }
+                Err(e) => fail(e.to_string()),
+            }
+        }
+        "--features" => { print_json(&fusion_core::agent::catalog()); Some(0) }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -75,5 +149,25 @@ mod tests {
         std::fs::write(&model, doc.to_json()).unwrap();
         assert_eq!(render_frames(&model, &dir, (64, 48), 3).unwrap(), 4);
         assert!(dir.join("build_01.png").exists() && dir.join("turn_002.png").exists());
+    }
+
+    #[test]
+    fn agent_commands_build_check_and_export_a_model() {
+        let dir = std::env::temp_dir().join("genix-agent-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("m.genix").to_string_lossy().to_string();
+        let args = |v: &[&str]| std::iter::once("genix").chain(v.iter().copied()).map(String::from).collect::<Vec<_>>();
+        assert_eq!(run(&args(&["--new", &model])), Some(0));
+        let example = fusion_core::agent::catalog()["examples"]["Primitive/Box"].to_string();
+        assert_eq!(run(&args(&["--add", &model, &example])), Some(0));
+        assert_eq!(run(&args(&["--add", &model, "{broken"])), Some(1));
+        assert_eq!(run(&args(&["--eval", &model])), Some(0));
+        let stl = dir.join("m.stl").to_string_lossy().to_string();
+        assert_eq!(run(&args(&["--export", &model, &stl])), Some(0));
+        assert!(std::fs::metadata(&stl).unwrap().len() > 84);
+        assert_eq!(run(&args(&["--export", &model, &dir.join("m.xyz").to_string_lossy()])), Some(1));
+        assert_eq!(run(&args(&["--features"])), Some(0));
+        assert_eq!(run(&args(&["somefile.genix"])), None, "a plain path is not a headless command");
     }
 }

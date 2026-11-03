@@ -130,3 +130,8 @@ Not checked by eye: a modeled thread in a hole on screen, tooltips with pictures
 «Наложить» got the same 3x3 card as the hole (middle / edge / corner of the target face). Fixed along the way: floating cards no longer let the model underneath react to the pointer (the origin plane below the card used to override the chosen target); the chosen anchor is kept as the state to return to.
 Dragging a value by its unit or caption now scales with the value (5 mm moves 0.1 per 6 px, 400 mm moves 10; counts stay whole; at most 20 ticks per frame), so a value no longer flies away.
 Tests: core 110 + app 98. Live (QA copy): the corner button put the 16 mm block into the corner of the 40 mm plate (top view); not checked: other anchors, rotated source faces (the inset assumes aligned axes).
+
+## 0.00.31 — agent interface (checked 2026-11-03)
+
+`genix --new / --features / --add / --eval / --export` (docs/AGENTS.md); logic in `crates/core/src/agent.rs`. A failed `--add` leaves the file untouched.
+Tests: core 112 + app 99. Checked with the release binary: new → features → add (box from the catalog, via stdin) → export STL.

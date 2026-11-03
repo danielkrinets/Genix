@@ -2,6 +2,7 @@
 
 Every change, even a small fix, gets a new version: `0.00.N — what was added` (up to five words, English only). Newest first.
 
+- 0.00.31 — Agent command line, JSON API
 - 0.00.30 — Place anchor card, gentler dragging
 - 0.00.29 — Bolt holes, tip pictures
 - 0.00.28 — Thin extrude, 3D pattern
