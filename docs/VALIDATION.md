@@ -212,3 +212,8 @@ Not done / honest limits: this is a licence reminder, not DRM: someone who edits
 ## 0.00.45 — exclusive combine, rotation examples (checked 2026-11-03)
 
 Combine → «Исключающее» (XOR: everything except the part shared with the tools). Test: two 20 mm cubes overlapping by half leave 8000 mm3. Rotation (Move): examples in the test `rotation_examples_that_work_and_the_cases_that_need_care`: a bar turned 90° about Z on the spot; 90° about X; two cubes swap places at 180° about the group centre; a rotated copy leaves the original; one step [90,0,90] = Z first then X, not X then Z (use two steps for another order); a 45° turn enlarges the bounding box only. The Move panel now says so. The reported "does not always work" was not reproduced as a defect: the cases above all behave consistently; the usual surprise is the Z-Y-X order and the group centre.
+
+## 0.00.46 — price $0.99, licence server
+
+Tested: app 109 tests (price text, renewal window, server reply parsing, a key issued by the Node server verifies in Rust); `server/` 9 Node tests with a faked Stripe (checkout, success, refresh, portal, webhook signature, forged keys).
+Not done: no real Stripe account or deployment was used, so the real Checkout page, webhook delivery and the Stripe response shape were not seen; `API_URL` is a placeholder; the new buttons in the subscription window were not looked at on screen.

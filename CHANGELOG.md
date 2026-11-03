@@ -2,6 +2,7 @@
 
 Every change, even a small fix, gets a new version: `0.00.N — what was added` (up to five words, English only). Newest first.
 
+- 0.00.46 — Price $0.99, Stripe server
 - 0.00.45 — Exclusive combine, rotation notes
 - 0.00.44 — Trial, licence keys, no saving
 - 0.00.43 — Tip pictures for all tools
