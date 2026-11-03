@@ -65,7 +65,15 @@ impl Sketch {
             Entity::Line { a, b, .. } => G::L(self.p(a), self.p(b)),
             Entity::Circle { c, r, .. } => G::C(self.p(c), r),
             Entity::Arc { c, a, .. } => G::C(self.p(c), self.p(a).distance(self.p(c))),
+            // ellipses and splines have no line/circle carrier: callers skip them with `is_freeform`
+            Entity::Ellipse { c, a, .. } => G::C(self.p(c), self.p(a).distance(self.p(c))),
+            Entity::Spline { first, .. } => G::C(self.p(first), 0.0),
         }
+    }
+
+    /// Ellipses and splines: no trimming against them and no offsetting of them.
+    fn is_freeform(&self, e: usize) -> bool {
+        matches!(self.entities[e], Entity::Ellipse { .. } | Entity::Spline { .. })
     }
 
     /// (начальный угол, размах) дуги.
@@ -96,15 +104,19 @@ impl Sketch {
                 let (a0, sw) = self.arc_span(f).unwrap();
                 (ang(self.p(c), p) - a0).rem_euclid(TAU) <= sw + 1e-9
             }
+            Entity::Ellipse { .. } | Entity::Spline { .. } => false,
         }
     }
 
     /// Все точки, где кривая `e` пересекает остальные (по их реальной протяжённости).
     fn hits_on(&self, e: usize) -> Vec<DVec2> {
+        if self.is_freeform(e) {
+            return Vec::new();
+        }
         let ge = self.carrier(e);
         let mut out = Vec::new();
         for f in 0..self.entities.len() {
-            if f == e || self.entities[f].construction() {
+            if f == e || self.entities[f].construction() || self.is_freeform(f) {
                 continue;
             }
             for p in carrier_hits(ge, self.carrier(f)) {
@@ -130,9 +142,13 @@ impl Sketch {
     /// Обрезать кривую `e` по ближайшим пересечениям вокруг точки щелчка. false — обрезать нечего.
     pub fn trim(&mut self, e: usize, click: P2) -> bool {
         let click = DVec2::from(click);
+        if self.is_freeform(e) {
+            return false;
+        }
         let hits = self.hits_on(e);
         let cons = self.entities[e].construction();
         match self.entities[e] {
+            Entity::Ellipse { .. } | Entity::Spline { .. } => return false,
             Entity::Line { a, b, .. } => {
                 let (pa, pb) = (self.p(a), self.p(b));
                 let d = pb - pa;
@@ -224,10 +240,11 @@ impl Sketch {
     pub fn offset(&mut self, e: usize, side: P2, dist: f64) -> Option<usize> {
         let side = DVec2::from(side);
         let dist = dist.abs();
-        if dist < 1e-9 {
+        if dist < 1e-9 || self.is_freeform(e) {
             return None;
         }
         match self.entities[e] {
+            Entity::Ellipse { .. } | Entity::Spline { .. } => None,
             Entity::Line { a, b, construction } => {
                 let (pa, pb) = (self.p(a), self.p(b));
                 let d = (pb - pa).try_normalize()?;

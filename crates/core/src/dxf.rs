@@ -24,6 +24,15 @@ pub fn export(sk: &Sketch) -> String {
                 let ang = |p: DVec2| (p - cc).y.atan2((p - cc).x).to_degrees().rem_euclid(360.0);
                 let _ = write!(s, "0\nARC\n8\n{layer}\n10\n{}\n20\n{}\n30\n0\n40\n{}\n50\n{}\n51\n{}\n", cc.x, cc.y, (pa - cc).length(), ang(pa), ang(pb));
             }
+            // ellipses and splines leave as polylines (LWPOLYLINE) of their sampled outline
+            Entity::Ellipse { .. } | Entity::Spline { .. } => {
+                let pts = sk.tessellate(i);
+                let closed = matches!(*e, Entity::Ellipse { .. } | Entity::Spline { closed: true, .. });
+                let _ = write!(s, "0\nLWPOLYLINE\n8\n{layer}\n90\n{}\n70\n{}\n", pts.len(), if closed { 1 } else { 0 });
+                for p in &pts {
+                    let _ = write!(s, "10\n{}\n20\n{}\n", p[0], p[1]);
+                }
+            }
         }
         let _ = i;
     }

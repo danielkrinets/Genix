@@ -82,6 +82,9 @@ pub enum Tool {
     Trim,
     Offset,
     Corner,
+    Ellipse,
+    Spline,
+    Text,
     Cons(ConsKind),
 }
 
@@ -113,6 +116,10 @@ enum Pending {
     Slot1 { a: P2, pa: Option<usize> },
     Slot2 { a: P2, pa: Option<usize>, b: P2, pb: Option<usize> },
     CRect { c: P2, pt: Option<usize> },
+    Ellipse1 { c: P2, pc: Option<usize> },
+    Ellipse2 { c: P2, pc: Option<usize>, a: P2, pa: Option<usize> },
+    /// A spline in progress: its points are in `SketchSession::spline_pts`.
+    Spline,
     /// Ограничение/размер ждёт второй объект.
     First(Pick),
     Drag { points: [Option<(usize, P2)>; 2], grab: P2 },
@@ -156,6 +163,10 @@ pub struct SketchSession {
     edit_dim: Option<(usize, String, bool)>,
     label_rects: Vec<(usize, Rect)>,
     grid_step: f64,
+    /// Fit points of the spline being drawn.
+    spline_pts: Vec<P2>,
+    /// Text being placed or edited: (index in the sketch's texts if it exists already, the text).
+    text_draft: Option<(Option<usize>, fusion_core::text::SketchText)>,
 }
 
 const PICK_PX: f32 = 7.0;
@@ -190,6 +201,8 @@ impl SketchSession {
             edit_dim: None,
             label_rects: Vec::new(),
             grid_step: 1.0,
+            spline_pts: Vec::new(),
+            text_draft: None,
         };
         if uid.is_some() {
             s.tool = Tool::Select;
@@ -214,6 +227,12 @@ impl SketchSession {
             (Tool::Rect, _) => tr("Щёлкните противоположный угол или наберите ширину, Tab, высоту, Enter").into(),
             (Tool::Circle, Pending::None) => tr("Окружность: щёлкните центр").into(),
             (Tool::Circle, _) => tr("Щёлкните точку на окружности или наберите диаметр и Enter").into(),
+            (Tool::Ellipse, Pending::None) => tr("Эллипс: щёлкните центр").into(),
+            (Tool::Ellipse, Pending::Ellipse1 { .. }) => tr("Щёлкните конец большой полуоси").into(),
+            (Tool::Ellipse, _) => tr("Щёлкните точку на эллипсе — задаёт малую полуось").into(),
+            (Tool::Spline, Pending::None) => tr("Сплайн: щёлкните первую точку").into(),
+            (Tool::Spline, _) => tr("Щёлкайте точки, Enter — закончить, щелчок по первой точке — замкнуть, Esc — отмена").into(),
+            (Tool::Text, _) => tr("Текст: щёлкните, где поставить начало строки. Текст и размер задаются справа").into(),
             (Tool::Arc, Pending::None) => tr("Дуга: щёлкните начальную точку").into(),
             (Tool::Arc, Pending::Arc1 { .. }) => tr("Щёлкните конечную точку дуги").into(),
             (Tool::Arc, _) => tr("Щёлкните точку, через которую проходит дуга").into(),
@@ -293,6 +312,7 @@ impl SketchSession {
             self.sketch.gc_points();
         }
         self.pending = Pending::None;
+        self.spline_pts.clear();
         self.typed = Default::default();
         self.typed_field = 0;
     }
@@ -429,6 +449,8 @@ impl SketchSession {
                 self.typed_field = 1 - self.typed_field;
             } else if pressed(egui::Key::Enter) && typing {
                 self.apply_typed(params);
+            } else if pressed(egui::Key::Enter) && self.tool == Tool::Spline && self.spline_pts.len() >= 2 {
+                self.finish_spline(false, params);
             } else if pressed(egui::Key::Escape) {
                 if !matches!(self.pending, Pending::None) {
                     self.cancel_pending();
@@ -502,6 +524,9 @@ impl SketchSession {
                         Pick::Entity(e) => match self.sketch.entities[e] {
                             Entity::Line { a, b, .. } => [Some((a, self.sketch.points[a].pos)), Some((b, self.sketch.points[b].pos))],
                             Entity::Circle { c, .. } | Entity::Arc { c, .. } => [Some((c, self.sketch.points[c].pos)), None],
+                            Entity::Ellipse { c, a, .. } => [Some((c, self.sketch.points[c].pos)), Some((a, self.sketch.points[a].pos))],
+                            // a spline is reshaped by dragging its fit points one by one
+                            Entity::Spline { .. } => [None, None],
                         },
                         Pick::Cons(_) => [None, None],
                     };
@@ -688,6 +713,31 @@ impl SketchSession {
                 Pending::Slot2 { a, pa, b, pb } => self.finish_slot(a, pa, b, pb, s.pos, params),
                 _ => {}
             },
+            Tool::Ellipse => match self.pending {
+                Pending::None => self.pending = Pending::Ellipse1 { c: s.pos, pc: s.point },
+                Pending::Ellipse1 { c, pc } => {
+                    if DVec2::from(c).distance(DVec2::from(s.pos)) > 1e-9 {
+                        self.pending = Pending::Ellipse2 { c, pc, a: s.pos, pa: s.point };
+                    }
+                }
+                Pending::Ellipse2 { c, pc, a, pa } => self.finish_ellipse(c, pc, a, pa, s.pos, params),
+                _ => {}
+            },
+            Tool::Spline => {
+                let closing = self.spline_pts.len() >= 3 && DVec2::from(self.spline_pts[0]).distance(DVec2::from(s.pos)) < self.grid_step.max(1e-6) * 0.6;
+                if closing {
+                    self.finish_spline(true, params);
+                } else {
+                    if self.spline_pts.is_empty() {
+                        self.checkpoint();
+                    }
+                    self.spline_pts.push(s.pos);
+                    self.pending = Pending::Spline;
+                }
+            }
+            Tool::Text => {
+                self.text_draft = Some((None, fusion_core::text::SketchText { text: tr("Текст").to_string(), pos: s.pos, height: 10.0, angle: 0.0 }));
+            }
             Tool::CenterRect => match self.pending {
                 Pending::None => self.pending = Pending::CRect { c: s.pos, pt: s.point },
                 Pending::CRect { c, pt } => {
@@ -821,6 +871,41 @@ impl SketchSession {
         self.commit_checked(params, tr("Окружность"));
         self.pending = Pending::None;
         self.typed = Default::default();
+    }
+
+    /// Ellipse: centre `c`, major semi-axis towards `a`, the third click `m` sets the minor semi-axis (its distance from the major axis).
+    fn finish_ellipse(&mut self, c: P2, pc: Option<usize>, a: P2, pa: Option<usize>, m: P2, params: &Params) {
+        let (cv, av) = (DVec2::from(c), DVec2::from(a));
+        let major = av - cv;
+        let len = major.length();
+        if len < 1e-9 {
+            return;
+        }
+        let minor = ((DVec2::from(m) - cv).dot(DVec2::new(-major.y, major.x) / len)).abs();
+        let ratio = (minor / len).clamp(0.02, 1.0);
+        self.checkpoint();
+        let ic = pc.unwrap_or_else(|| self.sketch.add_point(c));
+        let ia = pa.unwrap_or_else(|| self.sketch.add_point(a));
+        self.sketch.add(Entity::Ellipse { c: ic, a: ia, ratio, construction: false });
+        self.commit_checked(params, tr("Эллипс"));
+        self.pending = Pending::None;
+    }
+
+    /// Spline through the clicked points (needs at least two); `closed` joins the last point back to the first.
+    fn finish_spline(&mut self, closed: bool, params: &Params) {
+        let pts = std::mem::take(&mut self.spline_pts);
+        self.pending = Pending::None;
+        if pts.len() < 2 {
+            self.history.pop();
+            return;
+        }
+        // the fit points must be consecutive sketch points, so they are always fresh ones
+        let first = self.sketch.points.len();
+        for p in &pts {
+            self.sketch.add_point(*p);
+        }
+        self.sketch.add(Entity::Spline { first, count: pts.len(), closed, construction: false });
+        self.commit_checked(params, tr("Сплайн"));
     }
 
     fn finish_arc(&mut self, a: P2, pa: Option<usize>, b: P2, pb: Option<usize>, m: P2, params: &Params) {
@@ -1105,6 +1190,9 @@ impl SketchSession {
                 Tool::Corner => "sk_corner",
                 Tool::Dimension => "sk_dim",
                 Tool::Angle => "sk_angle",
+                Tool::Ellipse => "sk_ellipse",
+                Tool::Spline => "sk_spline",
+                Tool::Text => "sk_text",
                 Tool::Cons(_) => "",
             };
             let text = label.split_once(' ').map(|x| x.1).unwrap_or(label);
@@ -1129,6 +1217,9 @@ impl SketchSession {
                 tool_btn(ui, self, Tool::Polygon, tr("◇ Многоуг."), "P");
                 tool_btn(ui, self, Tool::Slot, tr("▬ Паз"), "O");
                 tool_btn(ui, self, Tool::CenterRect, tr("▣ Из центра"), "");
+                tool_btn(ui, self, Tool::Ellipse, tr("⬭ Эллипс"), "");
+                tool_btn(ui, self, Tool::Spline, tr("∿ Сплайн"), "");
+                tool_btn(ui, self, Tool::Text, tr("𝐓 Текст"), "");
             });
             vsep(ui);
             group(ui, tr("ИМПОРТ"), |ui| {
@@ -1199,7 +1290,62 @@ impl SketchSession {
     }
 
     /// Палитра чертежа для панели справа: ограничения, настройки, состояние, выбранное.
+    /// Texts of the sketch: the one being placed or edited, and the list of the existing ones.
+    fn text_ui(&mut self, ui: &mut egui::Ui, params: &Params) {
+        if let Some((index, mut t)) = self.text_draft.take() {
+            ui.label(RichText::new(tr("ТЕКСТ")).small().weak());
+            ui.add(egui::TextEdit::singleline(&mut t.text).desired_width(f32::INFINITY).char_limit(200).hint_text(RichText::new(tr("Введите текст")).weak()).margin(egui::Margin::symmetric(10, 8)));
+            ui.horizontal(|ui| {
+                ui.label(tr("Высота"));
+                ui.add(egui::DragValue::new(&mut t.height).range(0.5..=500.0).speed(0.2).suffix(" мм"));
+                ui.label(tr("Угол"));
+                ui.add(egui::DragValue::new(&mut t.angle).range(-360.0..=360.0).speed(1.0).suffix("°"));
+            });
+            let (mut ok, mut cancel) = (false, false);
+            ui.horizontal(|ui| {
+                ok = crate::ui_kit::b01(ui, tr("Добавить"), 120.0).clicked();
+                cancel = crate::ui_kit::b03(ui, tr("Отмена")).clicked();
+            });
+            if ok && !t.text.trim().is_empty() {
+                self.checkpoint();
+                match index {
+                    Some(i) if i < self.sketch.texts.len() => self.sketch.texts[i] = t,
+                    _ => self.sketch.texts.push(t),
+                }
+                self.resolve(params);
+            } else if !cancel && !ok {
+                self.text_draft = Some((index, t));
+            }
+            ui.separator();
+        }
+        if !self.sketch.texts.is_empty() {
+            ui.label(RichText::new(tr("ТЕКСТЫ ЧЕРТЕЖА")).small().weak());
+            let (mut edit, mut delete) = (None, None);
+            for (i, t) in self.sketch.texts.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("«{}»", t.text.chars().take(18).collect::<String>())).strong());
+                    if ui.small_button("✎").on_hover_text(tr("Изменить текст")).clicked() {
+                        edit = Some(i);
+                    }
+                    if ui.small_button("✕").on_hover_text(tr("Удалить текст")).clicked() {
+                        delete = Some(i);
+                    }
+                });
+            }
+            if let Some(i) = edit {
+                self.text_draft = Some((Some(i), self.sketch.texts[i].clone()));
+            }
+            if let Some(i) = delete {
+                self.checkpoint();
+                self.sketch.texts.remove(i);
+                self.resolve(params);
+            }
+            ui.separator();
+        }
+    }
+
     pub fn status_ui(&mut self, ui: &mut egui::Ui, params: &Params) {
+        self.text_ui(ui, params);
         // the object itself comes first: what is selected and its own settings; tools and constraints follow
         if !self.selection.is_empty() {
             ui.label(RichText::new(tr("ВЫБРАННОЕ")).small().weak());
@@ -1211,6 +1357,8 @@ impl SketchSession {
                             Entity::Line { .. } => (tr("Линия"), Some((tr("Длина"), self.sketch.measure(e)))),
                             Entity::Circle { .. } => (tr("Окружность"), Some((tr("Диаметр"), self.sketch.measure(e)))),
                             Entity::Arc { .. } => (tr("Дуга"), None),
+                            Entity::Ellipse { .. } => (tr("Эллипс"), None),
+                            Entity::Spline { .. } => (tr("Сплайн"), None),
                         };
                         ui.label(RichText::new(kind).strong());
                         if let Some((name, value)) = current {
@@ -1379,6 +1527,21 @@ impl SketchSession {
                 polyline(&mut ov.lines_top, &pts, col, w, false);
             }
         }
+        // letters of the sketch's texts, and of the one being typed
+        let text_line = |ov: &mut Overlay, t: &fusion_core::text::SketchText, col: Color32| {
+            for r in fusion_core::text::regions(t) {
+                for ring in std::iter::once(&r.outer).chain(r.holes.iter()) {
+                    let pts: Vec<DVec3> = ring.iter().map(|p| pl.to_world(*p)).collect();
+                    polyline(&mut ov.lines_top, &pts, col, 1.6, true);
+                }
+            }
+        };
+        for t in &self.sketch.texts {
+            text_line(ov, t, if full { c.sketch_constrained } else { c.sketch });
+        }
+        if let Some((_, t)) = &self.text_draft {
+            text_line(ov, t, c.sketch_hover);
+        }
         // предпросмотр текущего инструмента
         let Some(cur) = self.cursor else { return };
         let pv = c.sketch_hover;
@@ -1426,6 +1589,27 @@ impl SketchSession {
                 for i in 0..4 {
                     seg(ov, q[i], q[(i + 1) % 4]);
                 }
+            }
+            Pending::Ellipse1 { c: cc, .. } => seg(ov, cc, cur.pos),
+            Pending::Ellipse2 { c: cc, a, .. } => {
+                let (cv, major) = (DVec2::from(cc), DVec2::from(a) - DVec2::from(cc));
+                let len = major.length().max(1e-9);
+                let minor = ((DVec2::from(cur.pos) - cv).dot(DVec2::new(-major.y, major.x) / len)).abs().min(len).max(len * 0.02);
+                let m = DVec2::new(-major.y, major.x) / len * minor;
+                let n = 72;
+                let pts: Vec<DVec3> = (0..=n)
+                    .map(|i| {
+                        let t = std::f64::consts::TAU * i as f64 / n as f64;
+                        pl.to_world((cv + major * t.cos() + m * t.sin()).to_array())
+                    })
+                    .collect();
+                polyline(&mut ov.lines_top, &pts, pv, 1.6, false);
+            }
+            Pending::Spline => {
+                let mut pts: Vec<DVec2> = self.spline_pts.iter().map(|p| DVec2::from(*p)).collect();
+                pts.push(DVec2::from(cur.pos));
+                let line: Vec<DVec3> = fusion_core::sketch::catmull_rom(&pts, false).into_iter().map(|p| pl.to_world(p)).collect();
+                polyline(&mut ov.lines_top, &line, pv, 1.6, false);
             }
             Pending::Arc1 { a, .. } => seg(ov, a, cur.pos),
             Pending::Arc2 { a, b, .. } => {
@@ -1730,10 +1914,11 @@ impl SketchSession {
             match s.entities.get(e)? {
                 Entity::Line { a, b, .. } => Some((s.p(*a) + s.p(*b)) * 0.5),
                 Entity::Circle { c, r, .. } => Some(s.p(*c) + DVec2::new(r * 0.7071, r * 0.7071)),
-                Entity::Arc { .. } => {
+                Entity::Arc { .. } | Entity::Spline { .. } => {
                     let t = s.tessellate(e);
                     Some(DVec2::from(t[t.len() / 2]))
                 }
+                Entity::Ellipse { c, .. } => Some(s.p(*c)),
             }
         };
         let normal_off = |e: usize, px: f32| -> egui::Vec2 {

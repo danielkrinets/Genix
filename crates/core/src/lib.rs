@@ -9,6 +9,7 @@ pub mod fasteners;
 pub mod geom;
 pub mod mesh;
 pub mod sketch;
+pub mod text;
 pub mod trace;
 mod sketch_ops;
 

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+ab_glyph = "0.2.32"
 earcut = "0.4.11"
 glam = "0.32"
 manifold-csg = { version = "0.4.1", default-features = false }

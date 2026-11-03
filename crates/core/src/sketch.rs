@@ -84,20 +84,30 @@ pub enum Entity {
     Circle { c: usize, r: f64, construction: bool },
     /// Дуга против часовой стрелки от `a` к `b` вокруг центра `c`.
     Arc { c: usize, a: usize, b: usize, construction: bool },
+    /// Ellipse: centre `c`, `a` is the end of the major semi-axis, `ratio` = minor / major (0 < ratio <= 1).
+    Ellipse { c: usize, a: usize, ratio: f64, construction: bool },
+    /// Fit-point spline through the `count` sketch points that start at index `first` (they are added one after another).
+    Spline { first: usize, count: usize, closed: bool, construction: bool },
 }
 
 impl Entity {
     pub fn construction(&self) -> bool {
         match *self {
-            Entity::Line { construction, .. } | Entity::Circle { construction, .. } | Entity::Arc { construction, .. } => construction,
+            Entity::Line { construction, .. }
+            | Entity::Circle { construction, .. }
+            | Entity::Arc { construction, .. }
+            | Entity::Ellipse { construction, .. }
+            | Entity::Spline { construction, .. } => construction,
         }
     }
 
     pub fn set_construction(&mut self, v: bool) {
         match self {
-            Entity::Line { construction, .. } | Entity::Circle { construction, .. } | Entity::Arc { construction, .. } => {
-                *construction = v
-            }
+            Entity::Line { construction, .. }
+            | Entity::Circle { construction, .. }
+            | Entity::Arc { construction, .. }
+            | Entity::Ellipse { construction, .. }
+            | Entity::Spline { construction, .. } => *construction = v,
         }
     }
 
@@ -106,6 +116,8 @@ impl Entity {
             Entity::Line { a, b, .. } => vec![a, b],
             Entity::Circle { c, .. } => vec![c],
             Entity::Arc { c, a, b, .. } => vec![c, a, b],
+            Entity::Ellipse { c, a, .. } => vec![c, a],
+            Entity::Spline { first, count, .. } => (first..first + count).collect(),
         }
     }
 
@@ -121,6 +133,12 @@ impl Entity {
                 *a = m[*a];
                 *b = m[*b];
             }
+            Entity::Ellipse { c, a, .. } => {
+                *c = m[*c];
+                *a = m[*a];
+            }
+            // the fit points stay one after another when unused points around them are dropped
+            Entity::Spline { first, .. } => *first = m[*first],
         }
     }
 }
@@ -245,6 +263,9 @@ pub struct Sketch {
     pub points: Vec<SPoint>,
     pub entities: Vec<Entity>,
     pub constraints: Vec<Constraint>,
+    /// Text lines of the sketch (their letters are regions like any closed curve).
+    #[serde(default)]
+    pub texts: Vec<crate::text::SketchText>,
 }
 
 /// Результат решения: удалось ли удовлетворить все ограничения.
@@ -304,6 +325,8 @@ impl Sketch {
             Entity::Line { a, b, .. } => self.p(a).distance(self.p(b)),
             Entity::Circle { r, .. } => 2.0 * r,
             Entity::Arc { c, a, .. } => 2.0 * self.p(c).distance(self.p(a)),
+            Entity::Ellipse { c, a, .. } => 2.0 * self.p(c).distance(self.p(a)),
+            Entity::Spline { first, count, .. } => (first + 1..first + count).map(|i| self.p(i).distance(self.p(i - 1))).sum(),
         }
     }
 
@@ -319,6 +342,22 @@ impl Sketch {
     pub fn tessellate(&self, e: usize) -> Vec<P2> {
         match self.entities[e] {
             Entity::Line { a, b, .. } => vec![self.points[a].pos, self.points[b].pos],
+            Entity::Ellipse { c, a, ratio, .. } => {
+                let c = self.p(c);
+                let major = self.p(a) - c;
+                let minor = DVec2::new(-major.y, major.x) * ratio;
+                let n = arc_segments(std::f64::consts::TAU).max(64);
+                (0..=n)
+                    .map(|i| {
+                        let t = std::f64::consts::TAU * i as f64 / n as f64;
+                        (c + major * t.cos() + minor * t.sin()).to_array()
+                    })
+                    .collect()
+            }
+            Entity::Spline { first, count, closed, .. } => {
+                let pts: Vec<DVec2> = (first..first + count).map(|i| self.p(i)).collect();
+                catmull_rom(&pts, closed)
+            }
             Entity::Circle { c, r, .. } => {
                 let c = self.p(c);
                 let n = arc_segments(std::f64::consts::TAU);
@@ -960,6 +999,45 @@ impl Region {
     }
 }
 
+/// Smooth curve through the points (centripetal Catmull-Rom, sampled densely); a closed spline returns to its first point.
+pub fn catmull_rom(pts: &[DVec2], closed: bool) -> Vec<P2> {
+    let n = pts.len();
+    if n < 2 {
+        return pts.iter().map(|p| p.to_array()).collect();
+    }
+    let at = |i: isize| -> DVec2 {
+        if closed {
+            pts[i.rem_euclid(n as isize) as usize]
+        } else if i < 0 {
+            pts[0] * 2.0 - pts[1]
+        } else if i as usize >= n {
+            pts[n - 1] * 2.0 - pts[n - 2]
+        } else {
+            pts[i as usize]
+        }
+    };
+    let segs = if closed { n } else { n - 1 };
+    let mut out: Vec<P2> = Vec::new();
+    for s in 0..segs {
+        let (p0, p1, p2, p3) = (at(s as isize - 1), at(s as isize), at(s as isize + 1), at(s as isize + 2));
+        let knot = |a: DVec2, b: DVec2| a.distance(b).max(1e-9).sqrt();
+        let (t0, t1, t2, t3) = (0.0, knot(p0, p1), knot(p0, p1) + knot(p1, p2), knot(p0, p1) + knot(p1, p2) + knot(p2, p3));
+        let steps = 24;
+        for k in 0..steps {
+            let t = t1 + (t2 - t1) * k as f64 / steps as f64;
+            let lerp = |a: DVec2, b: DVec2, ta: f64, tb: f64| a + (b - a) * ((t - ta) / (tb - ta));
+            let a1 = lerp(p0, p1, t0, t1);
+            let a2 = lerp(p1, p2, t1, t2);
+            let a3 = lerp(p2, p3, t2, t3);
+            let b1 = lerp(a1, a2, t0, t2);
+            let b2 = lerp(a2, a3, t1, t3);
+            out.push(lerp(b1, b2, t1, t2).to_array());
+        }
+    }
+    out.push(if closed { pts[0].to_array() } else { pts[n - 1].to_array() });
+    out
+}
+
 /// Найти область, содержащую точку (самую маленькую, если их несколько).
 pub fn region_at(regions: &[Region], p: P2) -> Option<usize> {
     regions
@@ -1007,6 +1085,8 @@ fn arrange(s: &Sketch) -> Arrangement {
             Entity::Line { a, b, .. } if a != b => curves.push(Curve { entity: i, pts, closed: false, cuts: Vec::new() }),
             Entity::Arc { a, b, .. } if a != b => curves.push(Curve { entity: i, pts, closed: false, cuts: Vec::new() }),
             Entity::Circle { r, .. } if r > 1e-9 => curves.push(Curve { entity: i, pts, closed: true, cuts: Vec::new() }),
+            Entity::Ellipse { c, a, ratio, .. } if c != a && ratio > 1e-6 => curves.push(Curve { entity: i, pts, closed: true, cuts: Vec::new() }),
+            Entity::Spline { count, closed, .. } if count >= 2 => curves.push(Curve { entity: i, pts, closed, cuts: Vec::new() }),
             _ => {}
         }
     }
@@ -1114,7 +1194,16 @@ fn arrange(s: &Sketch) -> Arrangement {
     Arrangement { vertices: verts.len(), edges, circles }
 }
 
+/// Regions of the curves plus the letters of the sketch's texts.
 fn regions(s: &Sketch) -> Vec<Region> {
+    let mut all = curve_regions(s);
+    for t in &s.texts {
+        all.extend(crate::text::regions(t));
+    }
+    all
+}
+
+fn curve_regions(s: &Sketch) -> Vec<Region> {
     let arr = arrange(s);
     let nv = arr.vertices;
     let mut edges = arr.edges;
@@ -1623,5 +1712,79 @@ mod tests {
         let areas: Vec<f64> = s.regions().iter().map(|r| r.area()).collect();
         let total: f64 = areas.iter().sum();
         assert!((total - 42.0).abs() < 0.01, "{areas:?}");
+    }
+}
+
+#[cfg(test)]
+mod freeform_tests {
+    use super::*;
+
+    fn ellipse(s: &mut Sketch, centre: P2, major: P2, ratio: f64) -> usize {
+        let c = s.add_point(centre);
+        let a = s.add_point(major);
+        s.add(Entity::Ellipse { c, a, ratio, construction: false })
+    }
+
+    #[test]
+    fn an_ellipse_is_a_closed_region_with_the_right_area() {
+        let mut s = Sketch::default();
+        ellipse(&mut s, [0.0, 0.0], [10.0, 0.0], 0.5);
+        let r = s.regions();
+        assert_eq!(r.len(), 1);
+        let expect = std::f64::consts::PI * 10.0 * 5.0;
+        assert!((r[0].area() - expect).abs() < expect * 0.01, "{} vs {expect}", r[0].area());
+        // a tilted major axis gives the same area
+        let mut t = Sketch::default();
+        ellipse(&mut t, [3.0, 4.0], [3.0 + 6.0, 4.0 + 8.0], 0.4);
+        let area = t.regions()[0].area();
+        let expect = std::f64::consts::PI * 10.0 * 4.0;
+        assert!((area - expect).abs() < expect * 0.01, "{area} vs {expect}");
+    }
+
+    #[test]
+    fn a_closed_spline_bounds_a_region_and_passes_through_its_points() {
+        let mut s = Sketch::default();
+        let first = s.points.len();
+        for p in [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]] {
+            s.add_point(p);
+        }
+        let e = s.add(Entity::Spline { first, count: 4, closed: true, construction: false });
+        let line = s.tessellate(e);
+        for p in [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]] {
+            assert!(line.iter().any(|q| (q[0] - p[0]).abs() < 1e-9 && (q[1] - p[1]).abs() < 1e-9), "passes through {p:?}");
+        }
+        let r = s.regions();
+        assert_eq!(r.len(), 1);
+        assert!(r[0].area() > 100.0 && r[0].area() < 157.0, "a blob between the square (100) and its circumcircle (157): {}", r[0].area());
+    }
+
+    #[test]
+    fn an_open_spline_closed_by_a_line_makes_a_region_and_survives_point_cleanup() {
+        let mut s = Sketch::default();
+        let first = s.points.len();
+        for p in [[0.0, 0.0], [5.0, 4.0], [10.0, 0.0]] {
+            s.add_point(p);
+        }
+        s.add(Entity::Spline { first, count: 3, closed: false, construction: false });
+        s.add(Entity::Line { a: first, b: first + 2, construction: false });
+        let r = s.regions();
+        assert_eq!(r.len(), 1, "the arch over its chord");
+        assert!(r[0].area() > 20.0 && r[0].area() < 40.0, "{}", r[0].area());
+        // json round trip keeps both new entities
+        let back: Sketch = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.entities.len(), 2);
+        assert_eq!(back.regions().len(), 1);
+    }
+
+    #[test]
+    fn ellipse_and_spline_leave_through_dxf_and_do_not_break_trimming() {
+        let mut s = Sketch::default();
+        let e = ellipse(&mut s, [0.0, 0.0], [10.0, 0.0], 0.5);
+        let l = s.add_line([-20.0, 0.0], [20.0, 0.0]);
+        let dxf = crate::dxf::export(&s);
+        assert!(dxf.contains("LWPOLYLINE"));
+        // trimming the line ignores the ellipse (no crossing found), trimming the ellipse is refused
+        assert!(!s.trim(e, [0.0, 5.0]));
+        let _ = l;
     }
 }

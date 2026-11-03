@@ -2293,6 +2293,7 @@ mod import_tests {
 #[cfg(test)]
 mod modeling_batch_tests {
     use super::*;
+    use crate::sketch::Entity;
 
     fn n(v: f64) -> Expr {
         Expr::num(v)
@@ -2433,6 +2434,33 @@ mod modeling_batch_tests {
         assert!(ev2.error(uid2).is_none(), "{:?}", ev2.error(uid2));
         let plain = 30.0 * 30.0 * 12.0 - std::f64::consts::PI * (m5.clearance_dia(Fit::Close) / 2.0f64).powi(2) * 12.0;
         assert!(ev2.model().bodies[0].mesh().volume() < plain, "the countersink removes extra material");
+    }
+
+    #[test]
+    fn text_extrudes_into_letters_and_an_ellipse_into_an_oval_post() {
+        let mut d = Document::default();
+        let mut s = Sketch::default();
+        s.texts.push(crate::text::SketchText { text: "O".into(), pos: [0.0, 0.0], height: 20.0, angle: 0.0 });
+        let region = s.regions().remove(0);
+        let at = region.interior_point();
+        let sk = d.insert(FeatureKind::Sketch { plane: Plane::XY, sketch: s });
+        let uid = d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![ProfileRef::at(at)], extent: Extent::OneSide(n(3.0)), op: Op::NewBody, face: None, taper: n(0.0), thin: n(0.0), start: n(0.0) });
+        let ev = run(&d);
+        assert!(ev.error(uid).is_none(), "{:?}", ev.error(uid));
+        let v = ev.model().bodies[0].mesh().volume();
+        assert!((v - region.area() * 3.0).abs() < 1e-6, "letter ring with its hole: {v} vs {}", region.area() * 3.0);
+        // an ellipse post
+        let mut d2 = Document::default();
+        let mut e = Sketch::default();
+        let c = e.add_point([0.0, 0.0]);
+        let a = e.add_point([10.0, 0.0]);
+        e.add(Entity::Ellipse { c, a, ratio: 0.5, construction: false });
+        let sk2 = d2.insert(FeatureKind::Sketch { plane: Plane::XY, sketch: e });
+        let post = d2.insert(FeatureKind::Extrude { sketch: sk2, profiles: vec![ProfileRef::at([0.0, 0.0])], extent: Extent::OneSide(n(8.0)), op: Op::NewBody, face: None, taper: n(0.0), thin: n(0.0), start: n(0.0) });
+        let ev2 = run(&d2);
+        assert!(ev2.error(post).is_none(), "{:?}", ev2.error(post));
+        let expect = std::f64::consts::PI * 10.0 * 5.0 * 8.0;
+        assert!((ev2.model().bodies[0].mesh().volume() - expect).abs() < expect * 0.01);
     }
 
     #[test]

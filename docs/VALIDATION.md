@@ -140,3 +140,10 @@ Tests: core 112 + app 99. Checked with the release binary: new → features → 
 
 Extrude: extent «До тела» (to the nearest side of another body's bounding box) and «Смещение начала». Old files open unchanged (`start` defaults to 0).
 Tests: core 113 + app 99. Not checked by eye in the window.
+
+## 0.00.33 — sketch text, ellipse, spline (checked 2026-11-03)
+
+Sketch tools «Эллипс» (centre, major semi-axis, a point on it), «Сплайн» (fit points, Enter finishes, a click on the first point closes), «Текст» (letters become profiles with their counters; DejaVu Sans, so Latin, Cyrillic, Greek, Hebrew). Core: `Entity::Ellipse`, `Entity::Spline` (consecutive fit points, centripetal Catmull-Rom), `Sketch::texts` + `crates/core/src/text.rs` (needs the `ab_glyph` crate that egui already uses). Ellipses/splines leave through DXF as polylines; trimming and offsetting ignore them. Old files open unchanged (`texts` defaults to empty).
+Tests: core 120 + app 99: ellipse areas (also tilted), closed/open spline regions, text regions (O has 1 hole, 8 has 2, ii gives 4, Cyrillic), size/position/rotation, extrusion of a letter ring and of an oval post by volume.
+Live (QA copy): the three tools show in the sketch toolbar with icons; the text tool previews «Текст» in Cyrillic, «Добавить» adds it (profiles 1 → 6, the list of texts with edit/delete appears); an ellipse was created.
+Not checked by eye: the ellipse's third click (the automation sent it without a mouse move, so the ellipse came out flat), spline drawing, extruding a letter in the window (checked by tests only), constraints on ellipses/splines (none are supported: they are free shapes).
