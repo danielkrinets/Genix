@@ -1031,4 +1031,6 @@ pub const EN: &[(&str, &str)] = &[
     ("ТЕКСТЫ ЧЕРТЕЖА", "TEXTS OF THE SKETCH"),
     ("Изменить текст", "Edit text"),
     ("Удалить текст", "Delete text"),
+    ("Экспорт STEP (САПР)…", "Export STEP (CAD)…"),
+    ("Экспорт DXF (3D)…", "Export DXF (3D)…"),
 ];

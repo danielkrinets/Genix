@@ -956,6 +956,8 @@ impl App {
         let bytes = match fmt {
             "obj" => Mesh::write_obj(&named()).into_bytes(),
             "3mf" => Mesh::write_3mf(&named()),
+            "step" => Mesh::write_step(&named(), &format!("{}.step", self.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "model".into()))).into_bytes(),
+            "dxf" => Mesh::write_dxf(&named()).into_bytes(),
             _ => {
                 let mut out = Vec::new();
                 Mesh::write_stl_binary(&bodies.iter().map(|b| b.mesh()).collect::<Vec<_>>(), &mut out);
@@ -970,7 +972,7 @@ impl App {
             self.toast(tr("Нет тел для экспорта"), true, now);
             return;
         }
-        let (ext, label) = match fmt { "obj" => ("obj", "OBJ"), "3mf" => ("3mf", "3MF"), _ => ("stl", tr("STL (3D-печать)")) };
+        let (ext, label) = match fmt { "obj" => ("obj", "OBJ"), "3mf" => ("3mf", "3MF"), "step" => ("step", "STEP"), "dxf" => ("dxf", "DXF"), _ => ("stl", tr("STL (3D-печать)")) };
         let name = format!("{}.{ext}", self.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| tr("модель").into()));
         let Some(p) = crate::files::save(label, &[ext], &name) else { return };
         let Some((bytes, count)) = self.model_bytes(fmt) else { return };
@@ -2312,6 +2314,14 @@ impl App {
                 if ui.add_enabled_ui(has_model, |ui| menu_item(ui, "file_export_obj", tr("Экспорт OBJ…"))).inner {
                     ui.close_menu();
                     self.export("obj", now);
+                }
+                if ui.add_enabled_ui(has_model, |ui| menu_item(ui, "file_export_obj", tr("Экспорт STEP (САПР)…"))).inner {
+                    ui.close_menu();
+                    self.export("step", now);
+                }
+                if ui.add_enabled_ui(has_model, |ui| menu_item(ui, "file_export_obj", tr("Экспорт DXF (3D)…"))).inner {
+                    ui.close_menu();
+                    self.export("dxf", now);
                 }
                 ui.add_enabled_ui(has_model, |ui| {
                     ui.menu_button(tr("Открыть в слайсере"), |ui| {

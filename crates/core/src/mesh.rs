@@ -331,6 +331,86 @@ impl Mesh {
         zip_stored(&[("[Content_Types].xml", types.as_bytes()), ("_rels/.rels", rels.as_bytes()), ("3D/3dmodel.model", model.as_bytes())])
     }
 
+    /// STEP (ISO 10303-21, AP214): every body as a faceted B-rep, one planar face per triangle, millimetres.
+    /// It carries the exact triangles of the model (no curved surfaces), which CAD programs import as a solid made of facets.
+    pub fn write_step(meshes: &[(&str, &Mesh)], file_name: &str) -> String {
+        use std::fmt::Write;
+        fn q(s: &str) -> String {
+            s.chars().map(|c| if c.is_ascii() && c != '\'' && c != '\\' && !c.is_control() { c.to_string() } else { format!("\\X2\\{:04X}\\X0\\", c as u32) }).collect()
+        }
+        let real = |v: f64| {
+            let v = if v.abs() < 5e-7 { 0.0 } else { v };
+            format!("{v:.6}")
+        };
+        let mut s = String::new();
+        let _ = write!(s, "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('Genix model'),'2;1');\nFILE_NAME('{}','2026-01-01T00:00:00',('Genix'),('Genix'),'Genix','Genix','');\nFILE_SCHEMA(('AUTOMOTIVE_DESIGN {{ 1 0 10303 214 1 1 1 1 }}'));\nENDSEC;\nDATA;\n", q(file_name));
+        let id = std::cell::Cell::new(0u64);
+        let next = |s: &mut String, body: String| -> u64 {
+            id.set(id.get() + 1);
+            let _ = writeln!(s, "#{}={body};", id.get());
+            id.get()
+        };
+        let app_ctx = next(&mut s, "APPLICATION_CONTEXT('core data for automotive mechanical design processes')".into());
+        next(&mut s, format!("APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,#{app_ctx})"));
+        let len = next(&mut s, "(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.))".into());
+        let ang = next(&mut s, "(NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.))".into());
+        let ste = next(&mut s, "(NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT())".into());
+        let unc = next(&mut s, format!("UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-06),#{len},'distance_accuracy_value','')"));
+        let ctx = next(&mut s, format!("(GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#{unc})) GLOBAL_UNIT_ASSIGNED_CONTEXT((#{len},#{ang},#{ste})) REPRESENTATION_CONTEXT('Context','3D'))"));
+        let pctx = next(&mut s, format!("PRODUCT_CONTEXT('',#{app_ctx},'mechanical')"));
+        let dctx = next(&mut s, format!("PRODUCT_DEFINITION_CONTEXT('part definition',#{app_ctx},'design')"));
+        let product = next(&mut s, format!("PRODUCT('{0}','{0}','',(#{pctx}))", q(file_name)));
+        let formation = next(&mut s, format!("PRODUCT_DEFINITION_FORMATION('','',#{product})"));
+        let definition = next(&mut s, format!("PRODUCT_DEFINITION('design','',#{formation},#{dctx})"));
+        let def_shape = next(&mut s, format!("PRODUCT_DEFINITION_SHAPE('','',#{definition})"));
+        let origin = next(&mut s, "CARTESIAN_POINT('',(0.,0.,0.))".into());
+        let dir_z = next(&mut s, "DIRECTION('',(0.,0.,1.))".into());
+        let dir_x = next(&mut s, "DIRECTION('',(1.,0.,0.))".into());
+        let axis = next(&mut s, format!("AXIS2_PLACEMENT_3D('',#{origin},#{dir_z},#{dir_x})"));
+        let mut breps = Vec::new();
+        for (name, m) in meshes {
+            let first_point = id.get() + 1;
+            for v in &m.vertices {
+                next(&mut s, format!("CARTESIAN_POINT('',({},{},{}))", real(v[0]), real(v[1]), real(v[2])));
+            }
+            let mut faces = Vec::with_capacity(m.triangles.len());
+            for t in &m.triangles {
+                let pts: Vec<String> = t.iter().map(|&i| format!("#{}", first_point + i as u64)).collect();
+                let lp = next(&mut s, format!("POLY_LOOP('',({}))", pts.join(",")));
+                let bound = next(&mut s, format!("FACE_OUTER_BOUND('',#{lp},.T.)"));
+                faces.push(next(&mut s, format!("FACE('',(#{bound}))")));
+            }
+            let shell = next(&mut s, format!("CLOSED_SHELL('',({}))", faces.iter().map(|f| format!("#{f}")).collect::<Vec<_>>().join(",")));
+            breps.push(next(&mut s, format!("FACETED_BREP('{}',#{shell})", q(name))));
+        }
+        let items: Vec<String> = std::iter::once(axis).chain(breps).map(|i| format!("#{i}")).collect();
+        let rep = next(&mut s, format!("FACETED_BREP_SHAPE_REPRESENTATION('',({}),#{ctx})", items.join(",")));
+        next(&mut s, format!("SHAPE_DEFINITION_REPRESENTATION(#{def_shape},#{rep})"));
+        s.push_str("ENDSEC;\nEND-ISO-10303-21;\n");
+        s
+    }
+
+    /// DXF with every triangle as a 3DFACE on a layer named after its body (AutoCAD, Fusion, FreeCAD, LibreCAD read it).
+    pub fn write_dxf(meshes: &[(&str, &Mesh)]) -> String {
+        use std::fmt::Write;
+        let mut s = String::from("0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n");
+        for (k, (name, m)) in meshes.iter().enumerate() {
+            // layer names stay plain ASCII (older DXF readers choke on anything else); a name without ASCII letters becomes Body_N
+            let ascii: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
+            let layer = if ascii.chars().any(|c| c.is_ascii_alphanumeric()) { ascii } else { format!("Body_{}", k + 1) };
+            for t in &m.triangles {
+                let v = |i: usize| m.vertices[t[i] as usize];
+                let _ = write!(s, "0\n3DFACE\n8\n{layer}\n");
+                // the fourth corner repeats the third: a triangle
+                for (k, p) in [v(0), v(1), v(2), v(2)].iter().enumerate() {
+                    let _ = write!(s, "{}\n{}\n{}\n{}\n{}\n{}\n", 10 + k, p[0], 20 + k, p[1], 30 + k, p[2]);
+                }
+            }
+        }
+        s.push_str("0\nENDSEC\n0\nEOF\n");
+        s
+    }
+
     /// Текстовый OBJ: каждое тело — отдельный объект.
     pub fn write_obj(meshes: &[(&str, &Mesh)]) -> String {
         use std::fmt::Write;
@@ -493,3 +573,62 @@ mod tests {
         assert_eq!(text.matches("<triangle ").count(), m.triangles.len());
     }
 }
+
+#[cfg(test)]
+mod export_format_tests {
+    use super::*;
+
+    fn cube() -> Mesh {
+        crate::geom::box_mesh(glam::DVec3::ZERO, glam::DVec3::new(10.0, 20.0, 30.0))
+    }
+
+    #[test]
+    fn step_file_is_structurally_sound() {
+        let (a, b) = (cube(), cube());
+        let text = Mesh::write_step(&[("Тело 1", &a), ("Body 2", &b)], "part.step");
+        assert!(text.starts_with("ISO-10303-21;\nHEADER;") && text.trim_end().ends_with("END-ISO-10303-21;"));
+        assert!(text.contains("FILE_SCHEMA((\'AUTOMOTIVE_DESIGN") || text.contains("FILE_SCHEMA(('AUTOMOTIVE_DESIGN"));
+        let data = text.split("DATA;\n").nth(1).unwrap().split("ENDSEC;").next().unwrap();
+        let mut ids = Vec::new();
+        for line in data.lines() {
+            let (id, rest) = line.split_once('=').expect("every entity line is #n=...;");
+            assert!(rest.ends_with(';'), "{line}");
+            ids.push(id.trim_start_matches('#').parse::<u64>().unwrap());
+            assert_eq!(rest.matches('(').count(), rest.matches(')').count(), "balanced parentheses: {line}");
+        }
+        assert_eq!(ids, (1..=ids.len() as u64).collect::<Vec<_>>(), "ids are 1..n without gaps");
+        // every reference points at an existing entity that was defined earlier or later in the file
+        for line in data.lines() {
+            let rest = line.split_once('=').unwrap().1;
+            let mut chars = rest.char_indices().peekable();
+            while let Some((i, c)) = chars.next() {
+                if c == '#' {
+                    let n: String = rest[i + 1..].chars().take_while(|c| c.is_ascii_digit()).collect();
+                    let n: u64 = n.parse().expect("a reference has digits");
+                    assert!(n >= 1 && n <= ids.len() as u64, "dangling #{n} in {line}");
+                }
+            }
+        }
+        // 2 bodies x 12 triangles: 24 faces, 24 loops, 2 closed shells, 2 breps, 16 points
+        assert_eq!(data.matches("FACE_OUTER_BOUND").count(), 24);
+        assert_eq!(data.matches("POLY_LOOP").count(), 24);
+        assert_eq!(data.matches("CLOSED_SHELL").count(), 2);
+        assert_eq!(data.matches("FACETED_BREP(").count(), 2);
+        assert!(data.contains("CARTESIAN_POINT('',(10.000000,20.000000,30.000000))"));
+        // non-ASCII names are escaped, the file stays plain ASCII
+        assert!(text.is_ascii(), "STEP must be ASCII");
+        assert!(text.contains("\\X2\\"));
+    }
+
+    #[test]
+    fn dxf_holds_one_3dface_per_triangle_with_body_layers() {
+        let a = cube();
+        let text = Mesh::write_dxf(&[("Тело 1", &a)]);
+        assert_eq!(text.matches("3DFACE").count(), 12);
+        assert!(text.contains("\n8\n") && text.contains("0\nEOF"));
+        let codes: Vec<&str> = text.lines().step_by(2).collect();
+        assert_eq!(codes.iter().filter(|c| c.trim() == "13").count(), 12, "every face has its fourth corner");
+        assert!(text.contains("\n10\n0\n20\n0\n30\n0\n") || text.contains("\n10\n10\n") || text.contains("\n11\n"));
+    }
+}
+

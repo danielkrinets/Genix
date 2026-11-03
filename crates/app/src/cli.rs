@@ -65,7 +65,9 @@ fn export(doc: &fusion_core::Document, out: &str) -> Result<usize, String> {
         }
         "obj" => fusion_core::Mesh::write_obj(&named.iter().map(|(n, m)| (n.as_str(), *m)).collect::<Vec<_>>()).into_bytes(),
         "3mf" => fusion_core::Mesh::write_3mf(&named.iter().map(|(n, m)| (n.as_str(), *m)).collect::<Vec<_>>()),
-        _ => return Err("export format must be .stl, .obj or .3mf".into()),
+        "step" | "stp" => fusion_core::Mesh::write_step(&named.iter().map(|(n, m)| (n.as_str(), *m)).collect::<Vec<_>>(), &Path::new(out).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default()).into_bytes(),
+        "dxf" => fusion_core::Mesh::write_dxf(&named.iter().map(|(n, m)| (n.as_str(), *m)).collect::<Vec<_>>()).into_bytes(),
+        _ => return Err("export format must be .stl, .obj, .3mf, .step or .dxf".into()),
     };
     crate::files::write_atomic(Path::new(out), &data).map_err(|e| e.to_string())?;
     Ok(named.len())
@@ -166,6 +168,11 @@ mod tests {
         let stl = dir.join("m.stl").to_string_lossy().to_string();
         assert_eq!(run(&args(&["--export", &model, &stl])), Some(0));
         assert!(std::fs::metadata(&stl).unwrap().len() > 84);
+        for ext in ["step", "dxf", "obj", "3mf"] {
+            let f = dir.join(format!("m.{ext}")).to_string_lossy().to_string();
+            assert_eq!(run(&args(&["--export", &model, &f])), Some(0), "{ext}");
+            assert!(std::fs::metadata(&f).unwrap().len() > 100, "{ext}");
+        }
         assert_eq!(run(&args(&["--export", &model, &dir.join("m.xyz").to_string_lossy()])), Some(1));
         assert_eq!(run(&args(&["--features"])), Some(0));
         assert_eq!(run(&args(&["somefile.genix"])), None, "a plain path is not a headless command");

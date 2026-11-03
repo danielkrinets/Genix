@@ -9,7 +9,7 @@ Everything below runs the same engine as the app. Results are JSON on stdout; er
 | `genix --features` | prints the feature types and ready-to-use JSON examples (take the exact encoding from here) |
 | `genix --add model.genix '<feature json>'` | appends a feature (`-` reads the JSON from stdin). If the feature does not build, the file is **not** changed and the error is printed |
 | `genix --eval model.genix` | evaluates the whole document: per-feature errors, bodies with id, name, volume (mm³), bounding box, overlaps. Exit code 3 if any feature has an error |
-| `genix --export model.genix out.stl` | exports all bodies; `.stl`, `.obj`, `.3mf` |
+| `genix --export model.genix out.stl` | exports all bodies; `.stl`, `.obj`, `.3mf`, `.step`, `.dxf` (STEP and DXF carry the exact triangles: facets, no curved surfaces) |
 | `genix --render-frames model.genix out_dir` | PNG frames of every build step and a turntable |
 
 ## Typical agent loop

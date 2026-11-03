@@ -147,3 +147,10 @@ Sketch tools «Эллипс» (centre, major semi-axis, a point on it), «Спл
 Tests: core 120 + app 99: ellipse areas (also tilted), closed/open spline regions, text regions (O has 1 hole, 8 has 2, ii gives 4, Cyrillic), size/position/rotation, extrusion of a letter ring and of an oval post by volume.
 Live (QA copy): the three tools show in the sketch toolbar with icons; the text tool previews «Текст» in Cyrillic, «Добавить» adds it (profiles 1 → 6, the list of texts with edit/delete appears); an ellipse was created.
 Not checked by eye: the ellipse's third click (the automation sent it without a mouse move, so the ellipse came out flat), spline drawing, extruding a letter in the window (checked by tests only), constraints on ellipses/splines (none are supported: they are free shapes).
+
+## 0.00.34 — STEP and DXF export (checked 2026-11-03)
+
+File → «Экспорт STEP (САПР)…» and «Экспорт DXF (3D)…» (selected bodies or all visible ones), `genix --export model out.step|out.dxf`.
+STEP = ISO 10303-21 AP214, each body a faceted B-rep (one planar face per triangle, millimetres, ASCII with \X2\ escapes for non-ASCII names). DXF = one 3DFACE per triangle, ASCII layer per body. Both carry the exact triangles: CAD programs see facets, not curved faces or features.
+Tests: core 122 + app 99. Structural checks on the demo model (8 bodies, 1088 triangles): STEP ids are 1..n without gaps, no dangling references, balanced parentheses, one shell per body; DXF is valid group-code pairs with 1088 3DFACE.
+**NOT checked in a real CAD program** (none is installed here and there is no STEP validator): open `demo.step` in Fusion/FreeCAD and report. The STEP skeleton follows the usual AP214 faceted-brep layout; if a program refuses it, the file header/product block is the first suspect.
