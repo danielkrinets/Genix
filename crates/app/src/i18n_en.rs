@@ -1007,4 +1007,11 @@ pub const EN: &[(&str, &str)] = &[
     ("Поставить в центр грани", "Put in the middle of the face"),
     ("Поставить к краю или углу грани (отступ — радиус + 2 мм)", "Put against an edge or corner of the face (offset: radius + 2 mm)"),
     ("Поставить к краю или углу целевой грани", "Put against an edge or corner of the target face"),
+    ("До тела", "Up to body"),
+    ("Строится до ближайшей стороны выбранного тела", "Extrudes up to the nearest side of the chosen body"),
+    ("Тело", "Body"),
+    ("не выбрано", "not chosen"),
+    ("Смещение начала", "Start offset"),
+    ("тело, до которого строится выдавливание, не найдено", "the body to extrude up to was not found"),
+    ("тело не лежит впереди профиля", "the body is not in front of the profile"),
 ];

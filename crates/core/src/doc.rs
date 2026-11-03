@@ -42,6 +42,8 @@ pub enum Extent {
     TwoSides(Expr, Expr),
     /// Through the whole model; `true` goes both ways from the profile, `false` only forward.
     All(bool),
+    /// Up to another body: forward until the nearest side of that body's bounding box (a flat target face is reached exactly).
+    ToBody(u64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,6 +196,9 @@ pub enum FeatureKind {
         /// Thin extrude: wall thickness grown inwards from the profile outline; 0 gives a solid body.
         #[serde(default = "zero_expr")]
         thin: Expr,
+        /// Offset of the start of the extrusion from the profile plane (along the normal).
+        #[serde(default = "zero_expr")]
+        start: Expr,
     },
     Revolve { sketch: u64, profiles: Vec<ProfileRef>, axis: RevolveAxis, angle: Expr, op: Op },
     Primitive { shape: Shape, at: [Expr; 3], op: Op },
@@ -642,6 +647,22 @@ fn find_sketch(uid: u64, steps: &[StepResult], feats: &[Feature]) -> Result<Arc<
 }
 
 /// Объединить несколько кусков в одно тело-инструмент.
+/// Distance from `plane` along its normal to the nearest side of body `id` (the extrusion stops there).
+fn distance_to_body(model: &Model, plane: &Plane, id: u64) -> Result<f64, String> {
+    let b = model.body(id).ok_or("тело, до которого строится выдавливание, не найдено")?;
+    let (lo, hi) = b.mesh().bounds().ok_or("тело пустое")?;
+    let n = plane.normal();
+    let mut near = f64::MAX;
+    for c in 0..8 {
+        let corner = DVec3::new(if c & 1 == 0 { lo.x } else { hi.x }, if c & 2 == 0 { lo.y } else { hi.y }, if c & 4 == 0 { lo.z } else { hi.z });
+        near = near.min((corner - plane.o()).dot(n));
+    }
+    if near <= 1e-6 {
+        return Err("тело не лежит впереди профиля".into());
+    }
+    Ok(near)
+}
+
 /// How far a through-all feature must reach from `plane`: past the farthest point of any body.
 fn through_all(model: &Model, plane: &Plane) -> f64 {
     let mut far = 1.0f64;
@@ -811,6 +832,7 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                 }
                 Extent::TwoSides(..) => return Err("для грани задайте одно расстояние или симметрично".into()),
                 Extent::All(_) => (-through_all(prev, &f.plane), 0.01, Op::Cut),
+                Extent::ToBody(id) => (0.0, distance_to_body(prev, &f.plane, *id)?, Op::Join),
             };
             let region = prev.bodies.iter().find_map(|b| geom::face_region(b.mesh(), &f.plane, DVec3::from(f.seed))).ok_or("грань не найдена: тело изменилось")?;
             let tool = thin_extrude(&f.plane, &region, z0, z1, taper.eval(p)?, thin.eval(p)?)?;
@@ -818,7 +840,7 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             apply_op(&mut m, tool, op, id_base)?;
             Ok((Arc::new(m), None))
         }
-        FeatureKind::Extrude { sketch, profiles, extent, op, taper, thin, .. } => {
+        FeatureKind::Extrude { sketch, profiles, extent, op, taper, thin, start, .. } => {
             let sk = find_sketch(*sketch, steps, feats)?;
             let regions = pick_regions(&sk, profiles)?;
             let taper = taper.eval(p)?;
@@ -828,6 +850,7 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                     let far = through_all(prev, &sk.plane);
                     (if *both { -far } else { 0.0 }, far)
                 }
+                Extent::ToBody(id) => (0.0, distance_to_body(prev, &sk.plane, *id)?),
                 Extent::OneSide(d) => (0.0, d.eval(p)?),
                 Extent::Symmetric(d) => {
                     let d = d.eval(p)?.abs();
@@ -835,6 +858,8 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                 }
                 Extent::TwoSides(a, b) => (-b.eval(p)?, a.eval(p)?),
             };
+            let off = start.eval(p)?;
+            let (z0, z1) = if matches!(extent, Extent::ToBody(_)) { (z0 + off, z1) } else { (z0 + off, z1 + off) };
             if (z1 - z0).abs() < 1e-9 {
                 return Err("расстояние не может быть нулевым".into());
             }
@@ -1476,7 +1501,7 @@ mod tests {
             sketch: sk,
             profiles: vec![ProfileRef::at([1.0, 1.0])],
             extent: Extent::OneSide(Expr::num(10.0)),
-            op: Op::NewBody, face: None, taper: Expr::num(0.0), thin: Expr::num(0.0) });
+            op: Op::NewBody, face: None, taper: Expr::num(0.0), thin: Expr::num(0.0), start: Expr::num(0.0) });
         (d, sk)
     }
 
@@ -1518,7 +1543,7 @@ mod tests {
             sketch: sk,
             profiles: vec![ProfileRef::at([20.0, 12.5])],
             extent: Extent::OneSide(Expr::num(10.0)),
-            op: Op::Join, face: None, taper: Expr::num(0.0), thin: Expr::num(0.0) });
+            op: Op::Join, face: None, taper: Expr::num(0.0), thin: Expr::num(0.0), start: Expr::num(0.0) });
         d.insert(FeatureKind::Primitive {
             shape: Shape::Box { w: Expr::num(5.0), d: Expr::num(5.0), h: Expr::num(20.0) },
             at: [Expr::num(-1.0), Expr::num(-1.0), Expr::num(-5.0)],
@@ -1668,7 +1693,7 @@ mod tests {
         let r = s.regions();
         let pref = ProfileRef::of(&r[0]);
         let sk = d.insert(FeatureKind::Sketch { plane: Plane::XY, sketch: s });
-        d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![pref], extent: Extent::OneSide(Expr::num(5.0)), op: Op::NewBody, face: None, taper: Expr::num(0.0), thin: Expr::num(0.0) });
+        d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![pref], extent: Extent::OneSide(Expr::num(5.0)), op: Op::NewBody, face: None, taper: Expr::num(0.0), thin: Expr::num(0.0), start: Expr::num(0.0) });
         d.params.set("x", "100");
         let mut ev = Evaluator::default();
         ev.evaluate(&d);
@@ -1832,7 +1857,7 @@ mod new_ops {
     fn extrude_can_take_a_body_face_instead_of_a_sketch() {
         let (mut d, _) = plate();
         let top = Plane { origin: [0.0, 0.0, 10.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
-        d.insert(FeatureKind::Extrude { sketch: 0, profiles: vec![], extent: Extent::OneSide(Expr::num(5.0)), op: Op::Join, face: Some(FaceRef { plane: top, seed: [20.0, 15.0, 10.0] }), taper: Expr::num(0.0), thin: Expr::num(0.0) });
+        d.insert(FeatureKind::Extrude { sketch: 0, profiles: vec![], extent: Extent::OneSide(Expr::num(5.0)), op: Op::Join, face: Some(FaceRef { plane: top, seed: [20.0, 15.0, 10.0] }), taper: Expr::num(0.0), thin: Expr::num(0.0), start: Expr::num(0.0) });
         let v = run(&d).model().bodies[0].solid.volume();
         assert!((v - (12000.0 + 40.0 * 30.0 * 5.0)).abs() < 1.0, "a 5 mm pull on the top face adds 6000 mm3, got {v}");
     }
@@ -2034,7 +2059,7 @@ mod perf {
         let pref = ProfileRef::of(outer);
         let t = std::time::Instant::now();
         let sk = d.insert(FeatureKind::Sketch { plane: Plane::XY, sketch: s });
-        d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![pref], extent: Extent::OneSide(Expr::num(5.0)), op: Op::NewBody, face: None, taper: Expr::num(0.0), thin: Expr::num(0.0) });
+        d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![pref], extent: Extent::OneSide(Expr::num(5.0)), op: Op::NewBody, face: None, taper: Expr::num(0.0), thin: Expr::num(0.0), start: Expr::num(0.0) });
         let b = d.insert(FeatureKind::Primitive {
             shape: Shape::Cylinder { r: Expr::num(3.0), h: Expr::num(10.0) },
             at: [Expr::num(20.0), Expr::num(20.0), Expr::num(5.0)],
@@ -2286,7 +2311,7 @@ mod modeling_batch_tests {
     }
 
     fn extrude(sk: u64, extent: Extent, op: Op, taper: f64) -> FeatureKind {
-        FeatureKind::Extrude { sketch: sk, profiles: vec![ProfileRef::at([1.0, 1.0])], extent, op, face: None, taper: n(taper), thin: Expr::num(0.0) }
+        FeatureKind::Extrude { sketch: sk, profiles: vec![ProfileRef::at([1.0, 1.0])], extent, op, face: None, taper: n(taper), thin: Expr::num(0.0), start: Expr::num(0.0) }
     }
 
     #[test]
@@ -2344,7 +2369,7 @@ mod modeling_batch_tests {
         s.add_circle([20.0, 20.0], 5.0);
         let sk = d.insert(FeatureKind::Sketch { plane: Plane { origin: [0.0, 0.0, 30.0], ..Plane::XY }, sketch: s });
         // cutting from the top face downwards needs the reverse; `All(true)` reaches both ways and never misses
-        let uid = d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![ProfileRef::at([20.0, 20.0])], extent: Extent::All(true), op: Op::Cut, face: None, taper: n(0.0), thin: Expr::num(0.0) });
+        let uid = d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![ProfileRef::at([20.0, 20.0])], extent: Extent::All(true), op: Op::Cut, face: None, taper: n(0.0), thin: Expr::num(0.0), start: Expr::num(0.0) });
         let ev = run(&d);
         assert!(ev.error(uid).is_none(), "{:?}", ev.error(uid));
         let v = ev.model().bodies[0].mesh().volume();
@@ -2356,7 +2381,7 @@ mod modeling_batch_tests {
         let mut s2 = Sketch::default();
         s2.add_circle([20.0, 20.0], 5.0);
         let sk2 = d2.insert(FeatureKind::Sketch { plane: Plane::XY, sketch: s2 });
-        let uid2 = d2.insert(FeatureKind::Extrude { sketch: sk2, profiles: vec![ProfileRef::at([20.0, 20.0])], extent: Extent::All(false), op: Op::Cut, face: None, taper: n(0.0), thin: Expr::num(0.0) });
+        let uid2 = d2.insert(FeatureKind::Extrude { sketch: sk2, profiles: vec![ProfileRef::at([20.0, 20.0])], extent: Extent::All(false), op: Op::Cut, face: None, taper: n(0.0), thin: Expr::num(0.0), start: Expr::num(0.0) });
         let ev2 = run(&d2);
         assert!(ev2.error(uid2).is_none());
         assert!((ev2.model().bodies[0].mesh().volume() - (48000.0 - hole)).abs() < hole * 0.02);
@@ -2411,6 +2436,33 @@ mod modeling_batch_tests {
     }
 
     #[test]
+    fn extrude_up_to_a_body_and_with_a_start_offset() {
+        let mut d = Document::default();
+        let sk = square_sketch(&mut d, 20.0);
+        // a slab 50 mm above the profile plane
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(60.0), d: n(60.0), h: n(5.0) }, at: [n(-10.0), n(-10.0), n(50.0)], op: Op::NewBody });
+        let slab = run(&d).model().bodies[0].id;
+        let uid = d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![ProfileRef::at([1.0, 1.0])], extent: Extent::ToBody(slab), op: Op::NewBody, face: None, taper: n(0.0), thin: n(0.0), start: n(0.0) });
+        let ev = run(&d);
+        assert!(ev.error(uid).is_none(), "{:?}", ev.error(uid));
+        let model = ev.model();
+        let post = model.bodies.iter().find(|b| b.id != slab).unwrap();
+        let (lo, hi) = post.mesh().bounds().unwrap();
+        assert!(lo.z.abs() < 1e-6 && (hi.z - 50.0).abs() < 1e-6, "reaches the slab: {lo:?} {hi:?}");
+        // a missing or a behind-the-profile body is an error, not a crash
+        let bad = d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![ProfileRef::at([1.0, 1.0])], extent: Extent::ToBody(99999), op: Op::NewBody, face: None, taper: n(0.0), thin: n(0.0), start: n(0.0) });
+        assert!(run(&d).error(bad).is_some());
+        // start offset shifts the whole prism along the normal
+        let mut d2 = Document::default();
+        let sk2 = square_sketch(&mut d2, 20.0);
+        let off = d2.insert(FeatureKind::Extrude { sketch: sk2, profiles: vec![ProfileRef::at([1.0, 1.0])], extent: Extent::OneSide(n(10.0)), op: Op::NewBody, face: None, taper: n(0.0), thin: n(0.0), start: n(7.0) });
+        let ev2 = run(&d2);
+        assert!(ev2.error(off).is_none());
+        let (lo2, hi2) = ev2.model().bodies[0].mesh().bounds().unwrap();
+        assert!((lo2.z - 7.0).abs() < 1e-6 && (hi2.z - 17.0).abs() < 1e-6, "{lo2:?} {hi2:?}");
+    }
+
+    #[test]
     fn grid_pattern_stacks_copies_along_z() {
         let mut d = Document::default();
         d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(5.0), d: n(5.0), h: n(5.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
@@ -2433,7 +2485,7 @@ mod modeling_batch_tests {
     fn thin_extrude_leaves_only_a_wall_along_the_outline() {
         let mut d = Document::default();
         let sk = square_sketch(&mut d, 20.0);
-        let uid = d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![ProfileRef::at([1.0, 1.0])], extent: Extent::OneSide(n(10.0)), op: Op::NewBody, face: None, taper: n(0.0), thin: n(2.0) });
+        let uid = d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![ProfileRef::at([1.0, 1.0])], extent: Extent::OneSide(n(10.0)), op: Op::NewBody, face: None, taper: n(0.0), thin: n(2.0), start: Expr::num(0.0) });
         let ev = run(&d);
         assert!(ev.error(uid).is_none(), "{:?}", ev.error(uid));
         let v = ev.model().bodies[0].mesh().volume();
@@ -2444,9 +2496,9 @@ mod modeling_batch_tests {
         // a wall as thick as half the profile (or more) cannot be thinned
         let mut d2 = Document::default();
         let sk2 = square_sketch(&mut d2, 20.0);
-        let bad = d2.insert(FeatureKind::Extrude { sketch: sk2, profiles: vec![ProfileRef::at([1.0, 1.0])], extent: Extent::OneSide(n(10.0)), op: Op::NewBody, face: None, taper: n(0.0), thin: n(15.0) });
+        let bad = d2.insert(FeatureKind::Extrude { sketch: sk2, profiles: vec![ProfileRef::at([1.0, 1.0])], extent: Extent::OneSide(n(10.0)), op: Op::NewBody, face: None, taper: n(0.0), thin: n(15.0), start: Expr::num(0.0) });
         assert!(run(&d2).error(bad).is_some());
-        let neg = d2.insert(FeatureKind::Extrude { sketch: sk2, profiles: vec![ProfileRef::at([1.0, 1.0])], extent: Extent::OneSide(n(10.0)), op: Op::NewBody, face: None, taper: n(0.0), thin: n(-1.0) });
+        let neg = d2.insert(FeatureKind::Extrude { sketch: sk2, profiles: vec![ProfileRef::at([1.0, 1.0])], extent: Extent::OneSide(n(10.0)), op: Op::NewBody, face: None, taper: n(0.0), thin: n(-1.0), start: Expr::num(0.0) });
         assert!(run(&d2).error(neg).is_some());
     }
 
@@ -2457,7 +2509,7 @@ mod modeling_batch_tests {
         s.add_rect([0.0, 0.0], [40.0, 40.0]);
         s.add_circle([20.0, 20.0], 8.0);
         let sk = d.insert(FeatureKind::Sketch { plane: Plane::XY, sketch: s });
-        let uid = d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![ProfileRef::at([2.0, 2.0])], extent: Extent::OneSide(n(12.0)), op: Op::NewBody, face: None, taper: n(0.0), thin: n(3.0) });
+        let uid = d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![ProfileRef::at([2.0, 2.0])], extent: Extent::OneSide(n(12.0)), op: Op::NewBody, face: None, taper: n(0.0), thin: n(3.0), start: Expr::num(0.0) });
         let ev = run(&d);
         assert!(ev.error(uid).is_none(), "{:?}", ev.error(uid));
         let plain = (1600.0 - std::f64::consts::PI * 64.0) * 12.0;
@@ -2465,7 +2517,7 @@ mod modeling_batch_tests {
         assert!(v > 0.0 && v < plain * 0.8, "walls around the outline and the hole only: {v} vs {plain}");
         let mut d2 = Document::default();
         let sk2 = square_sketch(&mut d2, 30.0);
-        let tapered = d2.insert(FeatureKind::Extrude { sketch: sk2, profiles: vec![ProfileRef::at([1.0, 1.0])], extent: Extent::OneSide(n(10.0)), op: Op::NewBody, face: None, taper: n(4.0), thin: n(2.0) });
+        let tapered = d2.insert(FeatureKind::Extrude { sketch: sk2, profiles: vec![ProfileRef::at([1.0, 1.0])], extent: Extent::OneSide(n(10.0)), op: Op::NewBody, face: None, taper: n(4.0), thin: n(2.0), start: Expr::num(0.0) });
         assert!(run(&d2).error(tapered).is_none(), "{:?}", run(&d2).error(tapered));
     }
 

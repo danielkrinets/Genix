@@ -4223,7 +4223,7 @@ impl App {
         let dist = match extent {
             fusion_core::doc::Extent::OneSide(d) | fusion_core::doc::Extent::TwoSides(d, _) => d.eval(params).ok()?,
             fusion_core::doc::Extent::Symmetric(d) => d.eval(params).ok()?.abs() / 2.0,
-            fusion_core::doc::Extent::All(_) => return None,
+            fusion_core::doc::Extent::All(_) | fusion_core::doc::Extent::ToBody(_) => return None,
         };
         Some((base, sk.plane.normal(), dist))
     }
@@ -4381,6 +4381,7 @@ impl App {
                     fusion_core::doc::Extent::Symmetric(_) => fusion_core::doc::Extent::Symmetric(Expr::num((v * 2.0).abs())),
                     fusion_core::doc::Extent::TwoSides(_, b) => fusion_core::doc::Extent::TwoSides(Expr::num(v), b.clone()),
                     fusion_core::doc::Extent::All(both) => fusion_core::doc::Extent::All(*both),
+                    fusion_core::doc::Extent::ToBody(id) => fusion_core::doc::Extent::ToBody(*id),
                 };
                 if *extent != new {
                     *extent = new;
@@ -4409,7 +4410,7 @@ impl App {
         let mut fields: Vec<(&str, &'static str, &mut Expr)> = match &mut f.kind {
             FeatureKind::Extrude { extent: Extent::OneSide(e) | Extent::Symmetric(e), .. } => vec![("Расстояние", "мм", e)],
             FeatureKind::Extrude { extent: Extent::TwoSides(a, b), .. } => vec![("Вперёд", "мм", a), ("Назад", "мм", b)],
-            FeatureKind::Extrude { extent: Extent::All(_), taper, .. } => vec![("Уклон", "°", taper)],
+            FeatureKind::Extrude { extent: Extent::All(_) | Extent::ToBody(_), taper, .. } => vec![("Уклон", "°", taper)],
             FeatureKind::Revolve { angle, .. } => vec![("Угол", "°", angle)],
             FeatureKind::Fillet { radius, .. } => vec![("Радиус", "мм", radius)],
             FeatureKind::Chamfer { dist, .. } => vec![("Расстояние", "мм", dist)],
@@ -4926,7 +4927,7 @@ mod lifecycle_tests {
         let r = sk.regions();
         let p = ProfileRef::of(&r[region_at(&r, [50.0, 35.0]).unwrap()]);
         let sid = app.doc.insert(FeatureKind::Sketch { plane: fusion_core::Plane::XY, sketch: sk });
-        app.doc.insert(FeatureKind::Extrude { sketch: sid, profiles: vec![p], extent: Extent::OneSide(Expr::num(30.0)), op: fusion_core::Op::NewBody, face: None, taper: Expr::num(0.0), thin: Expr::num(0.0) });
+        app.doc.insert(FeatureKind::Extrude { sketch: sid, profiles: vec![p], extent: Extent::OneSide(Expr::num(30.0)), op: fusion_core::Op::NewBody, face: None, taper: Expr::num(0.0), thin: Expr::num(0.0), start: Expr::num(0.0) });
         app.after_doc_change();
         let body = app.ev.model().bodies[0].clone();
         let all = app.straight_edges(&body);

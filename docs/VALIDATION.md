@@ -135,3 +135,8 @@ Tests: core 110 + app 98. Live (QA copy): the corner button put the 16 mm block 
 
 `genix --new / --features / --add / --eval / --export` (docs/AGENTS.md); logic in `crates/core/src/agent.rs`. A failed `--add` leaves the file untouched.
 Tests: core 112 + app 99. Checked with the release binary: new → features → add (box from the catalog, via stdin) → export STL.
+
+## 0.00.32 — extrude up to a body, start offset (checked 2026-11-03)
+
+Extrude: extent «До тела» (to the nearest side of another body's bounding box) and «Смещение начала». Old files open unchanged (`start` defaults to 0).
+Tests: core 113 + app 99. Not checked by eye in the window.

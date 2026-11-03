@@ -123,7 +123,7 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
     let p = &params;
     let uid = cmd.uid;
     match &mut f.kind {
-        FeatureKind::Extrude { sketch: _, profiles, extent, op, face, taper, thin } => {
+        FeatureKind::Extrude { sketch: _, profiles, extent, op, face, taper, thin, start } => {
             section(ui, tr("ПРОФИЛИ"));
             if face.is_some() {
                 ui.horizontal(|ui| {
@@ -144,8 +144,9 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                 Extent::TwoSides(..) => 2,
                 Extent::All(false) => 3,
                 Extent::All(true) => 4,
+                Extent::ToBody(_) => 5,
             };
-            let names = [tr("В одну сторону"), tr("Симметрично"), tr("В две стороны"), tr("Насквозь, вперёд"), tr("Насквозь, в обе стороны")];
+            let names = [tr("В одну сторону"), tr("Симметрично"), tr("В две стороны"), tr("Насквозь, вперёд"), tr("Насквозь, в обе стороны"), tr("До тела")];
             changed |= row(ui, tr("Направление"), |ui| {
                 let mut c = false;
                 egui::ComboBox::from_id_salt("ext_kind").selected_text(names[kind]).show_ui(ui, |ui| {
@@ -157,14 +158,15 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
             });
             let cur = match extent {
                 Extent::OneSide(d) | Extent::Symmetric(d) | Extent::TwoSides(d, _) => d.clone(),
-                Extent::All(_) => Expr::num(10.0),
+                Extent::All(_) | Extent::ToBody(_) => Expr::num(10.0),
             };
             let new_kind = match (kind, &*extent) {
-                (0, Extent::OneSide(_)) | (1, Extent::Symmetric(_)) | (2, Extent::TwoSides(..)) | (3, Extent::All(false)) | (4, Extent::All(true)) => None,
+                (0, Extent::OneSide(_)) | (1, Extent::Symmetric(_)) | (2, Extent::TwoSides(..)) | (3, Extent::All(false)) | (4, Extent::All(true)) | (5, Extent::ToBody(_)) => None,
                 (0, _) => Some(Extent::OneSide(cur.clone())),
                 (1, _) => Some(Extent::Symmetric(cur.clone())),
                 (3, _) => Some(Extent::All(false)),
                 (4, _) => Some(Extent::All(true)),
+                (5, _) => Some(Extent::ToBody(0)),
                 _ => Some(Extent::TwoSides(cur.clone(), cur.clone())),
             };
             if let Some(k) = new_kind {
@@ -187,7 +189,20 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                 Extent::All(_) => {
                     ui.label(RichText::new(tr("Проходит через всё тело, расстояние не нужно")).weak().small());
                 }
+                Extent::ToBody(id) => {
+                    ui.label(RichText::new(tr("Строится до ближайшей стороны выбранного тела")).weak().small());
+                    changed |= row(ui, tr("Тело"), |ui| {
+                        let mut c = false;
+                        egui::ComboBox::from_id_salt(("ext_to_body", uid)).selected_text(if *id == 0 { tr("не выбрано").to_string() } else { body_name(*id) }).show_ui(ui, |ui| {
+                            for b in &ev.model_before(my_index.unwrap_or(0)).bodies {
+                                c |= ui.selectable_value(id, b.id, body_name(b.id)).changed();
+                            }
+                        });
+                        c
+                    });
+                }
             }
+            changed |= row(ui, tr("Смещение начала"), |ui| expr_field(ui, ("ext_start", uid), start, p, tr("мм")));
             changed |= row(ui, tr("Уклон стенок"), |ui| expr_field(ui, ("ext_taper", uid), taper, p, "°"));
             changed |= row(ui, tr("Тонкая стенка"), |ui| expr_field(ui, ("ext_thin", uid), thin, p, tr("мм")));
             if !matches!(thin.eval(p), Ok(v) if v == 0.0) {
@@ -816,7 +831,7 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
     match kind {
         "extrude" => {
             let (sketch, profiles) = c.last_sketch.clone().unwrap_or((0, vec![]));
-            FeatureKind::Extrude { sketch, profiles, extent: Extent::OneSide(num(10.0)), op, face: None, taper: Expr::num(0.0), thin: Expr::num(0.0) }
+            FeatureKind::Extrude { sketch, profiles, extent: Extent::OneSide(num(10.0)), op, face: None, taper: Expr::num(0.0), thin: Expr::num(0.0), start: Expr::num(0.0) }
         }
         "revolve" => {
             let (sketch, profiles) = c.last_sketch.clone().unwrap_or((0, vec![]));
