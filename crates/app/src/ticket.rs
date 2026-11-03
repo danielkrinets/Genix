@@ -1,3 +1,4 @@
+#![allow(dead_code)] // the paper ticket of the old demo subscription: kept for a later paid-plan view, not shown now
 //! Subscription ticket in the spirit of the React Bits TearTicket: drag the stub off the perforation to activate.
 //! Mock only: no server, payment or licence is involved.
 use eframe::egui::{self, epaint::TextShape, Color32, Pos2, Rect, Shape, Stroke, Vec2};

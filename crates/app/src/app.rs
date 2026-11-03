@@ -445,6 +445,8 @@ impl App {
     fn from_settings(mut settings: Settings, theme: Theme) -> Self {
         // the trial starts at the first launch and is remembered twice (settings + a marker file)
         let now_s = crate::license::now_unix();
+        #[cfg(test)]
+        let _ = now_s;
         #[cfg(not(test))]
         {
             let marker = crate::license::marker_path();
