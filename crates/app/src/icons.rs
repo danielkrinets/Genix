@@ -22,6 +22,8 @@ fn raw(id: &str) -> Option<&'static str> {
         "c_fix" => include_str!("../assets/icons/c_fix.svg"),
         "c_horizontal" => include_str!("../assets/icons/c_horizontal.svg"),
         "c_midpoint" => include_str!("../assets/icons/c_midpoint.svg"),
+        "c_collinear" => include_str!("../assets/icons/c_collinear.svg"),
+        "c_symmetric" => include_str!("../assets/icons/c_symmetric.svg"),
         "c_parallel" => include_str!("../assets/icons/c_parallel.svg"),
         "c_perpendicular" => include_str!("../assets/icons/c_perpendicular.svg"),
         "c_point_on" => include_str!("../assets/icons/c_point_on.svg"),

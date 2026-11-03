@@ -14,6 +14,8 @@ use glam::{DVec2, DVec3};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConsKind {
+    Collinear,
+    Symmetric,
     Horizontal,
     Vertical,
     Parallel,
@@ -27,7 +29,7 @@ pub enum ConsKind {
 }
 
 impl ConsKind {
-    pub const ALL: [ConsKind; 10] = [
+    pub const ALL: [ConsKind; 12] = [
         ConsKind::Horizontal,
         ConsKind::Vertical,
         ConsKind::Parallel,
@@ -37,6 +39,8 @@ impl ConsKind {
         ConsKind::Concentric,
         ConsKind::Coincident,
         ConsKind::Midpoint,
+        ConsKind::Collinear,
+        ConsKind::Symmetric,
         ConsKind::Fix,
     ];
     pub fn label(self) -> &'static str {
@@ -50,6 +54,8 @@ impl ConsKind {
             ConsKind::Concentric => tr("Концентрич."),
             ConsKind::Coincident => tr("Совпадение"),
             ConsKind::Midpoint => tr("Середина"),
+            ConsKind::Collinear => tr("На линии"),
+            ConsKind::Symmetric => tr("Симметрия"),
             ConsKind::Fix => tr("Фиксация"),
         }
     }
@@ -62,6 +68,8 @@ impl ConsKind {
             ConsKind::Concentric => tr("Щёлкните две окружности/дуги"),
             ConsKind::Coincident => tr("Щёлкните точку, затем точку или кривую"),
             ConsKind::Midpoint => tr("Щёлкните точку, затем линию"),
+            ConsKind::Collinear => tr("Щёлкните две линии: они ляжут на одну прямую"),
+            ConsKind::Symmetric => tr("Щёлкните две точки, затем линию-ось симметрии"),
             ConsKind::Fix => tr("Щёлкните точку, чтобы закрепить или открепить её"),
         }
     }
@@ -118,6 +126,8 @@ enum Pending {
     Slot1 { a: P2, pa: Option<usize> },
     Slot2 { a: P2, pa: Option<usize>, b: P2, pb: Option<usize> },
     CRect { c: P2, pt: Option<usize> },
+    /// Symmetry: the first point (and the second, once chosen) wait for the axis line.
+    Sym { a: usize, b: Option<usize> },
     Ellipse1 { c: P2, pc: Option<usize> },
     Ellipse2 { c: P2, pc: Option<usize>, a: P2, pa: Option<usize> },
     /// A spline in progress: its points are in `SketchSession::spline_pts`.
@@ -1125,6 +1135,9 @@ impl SketchSession {
                     self.commit_checked(params, tr("Фиксация"));
                 }
             }
+            (ConsKind::Symmetric, Pending::None, Pick::Point(p)) => self.pending = Pending::Sym { a: p, b: None },
+            (ConsKind::Symmetric, Pending::Sym { a, b: None }, Pick::Point(q)) if q != a => self.pending = Pending::Sym { a, b: Some(q) },
+            (ConsKind::Symmetric, Pending::Sym { a, b: Some(q) }, Pick::Entity(e)) if is_line(ent(&self.sketch, e)) => add(self, Constraint::Symmetric(a, q, e)),
             (ConsKind::Coincident | ConsKind::Midpoint, Pending::None, Pick::Point(p)) => self.pending = Pending::First(Pick::Point(p)),
             (ConsKind::Coincident, Pending::First(Pick::Point(a)), Pick::Point(b)) if a != b => {
                 self.checkpoint();
@@ -1136,13 +1149,14 @@ impl SketchSession {
             (ConsKind::Midpoint, Pending::First(Pick::Point(a)), Pick::Entity(e)) if is_line(ent(&self.sketch, e)) => {
                 add(self, Constraint::Midpoint(a, e))
             }
-            (ConsKind::Parallel | ConsKind::Perpendicular | ConsKind::Tangent | ConsKind::Equal | ConsKind::Concentric, Pending::None, Pick::Entity(e)) => {
+            (ConsKind::Parallel | ConsKind::Perpendicular | ConsKind::Tangent | ConsKind::Equal | ConsKind::Concentric | ConsKind::Collinear, Pending::None, Pick::Entity(e)) => {
                 self.pending = Pending::First(Pick::Entity(e))
             }
             (_, Pending::First(Pick::Entity(a)), Pick::Entity(b)) if a != b => {
                 let (ea, eb) = (ent(&self.sketch, a), ent(&self.sketch, b));
                 let c = match k {
                     ConsKind::Parallel if is_line(ea) && is_line(eb) => Some(Constraint::Parallel(a, b)),
+                    ConsKind::Collinear if is_line(ea) && is_line(eb) => Some(Constraint::Collinear(a, b)),
                     ConsKind::Perpendicular if is_line(ea) && is_line(eb) => Some(Constraint::Perpendicular(a, b)),
                     ConsKind::Tangent if (is_line(ea) && is_round(eb)) || (is_round(ea) && is_line(eb)) || (is_round(ea) && is_round(eb)) => {
                         Some(Constraint::Tangent(a, b))
@@ -1531,6 +1545,8 @@ impl SketchSession {
                     ConsKind::Concentric => "c_concentric",
                     ConsKind::Coincident => "c_coincident",
                     ConsKind::Midpoint => "c_midpoint",
+                    ConsKind::Collinear => "c_collinear",
+                    ConsKind::Symmetric => "c_symmetric",
                     ConsKind::Fix => "c_fix",
                 };
                 let main = if sel { Color32::WHITE } else { ui.visuals().text_color() };
@@ -2077,6 +2093,8 @@ impl SketchSession {
             Equal(a, _) => (scr(mid(*a)?)? + normal_off(*a, -14.0) + egui::vec2(0.0, 12.0), "=".into()),
             Concentric(a, _) => (scr(mid(*a)?)? + egui::vec2(-12.0, 12.0), "◎".into()),
             Midpoint(p, _) => (scr(s.p(*p))? + egui::vec2(10.0, 10.0), "△".into()),
+            Collinear(a, _) => (scr(mid(*a)?)? + normal_off(*a, -14.0) + egui::vec2(-16.0, 12.0), "⟷".into()),
+            Symmetric(a, b, _) => (scr((s.p(*a) + s.p(*b)) * 0.5)? + egui::vec2(0.0, -12.0), "⇋".into()),
             PointOn(p, _) => (scr(s.p(*p))? + egui::vec2(10.0, 10.0), "•".into()),
             Fix(..) => return None,
         })

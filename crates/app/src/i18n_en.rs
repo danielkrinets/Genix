@@ -1055,4 +1055,9 @@ pub const EN: &[(&str, &str)] = &[
     ("Копий", "Copies"),
     ("Центр — выбранная точка, иначе начало координат", "Centre: the selected point, otherwise the origin"),
     ("Создать массив", "Create pattern"),
+    ("На линии", "Collinear"),
+    ("Симметрия", "Symmetry"),
+    ("Щёлкните две линии: они ляжут на одну прямую", "Click two lines: they will lie on one straight line"),
+    ("Щёлкните две точки, затем линию-ось симметрии", "Click two points, then the line that is the axis of symmetry"),
+    ("На одной линии", "Collinear"),
 ];

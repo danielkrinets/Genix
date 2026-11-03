@@ -162,3 +162,9 @@ Tests: core 122 + app 99. Structural checks on the demo model (8 bodies, 1088 tr
 - Hebrew: sketch text is laid out right to left (shared `visual_rtl` now lives in core and the UI uses it), numbers stay readable, niqqud are dropped (the font has no mark positioning). Hebrew UI: 92 strings added for the new features; the Hebrew table still covers only ~240 of ~1000 strings, the rest shows English. Arabic needs shaping and is not supported. Typing Hebrew into an input field still shows it in logical order (egui text fields have no bidi).
 - Hole panel redesigned (one type bar, screw size + fit, one summary line, «Свои размеры»); the sketch constraint hint is a caption under the buttons instead of a tooltip that covered them.
 Tests: core 125 + app 99. Live QA of these was interrupted: the QA window was being clicked by hand at the same time, so the last screenshots show someone else's actions.
+
+## 0.00.36–0.00.37 — sketch mirror, patterns, symmetric and collinear constraints (checked 2026-11-03)
+
+Sketch: «Зеркало» tool (select curves, then click a line: mirror copies, arcs flip), «Массив из выбранного» panel (rectangular grid or circular ring, centre = selected point or the origin). Constraints «На линии» (two lines on one straight line) and «Симметрия» (two points, then the axis line). Old files open unchanged.
+Tests (core 128 + app 99): mirrored rectangle regions and arc mid point; 3x2 grid = 5 copies / 6 regions, six circles evenly round a circle, a 4-copy 90° arc ends on the y axis, splines stay consecutive; collinear lines solve onto the x axis; symmetric point lands exactly on the mirror image (9,2) about x = 5 and the sketch becomes fully defined.
+Not checked by eye in the window.

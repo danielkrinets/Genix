@@ -156,6 +156,10 @@ pub enum Constraint {
     Concentric(usize, usize),
     /// Точка — середина линии.
     Midpoint(usize, usize),
+    /// Две линии лежат на одной прямой.
+    Collinear(usize, usize),
+    /// Две точки симметричны относительно линии (третий номер — линия).
+    Symmetric(usize, usize, usize),
     /// Точка лежит на кривой.
     PointOn(usize, usize),
     /// Точка зафиксирована в заданном месте.
@@ -182,6 +186,8 @@ impl Constraint {
                 vec![*a, *b]
             }
             Midpoint(_, e) | PointOn(_, e) => vec![*e],
+            Collinear(a, b) => vec![*a, *b],
+            Symmetric(_, _, axis) => vec![*axis],
             Fix(..) | Distance(..) | HDistance(..) | VDistance(..) => vec![],
         }
     }
@@ -190,7 +196,7 @@ impl Constraint {
         use Constraint::*;
         match self {
             Midpoint(p, _) | PointOn(p, _) | Fix(p, _) => vec![*p],
-            Distance(a, b, _) | HDistance(a, b, _) | VDistance(a, b, _) => vec![*a, *b],
+            Distance(a, b, _) | HDistance(a, b, _) | VDistance(a, b, _) | Symmetric(a, b, _) => vec![*a, *b],
             _ => vec![],
         }
     }
@@ -228,6 +234,15 @@ impl Constraint {
                 *e = em[*e];
             }
             Fix(p, _) => *p = pm[*p],
+            Collinear(a, b) => {
+                *a = em[*a];
+                *b = em[*b];
+            }
+            Symmetric(a, b, axis) => {
+                *a = pm[*a];
+                *b = pm[*b];
+                *axis = em[*axis];
+            }
             Distance(a, b, _) | HDistance(a, b, _) | VDistance(a, b, _) => {
                 *a = pm[*a];
                 *b = pm[*b];
@@ -246,6 +261,8 @@ impl Constraint {
             Equal(..) => "Равенство",
             Concentric(..) => "Концентричность",
             Midpoint(..) => "Середина",
+            Collinear(..) => "На одной линии",
+            Symmetric(..) => "Симметрично",
             PointOn(..) => "Точка на кривой",
             Fix(..) => "Фиксация",
             Length(..) => "Длина",
@@ -556,6 +573,22 @@ impl Sketch {
                         let m = (a + b) * 0.5;
                         out.push(pt(*p).x - m.x);
                         out.push(pt(*p).y - m.y);
+                    }
+                }
+                Collinear(e1, e2) => {
+                    if let (Some((a, b)), Some((c2, d))) = (line(*e1), line(*e2)) {
+                        let u = (b - a).normalize_or_zero();
+                        out.push((c2 - a).perp_dot(u));
+                        out.push((d - a).perp_dot(u));
+                    }
+                }
+                Symmetric(p, q, axis) => {
+                    if let Some((a, b)) = line(*axis) {
+                        let u = (b - a).normalize_or_zero();
+                        let mid = (pt(*p) + pt(*q)) * 0.5;
+                        // the middle of the pair lies on the axis, and the pair is perpendicular to it
+                        out.push((mid - a).perp_dot(u));
+                        out.push((pt(*q) - pt(*p)).dot(u));
                     }
                 }
                 PointOn(p, e) => {
@@ -1872,6 +1905,37 @@ mod freeform_tests {
         let back: Sketch = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back.entities.len(), 2);
         assert_eq!(back.regions().len(), 1);
+    }
+
+    #[test]
+    fn collinear_lines_end_up_on_one_straight_line_and_symmetry_mirrors_points() {
+        // two lines that are nearly in line: the constraint pulls the second onto the first
+        let mut s = Sketch::default();
+        let l1 = s.add_line([0.0, 0.0], [10.0, 0.0]);
+        let l2 = s.add_line([15.0, 2.0], [25.0, -3.0]);
+        s.constraints.push(Constraint::Fix(0, [0.0, 0.0]));
+        s.constraints.push(Constraint::Fix(1, [10.0, 0.0]));
+        s.constraints.push(Constraint::Collinear(l1, l2));
+        let status = s.solve(&Params::default(), &[]).unwrap();
+        assert_eq!(status, SolveStatus::Ok);
+        let (c, d) = (s.p(2), s.p(3));
+        assert!(c.y.abs() < 1e-6 && d.y.abs() < 1e-6, "second line on the x axis: {c:?} {d:?}");
+        // symmetry about a vertical axis x = 5: the left point is fixed, the right one must land at its mirror image
+        let mut t = Sketch::default();
+        let axis = t.add_line([5.0, -10.0], [5.0, 10.0]);
+        let (pa, pb) = (t.add_point([1.0, 2.0]), t.add_point([8.5, 7.0]));
+        t.constraints.push(Constraint::Fix(0, [5.0, -10.0]));
+        t.constraints.push(Constraint::Fix(1, [5.0, 10.0]));
+        t.constraints.push(Constraint::Fix(pa, [1.0, 2.0]));
+        t.constraints.push(Constraint::Symmetric(pa, pb, axis));
+        assert_eq!(t.solve(&Params::default(), &[]).unwrap(), SolveStatus::Ok);
+        let q = t.p(pb);
+        assert!((q.x - 9.0).abs() < 1e-6 && (q.y - 2.0).abs() < 1e-6, "mirror of (1,2) about x = 5 is (9,2): {q:?}");
+        // the constraint removes two degrees of freedom: nothing is left free
+        assert_eq!(t.free_dof(&Params::default()), 0);
+        // json keeps the new constraints
+        let back: Sketch = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        assert_eq!(back.constraints.len(), t.constraints.len());
     }
 
     #[test]
