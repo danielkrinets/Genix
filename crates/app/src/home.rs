@@ -221,6 +221,8 @@ impl ProjectFilters {
 
 /// Left edge shared by every block on the home screen; rows that wrap use a margin of this size, not a spacer in the first row.
 const CONTENT_LEFT: f32 = 24.0;
+/// Cards are 240 wide with 16 between them; a grid holds at most four per row, the rest wrap to the next row.
+const GRID_MAX_WIDTH: f32 = 4.0 * 240.0 + 3.0 * 16.0;
 
 #[derive(Default)]
 pub struct HomeState {
@@ -979,6 +981,7 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
         // the whole block is indented, not just its first row, so wrapped rows line up with the first
         egui::Frame::NONE.inner_margin(egui::Margin { left: CONTENT_LEFT as i8, ..Default::default() }).show(ui, |ui| ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(16.0, 16.0);
+            ui.set_max_width(GRID_MAX_WIDTH);
             for p in shown {
                 let Some(info) = h.infos.get(p).cloned() else { continue };
                 let sub = if info.exists { format!("{} · {}", info.time, info.steps.map(|n| tf!("шагов: {}", n)).unwrap_or_else(|| tr("не читается").into())) } else { tr("файл не найден").into() };
@@ -1023,6 +1026,7 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
         });
         egui::Frame::NONE.inner_margin(egui::Margin { left: CONTENT_LEFT as i8, ..Default::default() }).show(ui, |ui| ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(16.0, 16.0);
+            ui.set_max_width(GRID_MAX_WIDTH);
             for (i, (name, sub)) in [(tr("Кронштейн (параметрический)"), tr("пластина с отверстиями и стойка")), (tr("Втулка (вращение)"), tr("деталь вращения"))].into_iter().enumerate() {
                 let key = format!("ex:{i}");
                 let spinning = h.hover_since.as_ref().filter(|(k, t0)| *k == key && now_t - t0 >= 3.0).map(|(_, t0)| now_t - t0 - 3.0);
@@ -1259,6 +1263,7 @@ fn folders_section(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, acti
     let born = h.folder_born.clone();
     indented(ui, |ui| ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(16.0, 16.0);
+            ui.set_max_width(GRID_MAX_WIDTH);
         let mut dropped: Option<(usize, Vec<String>)> = None;
         let mut deleted: Option<usize> = None;
         for (i, f) in st.folders.iter().enumerate() {
@@ -1267,11 +1272,9 @@ fn folders_section(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, acti
             let t = born.as_ref().filter(|(n, _)| *n == f.name).map_or(1.0, |(_, t0)| ((now_t - t0) / 0.28).clamp(0.0, 1.0) as f32);
             let t = if crate::theme::reduced_motion() { 1.0 } else { 1.0 - (1.0 - t).powi(3) };
             if t < 1.0 { ui.ctx().request_repaint(); }
-            let r = ui.scope(|ui| {
-                ui.set_opacity(t);
-                ui.add_space(0.0);
-                folder_card(ui, &f.name, &tf!("моделей: {}", f.projects.len()), &pills, f.auto_sync, h.edit_mode)
-            }).inner;
+            let r = folder_card(ui, &f.name, &tf!("моделей: {}", f.projects.len()), &pills, f.auto_sync, h.edit_mode, t);
+            #[cfg(test)]
+            ui.ctx().data_mut(|d| d.get_temp_mut_or_default::<Vec<egui::Rect>>(egui::Id::new("test-folder-rects")).push(r.rect));
             if r.clicked() {
                 h.open_folder = Some(f.name.clone());
                 h.folder_rename = f.name.clone();
@@ -1378,7 +1381,7 @@ fn folder_settings(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, i: u
 }
 
 /// Карточка-папка: при наведении створка приоткрывается и из неё выглядывают первые модели.
-fn folder_card(ui: &mut egui::Ui, name: &str, sub: &str, pills: &[String], sync: bool, edit: bool) -> egui::Response {
+fn folder_card(ui: &mut egui::Ui, name: &str, sub: &str, pills: &[String], sync: bool, edit: bool, appear: f32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(240.0, 160.0), egui::Sense::click());
     let receiving = resp.dnd_hover_payload::<Vec<String>>().is_some();
     let rect = if edit {
@@ -1391,7 +1394,10 @@ fn folder_card(ui: &mut egui::Ui, name: &str, sub: &str, pills: &[String], sync:
     let press = crate::widgets::feedback(ui, resp.id.with("press"), resp.is_pointer_button_down_on());
     let (accent, base) = (crate::theme::accent(), crate::theme::surface(ui));
     let (back, front) = (base.lerp_to_gamma(accent, 0.22), base.lerp_to_gamma(accent, 0.10));
-    let p = ui.painter_at(rect);
+    // a new card fades in and rises a few points into its slot
+    let rect = rect.translate(egui::vec2(0.0, (1.0 - appear) * 10.0));
+    let mut p = ui.painter_at(rect.expand(12.0));
+    p.multiply_opacity(appear);
     p.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(96.0, 34.0)), egui::CornerRadius { nw: 14, ne: 14, sw: 0, se: 0 }, back);
     p.rect_filled(egui::Rect::from_min_max(rect.min + egui::vec2(0.0, 18.0), rect.max), 20.0, back);
     for (k, label) in pills.iter().enumerate() {
@@ -1483,6 +1489,23 @@ mod tests {
         let _ = ctx.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| { home_ui(ui, h, st, &[], false); });
         });
+    }
+
+    #[test]
+    fn folders_wrap_to_four_per_row_and_start_on_one_left_edge() {
+        let ctx = egui::Context::default();
+        let mut st = Settings::default();
+        for i in 0..9 { st.folders.push(crate::settings::ProjectFolder { name: format!("Папка {i}"), ..Default::default() }); }
+        let mut h = HomeState::default();
+        frame(&ctx, &mut h, &mut st, vec![], 0.1);
+        ctx.data_mut(|d| d.remove::<Vec<egui::Rect>>(egui::Id::new("test-folder-rects")));
+        frame(&ctx, &mut h, &mut st, vec![], 0.2);
+        let rects = ctx.data(|d| d.get_temp::<Vec<egui::Rect>>(egui::Id::new("test-folder-rects"))).unwrap();
+        assert_eq!(rects.len(), 9);
+        let row = |i: usize| rects.iter().filter(|r| (r.top() - rects[i].top()).abs() < 1.0).count();
+        assert_eq!((row(0), row(4), row(8)), (4, 4, 1), "four per row, then wrap");
+        for i in [0usize, 4, 8] { assert!((rects[i].left() - rects[0].left()).abs() < 0.5, "every row starts at the same x"); }
+        assert!(rects.iter().all(|r| r.right() <= 1360.0), "nothing runs off the window");
     }
 
     #[test]
