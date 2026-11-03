@@ -27,6 +27,12 @@
         <key>LSHandlerRank</key><string>Owner</string>
         <key>LSItemContentTypes</key><array><string>com.danielkrinets.genix.project</string></array>
         <key>CFBundleTypeExtensions</key><array><string>genix</string><string>ostov</string></array>
+    </dict><dict>
+        <key>CFBundleTypeName</key><string>STL 3D Model</string>
+        <key>CFBundleTypeRole</key><string>Viewer</string>
+        <key>LSHandlerRank</key><string>Alternate</string>
+        <key>LSItemContentTypes</key><array><string>public.standard-tessellation-language</string></array>
+        <key>CFBundleTypeExtensions</key><array><string>stl</string></array>
     </dict></array>
     <key>UTExportedTypeDeclarations</key>
     <array><dict>

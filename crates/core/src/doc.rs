@@ -175,6 +175,12 @@ pub enum FeatureKind {
     Mirror { bodies: Vec<u64>, normal: Axis3, join: bool },
     /// Cuts each body by the plane perpendicular to `axis` at `offset`; the part on the far side becomes a new body.
     Split { bodies: Vec<u64>, axis: Axis3, offset: Expr },
+    /// A closed mesh imported from a file (STL); the data lives inside the project so it opens anywhere.
+    Import { name: String, verts: Vec<f32>, tris: Vec<u32> },
+    /// Draft: side faces of the bodies lean by `angle` degrees from the neutral plane perpendicular to `axis` at `neutral`.
+    Draft { bodies: Vec<u64>, axis: Axis3, neutral: Expr, angle: Expr },
+    /// Modeled external thread: a helical ridge of depth `depth` on a rod of outer diameter `dia`, starting at `at`.
+    Thread { at: [Expr; 3], axis: Axis3, dia: Expr, pitch: Expr, length: Expr, depth: Expr, op: Op },
     Pattern { bodies: Vec<u64>, kind: PatternKind },
     Combine { target: u64, tools: Vec<u64>, op: BoolOp, keep_tools: bool },
     Remove { bodies: Vec<u64> },
@@ -249,6 +255,9 @@ impl FeatureKind {
             FeatureKind::Move { .. } => "Перемещение",
             FeatureKind::Mirror { .. } => "Зеркало",
             FeatureKind::Split { .. } => "Разрезать",
+            FeatureKind::Import { .. } => "Импорт",
+            FeatureKind::Draft { .. } => "Уклон",
+            FeatureKind::Thread { .. } => "Резьба",
             FeatureKind::Pattern { .. } => "Массив",
             FeatureKind::Combine { .. } => "Комбинирование",
             FeatureKind::Remove { .. } => "Удаление",
@@ -808,6 +817,59 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                 m.new_body(id_base + k, upper);
                 k += 1;
             }
+            Ok((Arc::new(m), None))
+        }
+        FeatureKind::Import { verts, tris, .. } => {
+            let mesh = Mesh {
+                vertices: verts.chunks_exact(3).map(|c| [c[0] as f64, c[1] as f64, c[2] as f64]).collect(),
+                triangles: tris.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect(),
+            };
+            if mesh.vertices.is_empty() || tris.iter().any(|&i| i as usize >= mesh.vertices.len()) {
+                return Err("данные импорта повреждены".into());
+            }
+            let mut m = (**prev).clone();
+            m.new_body(id_base, Solid::from_mesh(&mesh).map_err(|_| "сетка не замкнута: STL должен быть цельным телом без дыр".to_string())?);
+            Ok((Arc::new(m), None))
+        }
+        FeatureKind::Draft { bodies, axis, neutral, angle } => {
+            let sel = bodies_by_id(prev, bodies)?;
+            let (neutral, angle) = (neutral.eval(p)?, angle.eval(p)?);
+            if angle.abs() >= 45.0 {
+                return Err("угол уклона должен быть меньше 45°".into());
+            }
+            let mut m = (**prev).clone();
+            for b in sel {
+                let drafted = geom::draft_mesh(b.mesh(), axis.dir(), neutral, angle);
+                let solid = Solid::from_mesh(&drafted).map_err(|_| "угол слишком велик для этого тела".to_string())?;
+                if solid.volume() <= 0.0 {
+                    return Err("угол слишком велик для этого тела".into());
+                }
+                let i = m.bodies.iter().position(|x| x.id == b.id).unwrap();
+                m.bodies[i].solid = Arc::new(solid);
+            }
+            Ok((Arc::new(m), None))
+        }
+        FeatureKind::Thread { at, axis, dia, pitch, length, depth, op } => {
+            let at = eval3(at, p)?;
+            let (dia, pitch, length, depth) = (positive(dia, p, "диаметр")?, positive(pitch, p, "шаг")?, positive(length, p, "длина")?, positive(depth, p, "глубина")?);
+            if depth * 2.0 >= dia {
+                return Err("глубина резьбы должна быть меньше радиуса".into());
+            }
+            let sec = (depth * 2.0).min(pitch * 0.8);
+            let core = Solid::from_mesh(&geom::cylinder_mesh(DVec3::ZERO, dia / 2.0 - depth, length))?;
+            let helix = geom::helix_path(DVec3::new(0.0, 0.0, -pitch), DVec3::Z, dia - sec, pitch, length / pitch + 2.0);
+            let t = (helix[1] - helix[0]).normalize();
+            let ridge = Solid::from_mesh(&geom::sweep_loops(&helix, &geom::circle_loop(helix[0], t, sec / 2.0, true), &[])?)?;
+            let envelope = Solid::from_mesh(&geom::cylinder_mesh(DVec3::ZERO, dia / 2.0, length))?;
+            let rod = core.boolean(&ridge, BoolOp::Union).boolean(&envelope, BoolOp::Intersect);
+            let rot = match axis {
+                Axis3::Z => DMat4::IDENTITY,
+                Axis3::X => DMat4::from_rotation_y(90f64.to_radians()),
+                Axis3::Y => DMat4::from_rotation_x(-90f64.to_radians()),
+            };
+            let tool = rod.transformed(&(DMat4::from_translation(at) * rot));
+            let mut m = (**prev).clone();
+            apply_op(&mut m, tool, *op, id_base)?;
             Ok((Arc::new(m), None))
         }
         FeatureKind::Pattern { bodies, kind } => {
@@ -1852,5 +1914,169 @@ mod perf {
                 assert!(v > 0.5 * s * s * s && v < s * s * s, "radius {radius}: volume {v}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod draft_thread_tests {
+    use super::*;
+
+    fn run(d: &Document) -> Evaluator {
+        let mut ev = Evaluator::default();
+        ev.evaluate(d);
+        ev
+    }
+
+    #[test]
+    fn draft_tilts_box_walls_and_keeps_the_volume_formula() {
+        let n = Expr::num;
+        let mut d = Document::default();
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(20.0), d: n(20.0), h: n(10.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        let id = run(&d).model().bodies[0].id;
+        let uid = d.insert(FeatureKind::Draft { bodies: vec![id], axis: Axis3::Z, neutral: n(0.0), angle: n(5.0) });
+        let ev = run(&d);
+        assert!(ev.error(uid).is_none(), "{:?}", ev.error(uid));
+        let b = &ev.model().bodies[0];
+        let (lo, hi) = b.mesh().bounds().unwrap();
+        let shrink = 10.0 * 5f64.to_radians().tan();
+        let top: Vec<_> = b.mesh().vertices.iter().filter(|v| (v[2] - 10.0).abs() < 1e-6).collect();
+        assert!(top.iter().all(|v| (v[0] - shrink).abs() < 1e-6 || (v[0] - (20.0 - shrink)).abs() < 1e-6), "{top:?}");
+        assert!(lo[0].abs() < 1e-9 && (hi[0] - 20.0).abs() < 1e-9, "bottom stays on the neutral plane");
+        let (w0, w1) = (20.0, 20.0 - 2.0 * shrink);
+        let expect = 10.0 / 3.0 * (w0 * w0 + w0 * w1 + w1 * w1);
+        assert!((b.mesh().volume() - expect).abs() < 1e-3, "{} vs {}", b.mesh().volume(), expect);
+        let bad = d.insert(FeatureKind::Draft { bodies: vec![id], axis: Axis3::Z, neutral: n(0.0), angle: n(60.0) });
+        assert!(run(&d).error(bad).is_some());
+    }
+
+    #[test]
+    fn draft_works_on_a_cylinder_and_in_the_opposite_direction() {
+        let n = Expr::num;
+        let mut d = Document::default();
+        d.insert(FeatureKind::Primitive { shape: Shape::Cylinder { r: n(10.0), h: n(20.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        let id = run(&d).model().bodies[0].id;
+        let before = run(&d).model().bodies[0].mesh().volume();
+        let up = d.insert(FeatureKind::Draft { bodies: vec![id], axis: Axis3::Z, neutral: n(0.0), angle: n(3.0) });
+        let v_up = run(&d).model().bodies[0].mesh().volume();
+        assert!(run(&d).error(up).is_none() && v_up < before);
+        let mut d2 = Document::default();
+        d2.insert(FeatureKind::Primitive { shape: Shape::Cylinder { r: n(10.0), h: n(20.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        d2.insert(FeatureKind::Draft { bodies: vec![id], axis: Axis3::Z, neutral: n(0.0), angle: n(-3.0) });
+        assert!(run(&d2).model().bodies[0].mesh().volume() > before);
+    }
+
+    #[test]
+    fn draft_after_a_fillet_still_builds() {
+        let n = Expr::num;
+        let mut d = Document::default();
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(30.0), d: n(30.0), h: n(15.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        let id = run(&d).model().bodies[0].id;
+        let edges = vec![EdgeRef::line([0.0, 0.0, 0.0], [0.0, 0.0, 15.0])];
+        d.insert(FeatureKind::Fillet { body: id, edges, radius: n(3.0) });
+        let uid = d.insert(FeatureKind::Draft { bodies: vec![id], axis: Axis3::Z, neutral: n(0.0), angle: n(2.0) });
+        let ev = run(&d);
+        assert!(ev.error(uid).is_none(), "{:?}", ev.error(uid));
+    }
+
+    #[test]
+    fn thread_builds_a_ribbed_rod_on_every_axis_and_joins_to_a_body() {
+        let n = Expr::num;
+        for axis in [Axis3::X, Axis3::Y, Axis3::Z] {
+            let mut d = Document::default();
+            let uid = d.insert(FeatureKind::Thread { at: [n(5.0), n(5.0), n(5.0)], axis, dia: n(10.0), pitch: n(2.0), length: n(12.0), depth: n(0.8), op: Op::NewBody });
+            let ev = run(&d);
+            assert!(ev.error(uid).is_none(), "{axis:?}: {:?}", ev.error(uid));
+            let b = &ev.model().bodies[0];
+            let core = std::f64::consts::PI * 4.2f64.powi(2) * 12.0;
+            let full = std::f64::consts::PI * 25.0 * 12.0;
+            let v = b.mesh().volume();
+            assert!(v > core * 1.02 && v < full, "{axis:?}: volume {v} between {core} and {full}");
+            let (lo, hi) = b.mesh().bounds().unwrap();
+            let ext = hi - lo;
+            let long = match axis { Axis3::X => ext.x, Axis3::Y => ext.y, Axis3::Z => ext.z };
+            assert!((long - 12.0).abs() < 1e-6, "{axis:?}: length {long}");
+        }
+        let mut d = Document::default();
+        d.insert(FeatureKind::Primitive { shape: Shape::Cylinder { r: n(8.0), h: n(5.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        d.insert(FeatureKind::Thread { at: [n(0.0), n(0.0), n(5.0)], axis: Axis3::Z, dia: n(10.0), pitch: n(2.0), length: n(12.0), depth: n(0.8), op: Op::Join });
+        assert_eq!(run(&d).model().bodies.len(), 1);
+        let bad = d.insert(FeatureKind::Thread { at: [n(0.0), n(0.0), n(0.0)], axis: Axis3::Z, dia: n(10.0), pitch: n(2.0), length: n(12.0), depth: n(6.0), op: Op::NewBody });
+        assert!(run(&d).error(bad).is_some());
+    }
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::*;
+
+    fn cube_stl_binary() -> Vec<u8> {
+        let b = geom::box_mesh(DVec3::ZERO, DVec3::new(10.0, 20.0, 30.0));
+        let mut out = Vec::new();
+        Mesh::write_stl_binary(&[&b], &mut out);
+        out
+    }
+
+    #[test]
+    fn binary_and_ascii_stl_round_trip_to_the_same_volume() {
+        let bin = cube_stl_binary();
+        let m = Mesh::read_stl(&bin).unwrap();
+        assert!((m.volume() - 6000.0).abs() < 1e-3, "{}", m.volume());
+        let mut ascii = String::from("solid t\n");
+        for t in &m.triangles {
+            ascii.push_str("facet normal 0 0 0\nouter loop\n");
+            for &i in t {
+                let v = m.vertices[i as usize];
+                ascii.push_str(&format!("vertex {} {} {}\n", v[0], v[1], v[2]));
+            }
+            ascii.push_str("endloop\nendfacet\n");
+        }
+        ascii.push_str("endsolid t\n");
+        let a = Mesh::read_stl(ascii.as_bytes()).unwrap();
+        assert!((a.volume() - 6000.0).abs() < 1e-3);
+        assert!(Mesh::read_stl(b"hello world").is_err());
+        assert!(Mesh::read_stl(&bin[..90]).is_err());
+    }
+
+    #[test]
+    fn inside_out_stl_is_turned_around() {
+        let mut m = geom::box_mesh(DVec3::ZERO, DVec3::splat(5.0));
+        m.flip();
+        let mut out = Vec::new();
+        Mesh::write_stl_binary(&[&m], &mut out);
+        assert!(Mesh::read_stl(&out).unwrap().volume() > 0.0);
+    }
+
+    #[test]
+    fn imported_feature_becomes_a_body_survives_json_and_can_be_edited() {
+        let m = Mesh::read_stl(&cube_stl_binary()).unwrap();
+        let verts: Vec<f32> = m.vertices.iter().flatten().map(|&c| c as f32).collect();
+        let tris: Vec<u32> = m.triangles.iter().flatten().copied().collect();
+        let mut d = Document::default();
+        d.insert(FeatureKind::Import { name: "cube.stl".into(), verts, tris });
+        let json = serde_json::to_string(&d).unwrap();
+        let d: Document = serde_json::from_str(&json).unwrap();
+        let mut ev = Evaluator::default();
+        ev.evaluate(&d);
+        assert_eq!(ev.model().bodies.len(), 1);
+        assert!((ev.model().bodies[0].mesh().volume() - 6000.0).abs() < 1e-2);
+        let mut d = d;
+        let id = ev.model().bodies[0].id;
+        let uid = d.insert(FeatureKind::Split { bodies: vec![id], axis: Axis3::Z, offset: Expr::num(10.0) });
+        ev.evaluate(&d);
+        assert!(ev.error(uid).is_none());
+        assert_eq!(ev.model().bodies.len(), 2);
+    }
+
+    #[test]
+    fn an_open_mesh_gives_a_clear_error_not_a_crash() {
+        let mut m = geom::box_mesh(DVec3::ZERO, DVec3::splat(5.0));
+        m.triangles.truncate(m.triangles.len() - 2);
+        let verts: Vec<f32> = m.vertices.iter().flatten().map(|&c| c as f32).collect();
+        let tris: Vec<u32> = m.triangles.iter().flatten().copied().collect();
+        let mut d = Document::default();
+        let uid = d.insert(FeatureKind::Import { name: "open.stl".into(), verts, tris });
+        let mut ev = Evaluator::default();
+        ev.evaluate(&d);
+        assert!(ev.error(uid).is_some_and(|e| e.contains("не замкнута")), "{:?}", ev.error(uid));
     }
 }

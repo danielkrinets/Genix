@@ -50,7 +50,7 @@ impl Command {
     pub fn pick_for(kind: &FeatureKind) -> PickTarget {
         match kind {
             FeatureKind::Extrude { .. } | FeatureKind::Revolve { .. } | FeatureKind::Sweep { .. } | FeatureKind::Loft { .. } => PickTarget::Profiles,
-            FeatureKind::Move { .. } | FeatureKind::Mirror { .. } | FeatureKind::Split { .. } | FeatureKind::Pattern { .. } | FeatureKind::Remove { .. } | FeatureKind::Scale { .. } => PickTarget::Bodies,
+            FeatureKind::Move { .. } | FeatureKind::Mirror { .. } | FeatureKind::Split { .. } | FeatureKind::Draft { .. } | FeatureKind::Pattern { .. } | FeatureKind::Remove { .. } | FeatureKind::Scale { .. } => PickTarget::Bodies,
             FeatureKind::Hole { .. } | FeatureKind::OffsetPlane { .. } | FeatureKind::Shell { .. } | FeatureKind::PressPull { .. } | FeatureKind::PlaceOnPlane { .. } => PickTarget::Face,
             FeatureKind::Chamfer { .. } | FeatureKind::Fillet { .. } => PickTarget::Edges,
             FeatureKind::Pipe { .. } => PickTarget::Path,
@@ -296,6 +296,41 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
             });
             changed |= row(ui, tr("Положение"), |ui| expr_field(ui, ("split_at", uid), offset, p, tr("мм")));
         }
+        FeatureKind::Draft { bodies, axis, neutral, angle } => {
+            bodies_ui(ui, bodies, body_name, &mut changed);
+            section(ui, tr("УКЛОН"));
+            changed |= row(ui, tr("Направление вытягивания"), |ui| {
+                let mut c = false;
+                for a in [Axis3::X, Axis3::Y, Axis3::Z] {
+                    c |= ui.selectable_value(axis, a, a.label()).changed();
+                }
+                c
+            });
+            changed |= row(ui, tr("Нейтральная плоскость"), |ui| expr_field(ui, ("draft_n", uid), neutral, p, tr("мм")));
+            changed |= row(ui, tr("Угол"), |ui| expr_field(ui, ("draft_a", uid), angle, p, "°"));
+        }
+        FeatureKind::Thread { at, axis, dia, pitch, length, depth, op } => {
+            section(ui, tr("ПОЛОЖЕНИЕ"));
+            for (i, a) in ["X", "Y", "Z"].iter().enumerate() {
+                changed |= row(ui, a, |ui| expr_field(ui, ("thr_at", uid, i), &mut at[i], p, "мм"));
+            }
+            changed |= row(ui, tr("Ось"), |ui| {
+                let mut c = false;
+                for a in [Axis3::X, Axis3::Y, Axis3::Z] {
+                    c |= ui.selectable_value(axis, a, a.label()).changed();
+                }
+                c
+            });
+            section(ui, tr("РАЗМЕРЫ"));
+            changed |= row(ui, tr("Наружный диаметр"), |ui| expr_field(ui, ("thr", uid, 0), dia, p, tr("мм")));
+            changed |= row(ui, tr("Шаг"), |ui| expr_field(ui, ("thr", uid, 1), pitch, p, tr("мм")));
+            changed |= row(ui, tr("Длина"), |ui| expr_field(ui, ("thr", uid, 2), length, p, tr("мм")));
+            changed |= row(ui, tr("Глубина резьбы"), |ui| expr_field(ui, ("thr", uid, 3), depth, p, tr("мм")));
+            if op_combo(ui, "thr_op", op) {
+                changed = true;
+                cmd.auto_op = false;
+            }
+        }
         FeatureKind::Pattern { bodies, kind } => {
             bodies_ui(ui, bodies, body_name, &mut changed);
             section(ui, tr("ТИП"));
@@ -357,6 +392,10 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
             changed |= crate::widgets::checkbox(ui, keep_tools, tr("Сохранить инструменты")).changed();
         }
         FeatureKind::Remove { bodies } => bodies_ui(ui, bodies, body_name, &mut changed),
+        FeatureKind::Import { name, tris, .. } => {
+            section(ui, tr("ФАЙЛ"));
+            ui.label(format!("{name} — {} {}", tris.len() / 3, tr("треугольников")));
+        }
         FeatureKind::PlaceOnPlane { target, body, to, .. } => {
             section(ui, tr("ОТКУДА"));
             let choosing_target = cmd.pick == PickTarget::AlignTarget;
@@ -717,7 +756,7 @@ pub fn awaiting_pick(kind: &FeatureKind) -> bool {
         FeatureKind::Loft { profiles, .. } => profiles.len() < 2,
         FeatureKind::Chamfer { edges, .. } | FeatureKind::Fillet { edges, .. } => edges.is_empty(),
         FeatureKind::PlaceOnPlane { body, .. } => *body == 0,
-        FeatureKind::Move { bodies, .. } | FeatureKind::Mirror { bodies, .. } | FeatureKind::Split { bodies, .. } | FeatureKind::Pattern { bodies, .. } | FeatureKind::Scale { bodies, .. } | FeatureKind::Remove { bodies } => bodies.is_empty(),
+        FeatureKind::Move { bodies, .. } | FeatureKind::Mirror { bodies, .. } | FeatureKind::Split { bodies, .. } | FeatureKind::Draft { bodies, .. } | FeatureKind::Pattern { bodies, .. } | FeatureKind::Scale { bodies, .. } | FeatureKind::Remove { bodies } => bodies.is_empty(),
         FeatureKind::Combine { target, tools, .. } => *target == 0 || tools.is_empty(),
         _ => false,
     }
@@ -775,6 +814,8 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
         "scale" => FeatureKind::Scale { bodies: selected.to_vec(), factor: [num(2.0), num(1.0), num(1.0)], uniform: true },
         "mirror" => FeatureKind::Mirror { bodies: selected.to_vec(), normal: Axis3::X, join: false },
         "split" => FeatureKind::Split { bodies: selected.to_vec(), axis: Axis3::Z, offset: num(10.0) },
+        "draft" => FeatureKind::Draft { bodies: selected.to_vec(), axis: Axis3::Z, neutral: num(0.0), angle: num(5.0) },
+        "thread" => FeatureKind::Thread { at: zero(), axis: Axis3::Z, dia: num(10.0), pitch: num(1.5), length: num(15.0), depth: num(0.8), op: Op::NewBody },
         "pattern" => FeatureKind::Pattern { bodies: selected.to_vec(), kind: PatternKind::Rect { nx: num(3.0), dx: num(30.0), ny: num(1.0), dy: num(30.0) } },
         "chamfer" => FeatureKind::Chamfer { body: selected.first().copied().unwrap_or(0), edges: vec![], dist: num(1.0) },
         "fillet" => FeatureKind::Fillet { body: selected.first().copied().unwrap_or(0), edges: vec![], radius: num(2.0) },

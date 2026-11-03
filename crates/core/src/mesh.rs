@@ -77,6 +77,48 @@ impl Mesh {
         }
     }
 
+    /// Reads an STL file (binary or ASCII) into a welded mesh with outward winding.
+    pub fn read_stl(data: &[u8]) -> Result<Mesh, String> {
+        let binary = data.len() >= 84 && {
+            let n = u32::from_le_bytes([data[80], data[81], data[82], data[83]]) as usize;
+            data.len() == 84 + 50 * n
+        };
+        let mut corners: Vec<V3> = Vec::new();
+        if binary {
+            for rec in data[84..].chunks_exact(50) {
+                for k in 0..3 {
+                    let o = 12 + 12 * k;
+                    let f = |j: usize| f32::from_le_bytes([rec[o + 4 * j], rec[o + 4 * j + 1], rec[o + 4 * j + 2], rec[o + 4 * j + 3]]) as f64;
+                    corners.push([f(0), f(1), f(2)]);
+                }
+            }
+        } else {
+            let text = std::str::from_utf8(data).map_err(|_| "это не файл STL".to_string())?;
+            if !text.trim_start().starts_with("solid") {
+                return Err("это не файл STL".into());
+            }
+            for line in text.lines() {
+                let mut w = line.split_whitespace();
+                if w.next() == Some("vertex") {
+                    let c: Vec<f64> = w.filter_map(|x| x.parse().ok()).collect();
+                    if c.len() != 3 {
+                        return Err("повреждённая строка вершины в STL".into());
+                    }
+                    corners.push([c[0], c[1], c[2]]);
+                }
+            }
+        }
+        if corners.is_empty() || corners.len() % 3 != 0 || corners.iter().flatten().any(|c| !c.is_finite()) {
+            return Err("в файле STL нет треугольников".into());
+        }
+        let mut mesh = Mesh { triangles: (0..corners.len() as u32 / 3).map(|i| [3 * i, 3 * i + 1, 3 * i + 2]).collect(), vertices: corners };
+        mesh.weld(1e-6);
+        if mesh.volume() < 0.0 {
+            mesh.flip();
+        }
+        Ok(mesh)
+    }
+
     /// Добавить другую сетку (без слияния вершин).
     pub fn append(&mut self, o: &Mesh) {
         let base = self.vertices.len() as u32;

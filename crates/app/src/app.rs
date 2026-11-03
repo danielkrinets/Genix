@@ -782,7 +782,43 @@ impl App {
         }
     }
 
+    /// Reads an STL file and adds it to the current project as a new body (a project step, so undo and save work).
+    fn import_stl(&mut self, p: &std::path::Path) {
+        const MAX_BYTES: u64 = 200 * 1024 * 1024;
+        if std::fs::metadata(p).map_or(false, |m| m.len() > MAX_BYTES) {
+            self.toast = Some((tr("Файл STL больше 200 МБ").to_string(), 0.0, true));
+            return;
+        }
+        let mesh = match std::fs::read(p).map_err(|e| e.to_string()).and_then(|b| Mesh::read_stl(&b)) {
+            Ok(m) => m,
+            Err(e) => {
+                self.toast = Some((tf!("Не удалось импортировать: {}", e), 0.0, true));
+                return;
+            }
+        };
+        if self.home_active {
+            self.new_blank_tab();
+            self.home_active = false;
+        }
+        let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "import.stl".into());
+        let verts: Vec<f32> = mesh.vertices.iter().flatten().map(|&c| c as f32).collect();
+        let tris: Vec<u32> = mesh.triangles.iter().flatten().copied().collect();
+        self.cancel_mode();
+        self.checkpoint();
+        let uid = self.doc.insert(FeatureKind::Import { name: name.clone(), verts, tris });
+        self.after_doc_change();
+        self.need_fit = true;
+        if let Some(f) = self.doc.features.iter_mut().find(|f| f.uid == uid) {
+            f.name = name;
+        }
+        self.toast = Some((tf!("Импортировано: {} треугольников", mesh.triangles.len()), 0.0, false));
+    }
+
     fn open_path(&mut self, p: PathBuf) {
+        if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("stl")) {
+            self.import_stl(&p);
+            return;
+        }
         self.set_busy(tr("Открываем проект…"));
         let canonical=std::fs::canonicalize(&p).ok();
         if let Some(index)=self.tabs.iter().position(|tab| tab.path.as_ref().is_some_and(|other| other==&p || canonical.as_ref().is_some_and(|p|std::fs::canonicalize(other).ok().as_ref()==Some(p)))) {
@@ -1569,7 +1605,7 @@ impl App {
             self.toast(tr("Сначала создайте чертёж (кнопка «Новый чертёж»)"), true, now);
             return;
         }
-        if matches!(kind, "hole" | "press_pull" | "place" | "fillet" | "chamfer" | "scale" | "move" | "mirror" | "split" | "pattern" | "combine" | "remove") && model.bodies.is_empty() {
+        if matches!(kind, "hole" | "press_pull" | "place" | "fillet" | "chamfer" | "scale" | "move" | "mirror" | "split" | "draft" | "pattern" | "combine" | "remove") && model.bodies.is_empty() {
             self.toast(tr("Сначала создайте тело"), true, now);
             return;
         }
@@ -2126,7 +2162,7 @@ impl App {
                         }
                         changed = true;
                     }
-                    (FeatureKind::Move { bodies, .. } | FeatureKind::Mirror { bodies, .. } | FeatureKind::Split { bodies, .. } | FeatureKind::Pattern { bodies, .. } | FeatureKind::Remove { bodies } | FeatureKind::Scale { bodies, .. }, Some(Hit::Body { slot, .. }), _) => {
+                    (FeatureKind::Move { bodies, .. } | FeatureKind::Mirror { bodies, .. } | FeatureKind::Split { bodies, .. } | FeatureKind::Draft { bodies, .. } | FeatureKind::Pattern { bodies, .. } | FeatureKind::Remove { bodies } | FeatureKind::Scale { bodies, .. }, Some(Hit::Body { slot, .. }), _) => {
                         let id = model.bodies[slot].id;
                         if let Some(i) = bodies.iter().position(|x| *x == id) {
                             bodies.remove(i);
@@ -2233,6 +2269,12 @@ impl App {
                     });
                 });
                 ui.separator();
+                if menu_item(ui, "insert_stl", tr("Импорт STL…")) {
+                    ui.close_menu();
+                    if let Some(p) = crate::files::open("STL", &["stl"]) {
+                        self.import_stl(&p);
+                    }
+                }
                 if ui.add_enabled_ui(has_model, |ui| menu_item(ui, "file_export_stl", tr("Экспорт STL (3D-печать)…"))).inner {
                     ui.close_menu();
                     self.export("stl", now);
@@ -3078,7 +3120,7 @@ impl App {
         };
         let cmd_bodies: Vec<u64> = match &self.mode {
             Mode::Command(c) => match self.doc.feature(c.uid).map(|f| &f.kind) {
-                Some(FeatureKind::Move { bodies, .. } | FeatureKind::Mirror { bodies, .. } | FeatureKind::Split { bodies, .. } | FeatureKind::Pattern { bodies, .. } | FeatureKind::Remove { bodies }) => bodies.clone(),
+                Some(FeatureKind::Move { bodies, .. } | FeatureKind::Mirror { bodies, .. } | FeatureKind::Split { bodies, .. } | FeatureKind::Draft { bodies, .. } | FeatureKind::Pattern { bodies, .. } | FeatureKind::Remove { bodies }) => bodies.clone(),
                 Some(FeatureKind::Combine { target, tools, .. }) => std::iter::once(*target).chain(tools.iter().copied()).collect(),
                 _ => vec![],
             },
@@ -4039,6 +4081,9 @@ fn tool_id(kind: &FeatureKind) -> &'static str {
         FeatureKind::Pipe { .. } => "pipe",
         FeatureKind::Mirror { .. } => "mirror",
         FeatureKind::Split { .. } => "split",
+        FeatureKind::Import { .. } => "insert_stl",
+        FeatureKind::Draft { .. } => "draft",
+        FeatureKind::Thread { .. } => "thread",
         FeatureKind::Pattern { .. } => "pattern",
         FeatureKind::Move { .. } => "move",
         FeatureKind::Scale { .. } => "scale",
@@ -4777,6 +4822,55 @@ mod lifecycle_tests {
         let uid = c.uid;
         let n = match &app.doc.feature(uid).unwrap().kind { FeatureKind::Fillet { edges, .. } => edges.len(), _ => 0 };
         println!("then all: edges {n}, {:?}, error {:?}", t.elapsed(), app.ev.error(uid));
+    }
+
+    #[test]
+    fn an_stl_file_imports_as_an_undoable_body_and_a_bad_file_changes_nothing() {
+        let mut app = app();
+        let dir = tempfile::tempdir().unwrap();
+        let mesh = fusion_core::geom::box_mesh(DVec3::ZERO, DVec3::new(10.0, 20.0, 30.0));
+        let mut bytes = Vec::new();
+        Mesh::write_stl_binary(&[&mesh], &mut bytes);
+        let good = dir.path().join("part.stl");
+        std::fs::write(&good, &bytes).unwrap();
+        // opening an STL like a document (Finder, drag and drop) imports it as well
+        app.open_path(good.clone());
+        app.start_eval();
+        app.ev.evaluate(&app.doc);
+        assert_eq!(app.ev.model().bodies.len(), 1);
+        assert!((app.ev.model().bodies[0].mesh().volume() - 6000.0).abs() < 1e-2);
+        assert!(app.dirty(), "an import is an edit that needs saving");
+        app.do_undo();
+        app.ev.evaluate(&app.doc);
+        assert!(app.ev.model().bodies.is_empty(), "undo takes the import back");
+        let bad = dir.path().join("bad.stl");
+        std::fs::write(&bad, b"not a mesh at all").unwrap();
+        let before = app.doc.clone();
+        app.import_stl(&bad);
+        assert_eq!(app.doc, before, "a bad file leaves the project alone");
+        assert!(app.toast.as_ref().is_some_and(|t| t.2), "and says so");
+    }
+
+    #[test]
+    fn the_bracket_survives_an_stl_export_and_import_round_trip_and_can_be_filleted() {
+        let mut src = app();
+        src.load_doc(crate::examples::bracket(), None);
+        src.ev.evaluate(&src.doc);
+        let (bytes, _) = src.model_bytes("stl").expect("the bracket exports");
+        let want: f64 = src.ev.model().bodies.iter().map(|b| b.mesh().volume()).sum();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("bracket.stl");
+        std::fs::write(&file, bytes).unwrap();
+        let mut app = app();
+        app.import_stl(&file);
+        app.ev.evaluate(&app.doc);
+        let got: f64 = app.ev.model().bodies.iter().map(|b| b.mesh().volume()).sum();
+        assert!((got - want).abs() / want < 1e-4, "{got} vs {want}");
+        // an imported body takes part in the other tools like any other
+        let id = app.ev.model().bodies[0].id;
+        let uid = app.doc.insert(FeatureKind::Draft { bodies: vec![id], axis: fusion_core::doc::Axis3::Z, neutral: Expr::num(0.0), angle: Expr::num(1.0) });
+        app.ev.evaluate(&app.doc);
+        assert!(app.ev.error(uid).is_none(), "{:?}", app.ev.error(uid));
     }
 
     #[test]

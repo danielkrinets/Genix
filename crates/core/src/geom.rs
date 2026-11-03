@@ -2,7 +2,7 @@
 
 use crate::mesh::Mesh;
 use crate::sketch::{arc_segments, Plane, Region, P2};
-use glam::{DQuat, DVec3};
+use glam::{DMat3, DQuat, DVec3};
 
 /// Выдавить область вдоль нормали плоскости от `z0` до `z1` (в мм от плоскости).
 pub fn extrude_region(plane: &Plane, region: &Region, z0: f64, z1: f64) -> Option<Mesh> {
@@ -1005,4 +1005,47 @@ pub fn face_region(mesh: &Mesh, plane: &Plane, seed: DVec3) -> Option<Region> {
     if area(&loops[big]) < 0.0 { loops.iter_mut().for_each(|l| l.reverse()); }
     let outer = loops.remove(big);
     Some(Region { outer, holes: loops.into_iter().filter(|l| area(l) < 0.0).collect(), ids: Vec::new() })
+}
+
+/// Draft as in Fusion: every face parallel to `pull` leans by `angle_deg` away from the neutral plane
+/// (`pull`·p = `neutral`); a positive angle narrows the body in the pull direction.
+/// Each vertex slides so that all its side faces tilt by the same angle (miter), faces perpendicular to `pull` stay put.
+pub fn draft_mesh(mesh: &Mesh, pull: DVec3, neutral: f64, angle_deg: f64) -> Mesh {
+    let mut m = mesh.clone();
+    m.weld(1e-7);
+    let tan = angle_deg.to_radians().tan();
+    let d = pull.normalize();
+    let mut sides: Vec<Vec<DVec3>> = vec![Vec::new(); m.vertices.len()];
+    for t in &m.triangles {
+        let n = m.tri_normal(t);
+        if n.length_squared() < 0.5 || n.dot(d).abs() > 1e-3 {
+            continue;
+        }
+        for &i in t {
+            let list = &mut sides[i as usize];
+            if !list.iter().any(|o| o.dot(n) > 0.99999) {
+                list.push(n);
+            }
+        }
+    }
+    let verts = m.vertices.clone();
+    for (i, ns) in sides.iter().enumerate() {
+        if ns.is_empty() {
+            continue;
+        }
+        let p = DVec3::from(verts[i]);
+        let target = -(p.dot(d) - neutral) * tan;
+        let mut ata = DMat3::from_diagonal(DVec3::splat(1e-9)) + DMat3::from_cols(d * d.x, d * d.y, d * d.z);
+        let mut atb = DVec3::ZERO;
+        for n in ns {
+            ata += DMat3::from_cols(*n * n.x, *n * n.y, *n * n.z);
+            atb += *n * target;
+        }
+        if ata.determinant().abs() < 1e-12 {
+            continue;
+        }
+        let shift = ata.inverse() * atb;
+        m.vertices[i] = (p + shift).to_array();
+    }
+    m
 }
