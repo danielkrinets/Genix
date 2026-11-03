@@ -1124,4 +1124,6 @@ pub const EN: &[(&str, &str)] = &[
     ("В пробной версии всё работает, кроме сохранения и экспорта. Подписка снимает это ограничение.", "In the trial everything works except saving and export. The subscription removes this limit."),
     ("Ключ лицензии проверяется на вашем компьютере, интернет для работы не нужен.", "The licence key is checked on your computer; no internet is needed."),
     ("Открыть подписку и лицензию", "Open subscription and licence"),
+    ("Исключающее", "Exclusive"),
+    ("Три угла одного шага применяются по порядку Z, затем Y, затем X вокруг неподвижных осей. Нужен другой порядок — сделайте два шага. Несколько тел поворачиваются вместе вокруг центра всей группы", "The three angles of one step are applied Z, then Y, then X about fixed axes. For another order use two steps. Several bodies turn together about the centre of the whole group"),
 ];

@@ -294,6 +294,7 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
             for (i, a) in [tr("Вокруг X"), tr("Вокруг Y"), tr("Вокруг Z")].iter().enumerate() {
                 changed |= row(ui, a, |ui| expr_field(ui, ("rot", uid, i), &mut rotate[i], p, "°"));
             }
+            ui.label(RichText::new(tr("Три угла одного шага применяются по порядку Z, затем Y, затем X вокруг неподвижных осей. Нужен другой порядок — сделайте два шага. Несколько тел поворачиваются вместе вокруг центра всей группы")).weak().small());
             changed |= crate::widgets::checkbox(ui, copy, tr("Создать копию")).changed();
         }
         FeatureKind::Mirror { bodies, normal, join, offset } => {

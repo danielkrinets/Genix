@@ -1221,6 +1221,13 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                     m.new_body(id_base, inside);
                     return Ok((Arc::new(m), None));
                 }
+                BoolOp::Xor => {
+                    // everything except the part shared with the tools: (target U tools) minus (target ∩ tools)
+                    let tool_union = Solid::union_all(&tl.iter().map(|b| (*b.solid).clone()).collect::<Vec<_>>());
+                    let all = t.solid.boolean(&tool_union, BoolOp::Union);
+                    let shared = t.solid.boolean(&tool_union, BoolOp::Intersect);
+                    all.boolean(&shared, BoolOp::Subtract)
+                }
                 BoolOp::Union => {
                     let mut all: Vec<Solid> = vec![(*t.solid).clone()];
                     all.extend(tl.iter().map(|b| (*b.solid).clone()));
@@ -2608,6 +2615,70 @@ mod modeling_batch_tests {
         assert!(ev2.error(post).is_none(), "{:?}", ev2.error(post));
         let expect = std::f64::consts::PI * 10.0 * 5.0 * 8.0;
         assert!((ev2.model().bodies[0].mesh().volume() - expect).abs() < expect * 0.01);
+    }
+
+    #[test]
+    fn combine_exclusive_drops_only_the_shared_part() {
+        let mut d = Document::default();
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(20.0), d: n(20.0), h: n(20.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(20.0), d: n(20.0), h: n(20.0) }, at: [n(10.0), n(0.0), n(0.0)], op: Op::NewBody });
+        let ids: Vec<u64> = run(&d).model().bodies.iter().map(|b| b.id).collect();
+        let uid = d.insert(FeatureKind::Combine { target: ids[0], tools: vec![ids[1]], op: BoolOp::Xor, keep_tools: false });
+        let ev = run(&d);
+        assert!(ev.error(uid).is_none(), "{:?}", ev.error(uid));
+        // two 8000 mm3 boxes sharing 4000: 16000 - 2 x 4000 = 8000 remain, as two separate slabs inside one body
+        assert_eq!(ev.model().bodies.len(), 1);
+        assert!((ev.model().bodies[0].mesh().volume() - 8000.0).abs() < 1e-6, "{}", ev.model().bodies[0].mesh().volume());
+    }
+
+    #[test]
+    fn rotation_examples_that_work_and_the_cases_that_need_care() {
+        let spin = |bodies: &[(f64, f64, f64, f64, f64, f64)], rot: [f64; 3], copy: bool| {
+            let mut d = Document::default();
+            for (x, y, z, w, dd, h) in bodies {
+                d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(*w), d: n(*dd), h: n(*h) }, at: [n(*x), n(*y), n(*z)], op: Op::NewBody });
+            }
+            let ids: Vec<u64> = run(&d).model().bodies.iter().map(|b| b.id).collect();
+            let uid = d.insert(FeatureKind::Move { bodies: ids, translate: [n(0.0), n(0.0), n(0.0)], rotate: [n(rot[0]), n(rot[1]), n(rot[2])], copy });
+            let ev = run(&d);
+            assert!(ev.error(uid).is_none(), "{:?}", ev.error(uid));
+            ev.model().bodies.iter().map(|b| b.mesh().bounds().unwrap()).collect::<Vec<_>>()
+        };
+        // 1. works: a 40 x 10 x 10 bar turned 90 degrees about Z turns on the spot around its own centre
+        let b = spin(&[(0.0, 0.0, 0.0, 40.0, 10.0, 10.0)], [0.0, 0.0, 90.0], false);
+        let (lo, hi) = b[0];
+        assert!((hi.x - lo.x - 10.0).abs() < 1e-6 && (hi.y - lo.y - 40.0).abs() < 1e-6, "now 10 wide and 40 deep: {lo:?} {hi:?}");
+        assert!(((lo.x + hi.x) / 2.0 - 20.0).abs() < 1e-6 && ((lo.y + hi.y) / 2.0 - 5.0).abs() < 1e-6, "centre unchanged");
+        // 2. works: 90 about X stands the bar's height and depth on their heads
+        let b = spin(&[(0.0, 0.0, 0.0, 40.0, 10.0, 30.0)], [90.0, 0.0, 0.0], false);
+        assert!((b[0].1.y - b[0].0.y - 30.0).abs() < 1e-6 && (b[0].1.z - b[0].0.z - 10.0).abs() < 1e-6, "{:?}", b[0]);
+        // 3. works: several bodies turn together around the middle of the whole group, not each around itself
+        let b = spin(&[(0.0, 0.0, 0.0, 10.0, 10.0, 10.0), (30.0, 0.0, 0.0, 10.0, 10.0, 10.0)], [0.0, 0.0, 180.0], false);
+        assert!((b[0].0.x - 30.0).abs() < 1e-6 && (b[1].0.x - 0.0).abs() < 1e-6, "the two cubes swapped places: {b:?}");
+        // 4. works: a rotated copy leaves the original where it was
+        let b = spin(&[(0.0, 0.0, 0.0, 40.0, 10.0, 10.0)], [0.0, 0.0, 90.0], true);
+        assert_eq!(b.len(), 2);
+        assert!((b[0].1.x - b[0].0.x - 40.0).abs() < 1e-6, "the original is untouched");
+        // 5. needs care: the three angles of ONE step are applied Z first, then Y, then X, about fixed axes. So [90, 0, 90] in one
+        //    step equals "Z then X" as two steps, and is NOT "X then Z": to turn in another order, use two steps.
+        let steps = |first: [f64; 3], second: [f64; 3]| {
+            let mut d = Document::default();
+            d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(40.0), d: n(20.0), h: n(10.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+            let id = run(&d).model().bodies[0].id;
+            for r in [first, second] {
+                d.insert(FeatureKind::Move { bodies: vec![id], translate: [n(0.0), n(0.0), n(0.0)], rotate: [n(r[0]), n(r[1]), n(r[2])], copy: false });
+            }
+            run(&d).model().bodies[0].mesh().bounds().unwrap()
+        };
+        let size = |b: (DVec3, DVec3)| (b.1 - b.0).to_array().map(|v| (v * 1000.0).round() / 1000.0);
+        let one_step = spin(&[(0.0, 0.0, 0.0, 40.0, 20.0, 10.0)], [90.0, 0.0, 90.0], false)[0];
+        let z_then_x = steps([0.0, 0.0, 90.0], [90.0, 0.0, 0.0]);
+        let x_then_z = steps([90.0, 0.0, 0.0], [0.0, 0.0, 90.0]);
+        assert_eq!(size(one_step), size(z_then_x), "one step [90,0,90] = Z first, then X");
+        assert_ne!(size(one_step), size(x_then_z), "...and not X first: {one_step:?} vs {x_then_z:?}");
+        // 6. needs care: a turn that is not a multiple of 90 degrees makes the box's bounding box bigger (the body itself is still the same size)
+        let b = spin(&[(0.0, 0.0, 0.0, 40.0, 10.0, 10.0)], [0.0, 0.0, 45.0], false)[0];
+        assert!(b.1.x - b.0.x < 40.0 && b.1.x - b.0.x > 10.0 && b.1.y - b.0.y > 10.0);
     }
 
     #[test]

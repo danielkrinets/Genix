@@ -11,16 +11,19 @@ pub enum BoolOp {
     Intersect,
     /// Not a plain boolean: a body is cut in two by a tool body (handled by the document).
     Split,
+    /// Exclusive union: what belongs to exactly one of the bodies (the shared part is dropped).
+    Xor,
 }
 
 impl BoolOp {
-    pub const ALL: [BoolOp; 4] = [BoolOp::Union, BoolOp::Subtract, BoolOp::Intersect, BoolOp::Split];
+    pub const ALL: [BoolOp; 5] = [BoolOp::Union, BoolOp::Subtract, BoolOp::Intersect, BoolOp::Split, BoolOp::Xor];
     pub fn label(self) -> &'static str {
         match self {
             BoolOp::Union => "Объединить",
             BoolOp::Subtract => "Вырезать",
             BoolOp::Intersect => "Пересечь",
             BoolOp::Split => "Разделить",
+            BoolOp::Xor => "Исключающее",
         }
     }
 }
@@ -62,7 +65,7 @@ impl Solid {
         let r = match op {
             BoolOp::Union => self.manifold.union(&other.manifold),
             BoolOp::Subtract => self.manifold.difference(&other.manifold),
-            BoolOp::Intersect | BoolOp::Split => self.manifold.intersection(&other.manifold),
+            BoolOp::Intersect | BoolOp::Split | BoolOp::Xor => self.manifold.intersection(&other.manifold),
         };
         Solid::from_manifold(r)
     }
