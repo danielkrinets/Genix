@@ -784,7 +784,7 @@ pub mod offscreen {
             let prof = polygon(&[[0.0, 0.0], [18.0, 0.0], [18.0, 4.0], [9.0, 8.0], [9.0, 30.0], [15.0, 38.0], [0.0, 38.0]]);
             let mut flat = Document::default();
             let sk = flat.insert(FeatureKind::Sketch { plane: Plane::XZ, sketch: prof.clone() });
-            flat.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![ProfileRef::at([6.0, 3.0])], extent: Extent::Symmetric(n(0.5)), op: Op::NewBody, face: None, taper: Expr::num(0.0) });
+            flat.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![ProfileRef::at([6.0, 3.0])], extent: Extent::Symmetric(n(0.5)), op: Op::NewBody, face: None, taper: Expr::num(0.0), thin: Expr::num(0.0) });
             let mut round = Document::default();
             let sk = round.insert(FeatureKind::Sketch { plane: Plane::XZ, sketch: prof });
             round.insert(FeatureKind::Revolve { sketch: sk, profiles: vec![ProfileRef::at([6.0, 3.0])], axis: fusion_core::doc::RevolveAxis::SketchY, angle: n(360.0), op: Op::NewBody });
@@ -826,7 +826,7 @@ pub mod offscreen {
             let before = doc(vec![cyl(7.0, 12.0, [0.0, 0.0, 0.0])]);
             let id = first_id(&before);
             let mut after = before.clone();
-            after.insert(FeatureKind::Pattern { bodies: vec![id], kind: PatternKind::Rect { nx: n(3.0), dx: n(24.0), ny: n(2.0), dy: n(24.0) } });
+            after.insert(FeatureKind::Pattern { bodies: vec![id], kind: PatternKind::Rect { nx: n(3.0), dx: n(24.0), ny: n(2.0), dy: n(24.0), nz: Expr::num(1.0), dz: Expr::num(0.0) } });
             jobs.push(("pattern", Some(before), after));
         }
         // move (a copy)

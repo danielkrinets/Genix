@@ -123,7 +123,7 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
     let p = &params;
     let uid = cmd.uid;
     match &mut f.kind {
-        FeatureKind::Extrude { sketch: _, profiles, extent, op, face, taper } => {
+        FeatureKind::Extrude { sketch: _, profiles, extent, op, face, taper, thin } => {
             section(ui, tr("ПРОФИЛИ"));
             if face.is_some() {
                 ui.horizontal(|ui| {
@@ -189,6 +189,10 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                 }
             }
             changed |= row(ui, tr("Уклон стенок"), |ui| expr_field(ui, ("ext_taper", uid), taper, p, "°"));
+            changed |= row(ui, tr("Тонкая стенка"), |ui| expr_field(ui, ("ext_thin", uid), thin, p, tr("мм")));
+            if !matches!(thin.eval(p), Ok(v) if v == 0.0) {
+                ui.label(RichText::new(tr("Остаётся только стенка по контуру профиля. 0 — сплошное тело")).weak().small());
+            }
             if op_combo(ui, "ext_op", op) {
                 changed = true;
                 cmd.auto_op = false;
@@ -347,7 +351,7 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
             let mut circ = matches!(kind, PatternKind::Circular { .. });
             ui.horizontal(|ui| {
                 if ui.radio_value(&mut circ, false, tr("Прямоугольный")).changed() {
-                    *kind = PatternKind::Rect { nx: num(3.0), dx: num(20.0), ny: num(1.0), dy: num(20.0) };
+                    *kind = PatternKind::Rect { nx: num(3.0), dx: num(20.0), ny: num(1.0), dy: num(20.0), nz: Expr::num(1.0), dz: Expr::num(0.0) };
                     changed = true;
                 }
                 if ui.radio_value(&mut circ, true, tr("Круговой")).changed() {
@@ -356,11 +360,13 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                 }
             });
             match kind {
-                PatternKind::Rect { nx, dx, ny, dy } => {
+                PatternKind::Rect { nx, dx, ny, dy, nz, dz } => {
                     changed |= row(ui, tr("Кол-во по X"), |ui| expr_field(ui, ("pat", uid, 0), nx, p, tr("шт")));
                     changed |= row(ui, tr("Шаг по X"), |ui| expr_field(ui, ("pat", uid, 1), dx, p, tr("мм")));
                     changed |= row(ui, tr("Кол-во по Y"), |ui| expr_field(ui, ("pat", uid, 2), ny, p, tr("шт")));
                     changed |= row(ui, tr("Шаг по Y"), |ui| expr_field(ui, ("pat", uid, 3), dy, p, tr("мм")));
+                    changed |= row(ui, tr("Кол-во по Z"), |ui| expr_field(ui, ("pat", uid, 6), nz, p, tr("шт")));
+                    changed |= row(ui, tr("Шаг по Z"), |ui| expr_field(ui, ("pat", uid, 7), dz, p, tr("мм")));
                 }
                 PatternKind::Circular { count, axis, angle } => {
                     changed |= row(ui, tr("Количество"), |ui| expr_field(ui, ("pat", uid, 4), count, p, tr("шт")));
@@ -795,7 +801,7 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
     match kind {
         "extrude" => {
             let (sketch, profiles) = c.last_sketch.clone().unwrap_or((0, vec![]));
-            FeatureKind::Extrude { sketch, profiles, extent: Extent::OneSide(num(10.0)), op, face: None, taper: Expr::num(0.0) }
+            FeatureKind::Extrude { sketch, profiles, extent: Extent::OneSide(num(10.0)), op, face: None, taper: Expr::num(0.0), thin: Expr::num(0.0) }
         }
         "revolve" => {
             let (sketch, profiles) = c.last_sketch.clone().unwrap_or((0, vec![]));
@@ -833,7 +839,7 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
         "split" => FeatureKind::Split { bodies: selected.to_vec(), axis: Axis3::Z, offset: num(10.0) },
         "draft" => FeatureKind::Draft { bodies: selected.to_vec(), axis: Axis3::Z, neutral: num(0.0), angle: num(5.0) },
         "thread" => FeatureKind::Thread { at: zero(), axis: Axis3::Z, dia: num(10.0), pitch: num(1.5), length: num(15.0), depth: num(0.8), op: Op::NewBody },
-        "pattern" => FeatureKind::Pattern { bodies: selected.to_vec(), kind: PatternKind::Rect { nx: num(3.0), dx: num(30.0), ny: num(1.0), dy: num(30.0) } },
+        "pattern" => FeatureKind::Pattern { bodies: selected.to_vec(), kind: PatternKind::Rect { nx: num(3.0), dx: num(30.0), ny: num(1.0), dy: num(30.0), nz: Expr::num(1.0), dz: Expr::num(0.0) } },
         "chamfer" => FeatureKind::Chamfer { body: selected.first().copied().unwrap_or(0), edges: vec![], dist: num(1.0) },
         "fillet" => FeatureKind::Fillet { body: selected.first().copied().unwrap_or(0), edges: vec![], radius: num(2.0) },
         "combine" => FeatureKind::Combine {

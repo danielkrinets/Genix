@@ -110,3 +110,9 @@ Old files open unchanged: the new fields have serde defaults (`taper`, `offset`)
 Tests: core 103 + app 95 pass (`cargo test --workspace --offline`); 8 new core tests in `modeling_batch_tests` / `interference_tests` check frustum volumes, through-all hole volume, mirror position, split volumes, angle-plane normal, default-field loading.
 Live (QA copy `com.danielkrinets.genix.qa`, isolated settings): `crates/core/examples/modeling_demo.rs` writes a model with all of them; it opens without errors, tapered posts and the angled plane are visible, the Extrude panel shows the new "Уклон стенок" row.
 Not checked by eye: the new "Насквозь" options in the direction drop-down (the background window did not redraw the open combo box), the interference toast, the angle-plane tool picked with the mouse.
+
+## 0.00.28 — modeling batch 2 (checked 2026-11-03)
+
+New: **thin extrude** (Extrude → «Тонкая стенка»: wall along the outline and around holes, also with taper), **3D grid pattern** (Count/Step along Z).
+Tests: core 106 + app 95 pass. Live (QA copy): the demo model shows the thin-walled box and the 2×1×2 cube grid next to the tapered posts.
+Not checked by eye: typing the new fields in the panel; thin extrude picked from a body face.

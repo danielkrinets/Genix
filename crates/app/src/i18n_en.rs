@@ -976,4 +976,12 @@ pub const EN: &[(&str, &str)] = &[
     ("Для проверки нужно минимум два тела", "At least two bodies are needed"),
     ("Пересечений нет", "No interference"),
     ("Пересекаются:", "Interfering:"),
+    ("Тонкая стенка", "Thin wall"),
+    ("Остаётся только стенка по контуру профиля. 0 — сплошное тело", "Only a wall along the profile outline is left. 0 keeps the body solid"),
+    ("толщина стенки должна быть положительной", "the wall thickness must be positive"),
+    ("стенка толще профиля: утончение не получилось", "the wall is thicker than the profile: thinning failed"),
+    ("Кол-во по Z", "Count along Z"),
+    ("Шаг по Z", "Step along Z"),
+    ("Кол-во Z", "Count Z"),
+    ("Шаг Z", "Step Z"),
 ];

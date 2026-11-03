@@ -4423,7 +4423,7 @@ impl App {
                 let [x, y, z] = translate;
                 vec![("X", "мм", x), ("Y", "мм", y), ("Z", "мм", z)]
             }
-            FeatureKind::Pattern { kind: PatternKind::Rect { nx, dx, ny, dy }, .. } => vec![("Кол-во X", "", nx), ("Шаг X", "мм", dx), ("Кол-во Y", "", ny), ("Шаг Y", "мм", dy)],
+            FeatureKind::Pattern { kind: PatternKind::Rect { nx, dx, ny, dy, nz, dz }, .. } => vec![("Кол-во X", "", nx), ("Шаг X", "мм", dx), ("Кол-во Y", "", ny), ("Шаг Y", "мм", dy), ("Кол-во Z", "", nz), ("Шаг Z", "мм", dz)],
             FeatureKind::Pattern { kind: PatternKind::Circular { count, angle, .. }, .. } => vec![("Кол-во", "", count), ("Угол", "°", angle)],
             _ => return,
         };
@@ -4776,7 +4776,7 @@ mod lifecycle_tests {
         let r = sk.regions();
         let p = ProfileRef::of(&r[region_at(&r, [50.0, 35.0]).unwrap()]);
         let sid = app.doc.insert(FeatureKind::Sketch { plane: fusion_core::Plane::XY, sketch: sk });
-        app.doc.insert(FeatureKind::Extrude { sketch: sid, profiles: vec![p], extent: Extent::OneSide(Expr::num(30.0)), op: fusion_core::Op::NewBody, face: None, taper: Expr::num(0.0) });
+        app.doc.insert(FeatureKind::Extrude { sketch: sid, profiles: vec![p], extent: Extent::OneSide(Expr::num(30.0)), op: fusion_core::Op::NewBody, face: None, taper: Expr::num(0.0), thin: Expr::num(0.0) });
         app.after_doc_change();
         let body = app.ev.model().bodies[0].clone();
         let all = app.straight_edges(&body);

@@ -2,6 +2,7 @@
 
 Every change, even a small fix, gets a new version: `0.00.N — what was added` (up to five words, English only). Newest first.
 
+- 0.00.28 — Thin extrude, 3D pattern
 - 0.00.27 — Taper, through-all, interference
 - 0.00.26 — Four folders per row
 - 0.00.25 — Aligned edges, animated folders
