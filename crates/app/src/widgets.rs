@@ -380,7 +380,7 @@ pub fn warm_tooltip(response: &egui::Response, tip: &str) {
 /// Animated checkmark with native checkbox semantics and an unchanged hit target.
 pub fn checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::Response {
     let galley = ui.painter().layout_no_wrap(label.into(), egui::FontId::proportional(14.0), ui.visuals().text_color());
-    let (rect, mut response) = ui.allocate_exact_size(egui::vec2(30.0 + galley.size().x, 32.0), egui::Sense::click());
+    let (rect, mut response) = ui.allocate_exact_size(egui::vec2(34.0 + galley.size().x, 32.0), egui::Sense::click());
     if response.clicked() { *value = !*value; response.mark_changed(); }
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *value, label));
     let t = feedback_duration(ui, response.id.with("checked"), *value, 0.32, true);
@@ -390,7 +390,7 @@ pub fn checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::Respo
     ui.painter().rect_stroke(box_rect, 7.0, egui::Stroke::new(1.5_f32, crate::theme::secondary(ui).lerp_to_gamma(crate::theme::accent(),t)), egui::StrokeKind::Inside);
     paint_check(ui.painter(), box_rect.center(), t, crate::theme::on_accent());
     if response.has_focus() { ui.painter().rect_stroke(box_rect.expand(3.0), 10.0, egui::Stroke::new(1.5_f32, crate::theme::accent()), egui::StrokeKind::Outside); }
-    ui.painter().galley(rect.left_center() + egui::vec2(30.0,-galley.size().y*0.5), galley, ui.visuals().text_color());
+    ui.painter().galley(rect.left_center() + egui::vec2(34.0,-galley.size().y*0.5), galley, ui.visuals().text_color());
     response
 }
 

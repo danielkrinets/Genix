@@ -2239,6 +2239,7 @@ impl App {
                     self.commit_pending_edits();
                     self.home_active = true;
                     let name = crate::home::unused_folder_name(&self.settings.folders, tr("Новая папка"));
+                    self.home.note_new_folder(&name, ui.input(|i| i.time));
                     self.settings.folders.push(crate::settings::ProjectFolder { name, ..Default::default() });
                     self.settings.save();
                 }

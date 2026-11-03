@@ -74,6 +74,7 @@ fn raw(id: &str) -> Option<&'static str> {
         "mesh_repair" => include_str!("../assets/icons/mesh_repair.svg"),
         "mesh_to_solid" => include_str!("../assets/icons/mesh_to_solid.svg"),
         "mirror" => include_str!("../assets/icons/mirror.svg"),
+        "bug" => include_str!("../assets/icons/bug.svg"),
         "split" => include_str!("../assets/icons/combine.svg"),
         "move" => include_str!("../assets/icons/move.svg"),
         "nav_fit" => include_str!("../assets/icons/nav_fit.svg"),

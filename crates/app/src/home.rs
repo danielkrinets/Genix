@@ -219,8 +219,12 @@ impl ProjectFilters {
     }
 }
 
+/// Left edge shared by every block on the home screen; rows that wrap use a margin of this size, not a spacer in the first row.
+const CONTENT_LEFT: f32 = 24.0;
+
 #[derive(Default)]
 pub struct HomeState {
+    folder_born: Option<(String, f64)>,
     page: HomePage,
     transition_started: Option<f64>,
     profile: Option<ProfileDraft>,
@@ -237,7 +241,6 @@ pub struct HomeState {
     completed: HashSet<String>,
     busy: Arc<AtomicUsize>,
     new_project_started: Option<f64>,
-    sidebar_pinned: bool,
     open_folder: Option<String>,
     focus_rename: bool,
     name_dialog: Option<NameDialog>,
@@ -350,6 +353,11 @@ pub enum HomeAction {
 }
 
 impl HomeState {
+    /// Remembers a folder created outside the home screen (File menu) so its card animates in.
+    pub(crate) fn note_new_folder(&mut self, name: &str, now: f64) {
+        self.folder_born = Some((name.to_string(), now));
+    }
+
     /// Shows the inside of a folder (used by QA to open one without clicking).
     pub fn open_folder(&mut self, name: &str) {
         self.page = HomePage::Models;
@@ -472,7 +480,7 @@ pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
         if !matches!(content, HomeAction::None) { action = content; }
     } else {
         let height = ui.available_height();
-        let expanded = h.sidebar_pinned;
+        let expanded = true; // names are always shown
         let open = crate::widgets::feedback(ui, ui.id().with("home-sidebar-open"), expanded);
         let nav_width = 64.0 + (190.0 - 64.0) * open;
         ui.horizontal_top(|ui| {
@@ -481,12 +489,6 @@ pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
                     ui.set_width(nav_width - 20.0);
                     ui.set_min_height(height - 28.0);
                     ui.horizontal(|ui| {
-                        let (rect, toggle) = ui.allocate_exact_size(egui::vec2(36.0, 34.0), egui::Sense::click());
-                        if toggle.hovered() { ui.painter().rect_filled(rect, 12.0, crate::theme::tint(20)); }
-                        if let Some(icon) = crate::icons::icon("nav_panel_left", 22.0, ui.visuals().text_color()) {
-                            icon.paint_at(ui, egui::Rect::from_center_size(rect.center(), egui::vec2(22.0, 22.0)));
-                        }
-                        if toggle.on_hover_text(if h.sidebar_pinned { tr("Свернуть панель") } else { tr("Развернуть панель") }).clicked() { h.sidebar_pinned = !h.sidebar_pinned; }
                         if open > 0.72 { ui.label(RichText::new("Genix").size(22.0).strong()); }
                     });
                     ui.add_space(22.0);
@@ -510,7 +512,7 @@ pub fn home_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
                             }
                         });
                         ui.add_space(6.0);
-                        if crate::widgets::navigation_button_mode(ui, tr("Пожаловаться на баг"), "report", false, open > 0.72).clicked() {
+                        if crate::widgets::navigation_button_mode(ui, tr("Сообщить о баге"), "bug", false, open > 0.72).clicked() {
                             action = HomeAction::Report;
                         }
                     });
@@ -554,7 +556,7 @@ fn hub_content_inner(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, pr
                     });
                     ui.heading(tr("Профиль"));
                     ui.label(RichText::new(tr("Локальный аккаунт · мок")).color(muted(ui)));
-                    ui.add_space(24.0);
+                    ui.add_space(CONTENT_LEFT);
                     if st.account.is_none() {
                         ui.label(tr("Вы работаете без аккаунта. Модели доступны на этом устройстве."));
                         if ui.button(tr("Зарегистрироваться / войти")).clicked() { action = HomeAction::SignOut; }
@@ -578,7 +580,7 @@ fn hub_content_inner(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, pr
                             }
                         }
                         if let Some(message) = &draft.message { ui.label(message); }
-                        ui.add_space(24.0);
+                        ui.add_space(CONTENT_LEFT);
                         ui.separator();
                         ui.label(tr("Пароль не хранится. Реальная авторизация будет подключена позже."));
                         if ui.button(tr("Выйти из аккаунта")).clicked() { action = HomeAction::SignOut; }
@@ -589,13 +591,13 @@ fn hub_content_inner(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, pr
                 HomePage::Server => {
                     ui.heading(tr("Сервер Genix"));
                     ui.label(RichText::new(tr("Демонстрационная подписка")).color(muted(ui)));
-                    ui.add_space(24.0);
+                    ui.add_space(CONTENT_LEFT);
                     ui.label(RichText::new(tr("Ваше пространство для моделей")).size(20.0).strong());
                     ui.label(tr("Будущий сервер для хранения проектов и работы с ними на разных устройствах."));
                     ui.add_space(12.0);
                     ui.label(tr("Сейчас сервер не подключён. Модели хранятся только на этом устройстве."));
                     ui.label(tr("Цена и тарифы пока не определены. Оплата не производится."));
-                    ui.add_space(24.0);
+                    ui.add_space(CONTENT_LEFT);
                     let active = st.account.is_some() && st.server_demo_account == st.account;
                     if active {
                         ui.label(RichText::new(tr("Демо-подписка активна")).strong());
@@ -777,7 +779,7 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
         });
         ui.add_space(16.0);
         ui.horizontal(|ui| {
-            ui.add_space(24.0);
+            ui.add_space(CONTENT_LEFT);
             ui.vertical(|ui| {
                 if let Some(i) = folder_idx {
                     if crate::ui_kit::b02(ui, &format!("←  {}", tr("Все модели"))).clicked() { h.open_folder = None; }
@@ -792,8 +794,7 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
             });
         });
         ui.add_space(12.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.add_space(24.0);
+        indented(ui, |ui| ui.horizontal_wrapped(|ui| {
             // на iPhone только просмотр: создавать и открывать через диалоги нечего
             if !viewer {
                 if let Some(started) = h.new_project_started {
@@ -809,19 +810,21 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
                     ui.ctx().request_repaint();
                 }
                 if new_folder_button(ui).clicked() {
-                    st.folders.push(crate::settings::ProjectFolder { name: unused_folder_name(&st.folders, tr("Новая папка")), ..Default::default() });
+                    let name = unused_folder_name(&st.folders, tr("Новая папка"));
+                    h.folder_born = Some((name.clone(), ui.input(|i| i.time)));
+                    st.folders.push(crate::settings::ProjectFolder { name, ..Default::default() });
                     action = HomeAction::SettingsChanged;
                 }
             }
-        });
+        }));
         ui.add_space(16.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.add_space(24.0);
-            let search_width = (ui.available_width() - 24.0).clamp(220.0, 720.0);
+        indented(ui, |ui| ui.horizontal_wrapped(|ui| {
+            let search_width = (ui.available_width() - CONTENT_LEFT).clamp(220.0, 720.0);
             let right_pad: i8 = if h.search.is_empty() { 112 } else { 124 };
             let search = ui.add(egui::TextEdit::singleline(&mut h.search).font(egui::FontId::proportional(16.0)).margin(egui::Margin { left: 44, right: right_pad, top: 13, bottom: 13 }).hint_text(RichText::new(tr("Поиск проектов")).color(muted(ui))).desired_width(search_width));
             // the response rect is the text area only: rebuild the visible field from the margins
             let field = egui::Rect::from_min_max(egui::pos2(search.rect.left() - 44.0, search.rect.top() - 13.0), egui::pos2(search.rect.right() + f32::from(right_pad), search.rect.bottom() + 13.0));
+            ui.data_mut(|d| d.insert_temp(egui::Id::new("search-field-right"), field.right()));
             let center = field.left_center() + egui::vec2(24.0, -1.0);
             let stroke = egui::Stroke::new(1.8_f32, muted(ui));
             ui.painter().circle_stroke(center, 7.0, stroke);
@@ -838,12 +841,16 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
                 ui.painter().text(clear.rect.center(), egui::Align2::CENTER_CENTER, "✕", egui::FontId::proportional(13.0), if clear.hovered() { ui.visuals().text_color() } else { muted(ui) });
                 if clear.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { h.search.clear(); }
             }
-        });
+        }));
         let openness = crate::widgets::feedback(ui, ui.id().with("project-filters"), h.filters_open);
         if openness > 0.0 {
             let height_id = ui.id().with("filters-height");
             let height = ui.data(|d| d.get_temp::<f32>(height_id)).unwrap_or(200.0);
-            let mut filter_ui = ui.new_child(egui::UiBuilder::new().id_salt("filter-body").max_rect(ui.available_rect_before_wrap()));
+            let mut area = ui.available_rect_before_wrap();
+            area.min.x += CONTENT_LEFT;
+            let field_right = ui.data(|d| d.get_temp::<f32>(egui::Id::new("search-field-right"))).unwrap_or(area.max.x - CONTENT_LEFT);
+            area.max.x = field_right.min(area.max.x - CONTENT_LEFT).max(area.min.x + 220.0);
+            let mut filter_ui = ui.new_child(egui::UiBuilder::new().id_salt("filter-body").max_rect(area));
             {
                 let ui = &mut filter_ui;
                 let top = ui.next_widget_position().y;
@@ -854,11 +861,13 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
                 if !h.filters_open { ui.disable(); }
                 egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(20).inner_margin(16).show(ui, |ui| {
                     ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(24.0, 8.0);
                         crate::widgets::checkbox(ui, &mut h.filters.in_path, tr("Искать в пути файла"));
                         crate::widgets::checkbox(ui, &mut h.filters.available_only, tr("Только доступные файлы"));
                         crate::widgets::checkbox(ui, &mut h.filters.readable_only, tr("Только читаемые проекты"));
                     });
                     ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(12.0, 8.0);
                         ui.label(tr("Минимум операций"));
                         ui.add(egui::DragValue::new(&mut h.filters.min_steps).range(0..=100000));
                         egui::ComboBox::from_id_salt("modified-filter").selected_text(tr(match h.filters.modified_days { 7 => "За неделю", 30 => "За месяц", _ => "За всё время" })).show_ui(ui, |ui| {
@@ -880,7 +889,7 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
         }
         ui.add_space(14.0);
         if h.busy.load(Ordering::SeqCst) > 0 || !h.queued.is_empty() {
-            ui.horizontal(|ui| { ui.add_space(24.0); crate::widgets::loading(ui, tr("Подготавливаем предпросмотр…")); });
+            ui.horizontal(|ui| { ui.add_space(CONTENT_LEFT); crate::widgets::loading(ui, tr("Подготавливаем предпросмотр…")); });
         }
         if h.edit_mode { edit_bar(ui, h, st, &mut action); }
         if let Some(i) = folder_idx {
@@ -950,7 +959,7 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
         };
         let q = h.search.trim().to_lowercase();
         ui.horizontal(|ui| {
-            ui.add_space(24.0);
+            ui.add_space(CONTENT_LEFT);
             ui.label(RichText::new(if folder_idx.is_some() { tr("Модели в папке") } else { tr("Недавние модели") }).size(16.0).strong().color(muted(ui)).background_color(ui.visuals().panel_fill));
         });
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
@@ -960,15 +969,15 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
             let (a,b) = (&h.infos[*a], &h.infos[*b]);
             match h.filters.sort { 1 => b.modified.cmp(&a.modified), 2 => a.name.to_lowercase().cmp(&b.name.to_lowercase()), 3 => b.steps.cmp(&a.steps), _ => std::cmp::Ordering::Equal }
         });
-        if !visible.is_empty() { ui.horizontal(|ui| { ui.add_space(24.0); ui.label(RichText::new(tf!("Найдено: {} из {}", shown.len(), visible.len())).size(14.0).color(muted(ui)).background_color(ui.visuals().panel_fill)); }); }
+        if !visible.is_empty() { ui.horizontal(|ui| { ui.add_space(CONTENT_LEFT); ui.label(RichText::new(tf!("Найдено: {} из {}", shown.len(), visible.len())).size(14.0).color(muted(ui)).background_color(ui.visuals().panel_fill)); }); }
         if shown.is_empty() {
             ui.horizontal(|ui| {
-                ui.add_space(24.0);
+                ui.add_space(CONTENT_LEFT);
                 ui.label(RichText::new(if visible.is_empty() { if viewer { tr("Положите файлы .genix в папку Genix в приложении «Файлы»") } else { tr("Пока нет проектов — создайте новый или откройте файл") } } else { tr("Ничего не найдено") }).color(muted(ui)));
             });
         }
         // the whole block is indented, not just its first row, so wrapped rows line up with the first
-        egui::Frame::NONE.inner_margin(egui::Margin { left: 22, ..Default::default() }).show(ui, |ui| ui.horizontal_wrapped(|ui| {
+        egui::Frame::NONE.inner_margin(egui::Margin { left: CONTENT_LEFT as i8, ..Default::default() }).show(ui, |ui| ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(16.0, 16.0);
             for p in shown {
                 let Some(info) = h.infos.get(p).cloned() else { continue };
@@ -1009,10 +1018,10 @@ fn projects_ui(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, projects
         if folder_idx.is_some() { return; }
         ui.add_space(18.0);
         ui.horizontal(|ui| {
-            ui.add_space(24.0);
+            ui.add_space(CONTENT_LEFT);
             ui.label(RichText::new(tr("Начните с примера")).size(16.0).strong().color(muted(ui)).background_color(ui.visuals().panel_fill));
         });
-        egui::Frame::NONE.inner_margin(egui::Margin { left: 22, ..Default::default() }).show(ui, |ui| ui.horizontal_wrapped(|ui| {
+        egui::Frame::NONE.inner_margin(egui::Margin { left: CONTENT_LEFT as i8, ..Default::default() }).show(ui, |ui| ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(16.0, 16.0);
             for (i, (name, sub)) in [(tr("Кронштейн (параметрический)"), tr("пластина с отверстиями и стойка")), (tr("Втулка (вращение)"), tr("деталь вращения"))].into_iter().enumerate() {
                 let key = format!("ex:{i}");
@@ -1218,8 +1227,7 @@ fn share_dialog(ctx: &egui::Context, h: &mut HomeState, st: &mut Settings, actio
 
 /// Режим перемещения: сколько выбрано, куда переложить, выход.
 fn edit_bar(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, action: &mut HomeAction) {
-    ui.horizontal_wrapped(|ui| {
-        ui.add_space(24.0);
+    indented(ui, |ui| ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new(tf!("Выбрано: {}", h.selected.len())).strong());
         ui.add_space(6.0);
         let any = !h.selected.is_empty();
@@ -1237,24 +1245,33 @@ fn edit_bar(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, action: &mu
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if crate::ui_kit::b01(ui, tr("Готово"), 110.0).clicked() { h.edit_mode = false; h.selected.clear(); }
         });
-    });
+    }));
     ui.add_space(10.0);
 }
 
 /// Папки над списком моделей: карточки и создание новой.
 fn folders_section(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, action: &mut HomeAction) {
     ui.horizontal(|ui| {
-        ui.add_space(24.0);
+        ui.add_space(CONTENT_LEFT);
         ui.label(RichText::new(tr("Папки")).size(16.0).strong().color(muted(ui)).background_color(ui.visuals().panel_fill));
     });
-    ui.horizontal_wrapped(|ui| {
+    let now_t = ui.input(|i| i.time);
+    let born = h.folder_born.clone();
+    indented(ui, |ui| ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(16.0, 16.0);
-        ui.add_space(22.0);
         let mut dropped: Option<(usize, Vec<String>)> = None;
         let mut deleted: Option<usize> = None;
         for (i, f) in st.folders.iter().enumerate() {
             let pills: Vec<String> = f.projects.iter().filter_map(|p| h.infos.get(p).map(|info| info.name.clone())).take(3).collect();
-            let r = folder_card(ui, &f.name, &tf!("моделей: {}", f.projects.len()), &pills, f.auto_sync, h.edit_mode);
+            // a new folder fades and rises into place instead of popping up
+            let t = born.as_ref().filter(|(n, _)| *n == f.name).map_or(1.0, |(_, t0)| ((now_t - t0) / 0.28).clamp(0.0, 1.0) as f32);
+            let t = if crate::theme::reduced_motion() { 1.0 } else { 1.0 - (1.0 - t).powi(3) };
+            if t < 1.0 { ui.ctx().request_repaint(); }
+            let r = ui.scope(|ui| {
+                ui.set_opacity(t);
+                ui.add_space(0.0);
+                folder_card(ui, &f.name, &tf!("моделей: {}", f.projects.len()), &pills, f.auto_sync, h.edit_mode)
+            }).inner;
             if r.clicked() {
                 h.open_folder = Some(f.name.clone());
                 h.folder_rename = f.name.clone();
@@ -1274,14 +1291,19 @@ fn folders_section(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, acti
             st.folders.remove(i);
             *action = HomeAction::SettingsChanged;
         }
-    });
+    }));
     if st.folders.is_empty() {
         ui.horizontal(|ui| {
-            ui.add_space(24.0);
-            ui.label(RichText::new(tr("Папок пока нет — создайте первую кнопкой «+» или через меню «Файл».")).color(muted(ui)));
+            ui.add_space(CONTENT_LEFT);
+            ui.label(RichText::new(tr("Папок пока нет — создайте первую кнопкой «Создать папку» или через меню «Файл».")).color(muted(ui)));
         });
     }
     ui.add_space(14.0);
+}
+
+/// Indents a block by the shared left edge; unlike a spacer in the first row it also holds every wrapped row.
+fn indented<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::NONE.inner_margin(egui::Margin { left: CONTENT_LEFT as i8, ..Default::default() }).show(ui, add).inner
 }
 
 /// `base`, а если такая папка уже есть — `base 2`, `base 3`…
@@ -1318,7 +1340,7 @@ fn settings_row(ui: &mut egui::Ui, title: &str, note: Option<&str>, control: imp
 fn folder_settings(ui: &mut egui::Ui, h: &mut HomeState, st: &mut Settings, i: usize, action: &mut HomeAction) {
     let server = st.server_active();
     ui.horizontal(|ui| {
-        ui.add_space(24.0);
+        ui.add_space(CONTENT_LEFT);
         egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(22).show(ui, |ui| ui.vertical(|ui| {
             ui.set_width(ui.available_width().min(620.0));
             settings_row(ui, tr("Название"), None, |ui| {
@@ -1453,6 +1475,35 @@ fn new_project_button(ui: &mut egui::Ui, loading: bool) -> egui::Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs the home screen for one frame with the given pointer events.
+    fn frame(ctx: &egui::Context, h: &mut HomeState, st: &mut Settings, events: Vec<egui::Event>, t: f64) {
+        let mut input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1360.0, 820.0))), time: Some(t), events, ..Default::default() };
+        input.viewports.entry(egui::ViewportId::ROOT).or_default();
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| { home_ui(ui, h, st, &[], false); });
+        });
+    }
+
+    #[test]
+    fn a_click_on_the_filters_label_inside_the_search_field_opens_the_filters() {
+        let ctx = egui::Context::default();
+        let mut st = Settings::default();
+        let mut opened_at = None;
+        let mut t = 0.0;
+        let mut next = move || { t += 0.1; t };
+        for y in (150..330).step_by(4) {
+            let mut h = HomeState::default();
+            let at = egui::pos2(1050.0, y as f32);
+            frame(&ctx, &mut h, &mut st, vec![], next());
+            frame(&ctx, &mut h, &mut st, vec![egui::Event::PointerMoved(at)], next());
+            let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+            frame(&ctx, &mut h, &mut st, vec![button(true)], next());
+            frame(&ctx, &mut h, &mut st, vec![button(false)], next());
+            if h.filters_open { opened_at = Some(y); break; }
+        }
+        assert!(opened_at.is_some(), "no click inside the search row opened the filters");
+    }
 
     #[test]
     fn project_search_combines_words_path_and_metadata_filters() {

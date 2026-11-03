@@ -2,6 +2,7 @@
 
 Every change, even a small fix, gets a new version: `0.00.N — what was added` (up to five words, English only). Newest first.
 
+- 0.00.25 — Aligned edges, animated folders
 - 0.00.24 — STL import added
 - 0.00.23 — Draft and thread tools
 - 0.00.22 — Split body by plane
