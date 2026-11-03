@@ -1644,6 +1644,21 @@ impl App {
                 self.cancel_mode();
                 self.mode = Mode::Measure(Vec::new());
             }
+            "interference" => {
+                self.cancel_mode();
+                let model = self.ev.model();
+                let hits = model.interferences();
+                let name = |id: u64| model.body(id).map_or_else(|| "?".to_string(), |b| self.doc.body_name(b).to_string());
+                if model.bodies.len() < 2 {
+                    self.toast(tr("Для проверки нужно минимум два тела"), false, now);
+                } else if hits.is_empty() {
+                    self.toast(tr("Пересечений нет"), false, now);
+                } else {
+                    let list: Vec<String> = hits.iter().take(3).map(|(a, b, v)| format!("{} × {}: {} мм³", name(*a), name(*b), v.round())).collect();
+                    let more = if hits.len() > 3 { format!(" … +{}", hits.len() - 3) } else { String::new() };
+                    self.toast(format!("{} {}{}", tr("Пересекаются:"), list.join("; "), more), true, now);
+                }
+            }
             "remove" => {
                 if self.selection.is_empty() {
                     self.start_command("remove", now);
@@ -1803,7 +1818,7 @@ impl App {
     /// Выбираем плоскость: для нового чертежа или как основу смещённой плоскости.
     fn plane_pick_mode(&self) -> bool {
         matches!(self.mode, Mode::PickPlane)
-            || matches!(&self.mode, Mode::Command(c) if self.doc.feature(c.uid).is_some_and(|f| matches!(f.kind, FeatureKind::OffsetPlane { .. })))
+            || matches!(&self.mode, Mode::Command(c) if self.doc.feature(c.uid).is_some_and(|f| matches!(f.kind, FeatureKind::OffsetPlane { .. } | FeatureKind::AnglePlane { .. })))
             || matches!(&self.mode, Mode::Command(c) if c.pick == PickTarget::AlignTarget)
     }
 
@@ -2004,7 +2019,7 @@ impl App {
                 let mut face_done = false;
                 let mut next_pick = None;
                 match (&mut f.kind, hit, pick) {
-                    (FeatureKind::OffsetPlane { base, .. }, _, PickTarget::Face) => {
+                    (FeatureKind::OffsetPlane { base, .. } | FeatureKind::AnglePlane { base, .. }, _, PickTarget::Face) => {
                         if let Some((pl, _)) = face {
                             *base = pl;
                             changed = true;
@@ -4093,6 +4108,7 @@ fn tool_id(kind: &FeatureKind) -> &'static str {
         FeatureKind::Combine { .. } => "combine",
         FeatureKind::Remove { .. } => "remove",
         FeatureKind::OffsetPlane { .. } => "plane",
+        FeatureKind::AnglePlane { .. } => "angle_plane",
         FeatureKind::Shell { .. } => "shell",
     }
 }
@@ -4194,6 +4210,7 @@ impl App {
         let dist = match extent {
             fusion_core::doc::Extent::OneSide(d) | fusion_core::doc::Extent::TwoSides(d, _) => d.eval(params).ok()?,
             fusion_core::doc::Extent::Symmetric(d) => d.eval(params).ok()?.abs() / 2.0,
+            fusion_core::doc::Extent::All(_) => return None,
         };
         Some((base, sk.plane.normal(), dist))
     }
@@ -4350,6 +4367,7 @@ impl App {
                     fusion_core::doc::Extent::OneSide(_) => fusion_core::doc::Extent::OneSide(Expr::num(v)),
                     fusion_core::doc::Extent::Symmetric(_) => fusion_core::doc::Extent::Symmetric(Expr::num((v * 2.0).abs())),
                     fusion_core::doc::Extent::TwoSides(_, b) => fusion_core::doc::Extent::TwoSides(Expr::num(v), b.clone()),
+                    fusion_core::doc::Extent::All(both) => fusion_core::doc::Extent::All(*both),
                 };
                 if *extent != new {
                     *extent = new;
@@ -4378,6 +4396,7 @@ impl App {
         let mut fields: Vec<(&str, &'static str, &mut Expr)> = match &mut f.kind {
             FeatureKind::Extrude { extent: Extent::OneSide(e) | Extent::Symmetric(e), .. } => vec![("Расстояние", "мм", e)],
             FeatureKind::Extrude { extent: Extent::TwoSides(a, b), .. } => vec![("Вперёд", "мм", a), ("Назад", "мм", b)],
+            FeatureKind::Extrude { extent: Extent::All(_), taper, .. } => vec![("Уклон", "°", taper)],
             FeatureKind::Revolve { angle, .. } => vec![("Угол", "°", angle)],
             FeatureKind::Fillet { radius, .. } => vec![("Радиус", "мм", radius)],
             FeatureKind::Chamfer { dist, .. } => vec![("Расстояние", "мм", dist)],
@@ -4389,6 +4408,7 @@ impl App {
             FeatureKind::Shell { thickness, .. } => vec![("Толщина", "мм", thickness)],
             FeatureKind::Pipe { outer, wall, .. } => vec![("Размер", "мм", outer), ("Стенка", "мм", wall)],
             FeatureKind::OffsetPlane { offset, .. } => vec![("Расстояние", "мм", offset)],
+            FeatureKind::AnglePlane { angle, .. } => vec![("Угол", "°", angle)],
             FeatureKind::PressPull { distance, .. } => vec![("Расстояние", "мм", distance)],
             FeatureKind::Primitive { shape: Shape::Box { w, d, h }, .. } => vec![("Ширина", "мм", w), ("Глубина", "мм", d), ("Высота", "мм", h)],
             FeatureKind::Primitive { shape: Shape::Cylinder { r, h }, .. } => vec![("Радиус", "мм", r), ("Высота", "мм", h)],
@@ -4756,7 +4776,7 @@ mod lifecycle_tests {
         let r = sk.regions();
         let p = ProfileRef::of(&r[region_at(&r, [50.0, 35.0]).unwrap()]);
         let sid = app.doc.insert(FeatureKind::Sketch { plane: fusion_core::Plane::XY, sketch: sk });
-        app.doc.insert(FeatureKind::Extrude { sketch: sid, profiles: vec![p], extent: Extent::OneSide(Expr::num(30.0)), op: fusion_core::Op::NewBody, face: None });
+        app.doc.insert(FeatureKind::Extrude { sketch: sid, profiles: vec![p], extent: Extent::OneSide(Expr::num(30.0)), op: fusion_core::Op::NewBody, face: None, taper: Expr::num(0.0) });
         app.after_doc_change();
         let body = app.ev.model().bodies[0].clone();
         let all = app.straight_edges(&body);

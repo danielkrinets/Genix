@@ -102,3 +102,11 @@
 **Написано и покрыто тестами, но не осмотрено глазами:** группы вкладок; режим перемещения (Shift+клик, удержание, перетаскивание в папку); вращение карточки через 3 с; окно «Поделиться»; Team; билет-подписка; заставка первой загрузки; плашка «Открываем проект…»; открытие в слайсерах; серые пункты меню; версии файла; контекстные меню; поля значений над моделью; ползунок масштаба.
 
 **Не проверялось:** Finder и нативное меню macOS, iPad/iPhone, подпись Apple.
+
+## 0.00.27 — modeling batch 1 (checked 2026-11-03)
+
+New: extrude **taper** (wall draft angle, also symmetric/downwards), extent **through all** (forward / both ways), **mirror about an offset plane**, **Combine → Split** (a tool body cuts the target in two), **plane at angle** (construction plane, usable for sketches), **interference check** (Inspect → Пересечения, toast with overlapping pairs and volumes).
+Old files open unchanged: the new fields have serde defaults (`taper`, `offset`).
+Tests: core 103 + app 95 pass (`cargo test --workspace --offline`); 8 new core tests in `modeling_batch_tests` / `interference_tests` check frustum volumes, through-all hole volume, mirror position, split volumes, angle-plane normal, default-field loading.
+Live (QA copy `com.danielkrinets.genix.qa`, isolated settings): `crates/core/examples/modeling_demo.rs` writes a model with all of them; it opens without errors, tapered posts and the angled plane are visible, the Extrude panel shows the new "Уклон стенок" row.
+Not checked by eye: the new "Насквозь" options in the direction drop-down (the background window did not redraw the open combo box), the interference toast, the angle-plane tool picked with the mouse.

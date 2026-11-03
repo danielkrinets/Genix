@@ -51,7 +51,7 @@ impl Command {
         match kind {
             FeatureKind::Extrude { .. } | FeatureKind::Revolve { .. } | FeatureKind::Sweep { .. } | FeatureKind::Loft { .. } => PickTarget::Profiles,
             FeatureKind::Move { .. } | FeatureKind::Mirror { .. } | FeatureKind::Split { .. } | FeatureKind::Draft { .. } | FeatureKind::Pattern { .. } | FeatureKind::Remove { .. } | FeatureKind::Scale { .. } => PickTarget::Bodies,
-            FeatureKind::Hole { .. } | FeatureKind::OffsetPlane { .. } | FeatureKind::Shell { .. } | FeatureKind::PressPull { .. } | FeatureKind::PlaceOnPlane { .. } => PickTarget::Face,
+            FeatureKind::Hole { .. } | FeatureKind::OffsetPlane { .. } | FeatureKind::AnglePlane { .. } | FeatureKind::Shell { .. } | FeatureKind::PressPull { .. } | FeatureKind::PlaceOnPlane { .. } => PickTarget::Face,
             FeatureKind::Chamfer { .. } | FeatureKind::Fillet { .. } => PickTarget::Edges,
             FeatureKind::Pipe { .. } => PickTarget::Path,
             FeatureKind::Combine { .. } => PickTarget::CombineTarget,
@@ -123,7 +123,7 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
     let p = &params;
     let uid = cmd.uid;
     match &mut f.kind {
-        FeatureKind::Extrude { sketch: _, profiles, extent, op, face } => {
+        FeatureKind::Extrude { sketch: _, profiles, extent, op, face, taper } => {
             section(ui, tr("ПРОФИЛИ"));
             if face.is_some() {
                 ui.horizontal(|ui| {
@@ -142,8 +142,10 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                 Extent::OneSide(_) => 0,
                 Extent::Symmetric(_) => 1,
                 Extent::TwoSides(..) => 2,
+                Extent::All(false) => 3,
+                Extent::All(true) => 4,
             };
-            let names = [tr("В одну сторону"), tr("Симметрично"), tr("В две стороны")];
+            let names = [tr("В одну сторону"), tr("Симметрично"), tr("В две стороны"), tr("Насквозь, вперёд"), tr("Насквозь, в обе стороны")];
             changed |= row(ui, tr("Направление"), |ui| {
                 let mut c = false;
                 egui::ComboBox::from_id_salt("ext_kind").selected_text(names[kind]).show_ui(ui, |ui| {
@@ -155,11 +157,14 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
             });
             let cur = match extent {
                 Extent::OneSide(d) | Extent::Symmetric(d) | Extent::TwoSides(d, _) => d.clone(),
+                Extent::All(_) => Expr::num(10.0),
             };
             let new_kind = match (kind, &*extent) {
-                (0, Extent::OneSide(_)) | (1, Extent::Symmetric(_)) | (2, Extent::TwoSides(..)) => None,
+                (0, Extent::OneSide(_)) | (1, Extent::Symmetric(_)) | (2, Extent::TwoSides(..)) | (3, Extent::All(false)) | (4, Extent::All(true)) => None,
                 (0, _) => Some(Extent::OneSide(cur.clone())),
                 (1, _) => Some(Extent::Symmetric(cur.clone())),
+                (3, _) => Some(Extent::All(false)),
+                (4, _) => Some(Extent::All(true)),
                 _ => Some(Extent::TwoSides(cur.clone(), cur.clone())),
             };
             if let Some(k) = new_kind {
@@ -179,7 +184,11 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                     changed |= row(ui, tr("Вперёд"), |ui| expr_field(ui, ("ext", uid, 2), a, p, tr("мм")));
                     changed |= row(ui, tr("Назад"), |ui| expr_field(ui, ("ext", uid, 3), b, p, tr("мм")));
                 }
+                Extent::All(_) => {
+                    ui.label(RichText::new(tr("Проходит через всё тело, расстояние не нужно")).weak().small());
+                }
             }
+            changed |= row(ui, tr("Уклон стенок"), |ui| expr_field(ui, ("ext_taper", uid), taper, p, "°"));
             if op_combo(ui, "ext_op", op) {
                 changed = true;
                 cmd.auto_op = false;
@@ -263,7 +272,7 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
             }
             changed |= crate::widgets::checkbox(ui, copy, tr("Создать копию")).changed();
         }
-        FeatureKind::Mirror { bodies, normal, join } => {
+        FeatureKind::Mirror { bodies, normal, join, offset } => {
             bodies_ui(ui, bodies, body_name, &mut changed);
             section(ui, tr("ПЛОСКОСТЬ"));
             let pname = |a: Axis3| match a {
@@ -280,6 +289,7 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                 });
                 c
             });
+            changed |= row(ui, tr("Смещение плоскости"), |ui| expr_field(ui, ("mir_off", uid), offset, p, tr("мм")));
             changed |= crate::widgets::checkbox(ui, join, tr("Объединить с исходным телом")).changed();
         }
         FeatureKind::Split { bodies, axis, offset } => {
@@ -662,6 +672,12 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
             section(ui, tr("СМЕЩЕНИЕ"));
             changed |= row(ui, tr("Расстояние"), |ui| expr_field(ui, ("plane_off", uid), offset, p, "мм"));
         }
+        FeatureKind::AnglePlane { angle, .. } => {
+            section(ui, tr("ОСНОВА"));
+            ui.label(RichText::new(tr("Щёлкните грань тела или плоскость начала координат: она повернётся вокруг своей оси X")).weak());
+            section(ui, tr("УГОЛ"));
+            changed |= row(ui, tr("Угол"), |ui| expr_field(ui, ("plane_ang", uid), angle, p, "°"));
+        }
         FeatureKind::Shell { thickness, open, .. } => {
             section(ui, tr("ОТКРЫТАЯ ГРАНЬ"));
             changed |= crate::widgets::checkbox(ui, open, tr("Оставить грань открытой")).changed();
@@ -779,7 +795,7 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
     match kind {
         "extrude" => {
             let (sketch, profiles) = c.last_sketch.clone().unwrap_or((0, vec![]));
-            FeatureKind::Extrude { sketch, profiles, extent: Extent::OneSide(num(10.0)), op, face: None }
+            FeatureKind::Extrude { sketch, profiles, extent: Extent::OneSide(num(10.0)), op, face: None, taper: Expr::num(0.0) }
         }
         "revolve" => {
             let (sketch, profiles) = c.last_sketch.clone().unwrap_or((0, vec![]));
@@ -791,6 +807,7 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
         }
         "shell" => FeatureKind::Shell { plane: c.top_face.map(|f| f.0).unwrap_or(fusion_core::Plane::XY), thickness: num(2.0), open: true },
         "plane" => FeatureKind::OffsetPlane { base: fusion_core::Plane::XY, offset: num(10.0) },
+        "angle_plane" => FeatureKind::AnglePlane { base: fusion_core::Plane::XY, angle: num(45.0) },
         "loft" => FeatureKind::Loft { profiles: vec![], op },
         "pipe" => FeatureKind::Pipe { path: 0, outer: num(10.0), wall: num(1.5), op: Op::NewBody, shape: fusion_core::doc::PipeShape::Round, corner: num(0.0), bend: num(0.0) },
         "box" => FeatureKind::Primitive { shape: Shape::Box { w: num(20.0), d: num(20.0), h: num(20.0) }, at: zero(), op },
@@ -812,7 +829,7 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
         }
         "move" => FeatureKind::Move { bodies: selected.to_vec(), translate: zero(), rotate: zero(), copy: false },
         "scale" => FeatureKind::Scale { bodies: selected.to_vec(), factor: [num(2.0), num(1.0), num(1.0)], uniform: true },
-        "mirror" => FeatureKind::Mirror { bodies: selected.to_vec(), normal: Axis3::X, join: false },
+        "mirror" => FeatureKind::Mirror { bodies: selected.to_vec(), normal: Axis3::X, join: false, offset: Expr::num(0.0) },
         "split" => FeatureKind::Split { bodies: selected.to_vec(), axis: Axis3::Z, offset: num(10.0) },
         "draft" => FeatureKind::Draft { bodies: selected.to_vec(), axis: Axis3::Z, neutral: num(0.0), angle: num(5.0) },
         "thread" => FeatureKind::Thread { at: zero(), axis: Axis3::Z, dia: num(10.0), pitch: num(1.5), length: num(15.0), depth: num(0.8), op: Op::NewBody },

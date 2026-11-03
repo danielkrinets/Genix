@@ -40,6 +40,8 @@ pub enum Extent {
     Symmetric(Expr),
     /// В обе стороны на разные расстояния: (вперёд, назад).
     TwoSides(Expr, Expr),
+    /// Through the whole model; `true` goes both ways from the profile, `false` only forward.
+    All(bool),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,11 +170,21 @@ pub enum FeatureKind {
         op: Op,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         face: Option<FaceRef>,
+        /// Taper angle in degrees: positive narrows the body away from the profile plane.
+        #[serde(default = "zero_expr")]
+        taper: Expr,
     },
     Revolve { sketch: u64, profiles: Vec<ProfileRef>, axis: RevolveAxis, angle: Expr, op: Op },
     Primitive { shape: Shape, at: [Expr; 3], op: Op },
     Move { bodies: Vec<u64>, translate: [Expr; 3], rotate: [Expr; 3], copy: bool },
-    Mirror { bodies: Vec<u64>, normal: Axis3, join: bool },
+    /// Mirror about the plane perpendicular to `normal` that sits `offset` from the origin.
+    Mirror {
+        bodies: Vec<u64>,
+        normal: Axis3,
+        join: bool,
+        #[serde(default = "zero_expr")]
+        offset: Expr,
+    },
     /// Cuts each body by the plane perpendicular to `axis` at `offset`; the part on the far side becomes a new body.
     Split { bodies: Vec<u64>, axis: Axis3, offset: Expr },
     /// A closed mesh imported from a file (STL); the data lives inside the project so it opens anywhere.
@@ -212,6 +224,8 @@ pub enum FeatureKind {
     Fillet { body: u64, edges: Vec<EdgeRef>, radius: Expr },
     /// Вспомогательная плоскость на расстоянии от другой плоскости (вдоль её нормали).
     OffsetPlane { base: Plane, offset: Expr },
+    /// Construction plane turned about the X axis of `base` (through its origin) by `angle` degrees.
+    AnglePlane { base: Plane, angle: Expr },
     /// Поставить тело на плоскость: грань `face` (нормаль наружу, `seed` — точка на ней) ложится на плоскость `target`,
     /// тело оказывается по ту сторону плоскости, куда смотрит её нормаль. Положение вдоль плоскости сохраняется.
     /// Align as in Fusion: the body turns so that `face` lies on `target`. With `to` (a point picked on another body's face)
@@ -251,6 +265,7 @@ impl FeatureKind {
             FeatureKind::Chamfer { .. } => "Фаска",
             FeatureKind::Fillet { .. } => "Скругление",
             FeatureKind::OffsetPlane { .. } => "Смещённая плоскость",
+            FeatureKind::AnglePlane { .. } => "Плоскость под углом",
             FeatureKind::Shell { .. } => "Оболочка",
             FeatureKind::Move { .. } => "Перемещение",
             FeatureKind::Mirror { .. } => "Зеркало",
@@ -295,6 +310,23 @@ pub struct Model {
 }
 
 impl Model {
+    /// Interference check: every pair of bodies that share volume, with the volume of the overlap (mm³).
+    pub fn interferences(&self) -> Vec<(u64, u64, f64)> {
+        let mut out = Vec::new();
+        for (i, a) in self.bodies.iter().enumerate() {
+            for b in &self.bodies[i + 1..] {
+                if !a.solid.bounds_overlap(&b.solid) {
+                    continue;
+                }
+                let v = a.solid.boolean(&b.solid, BoolOp::Intersect).volume();
+                if v > 1e-6 {
+                    out.push((a.id, b.id, v));
+                }
+            }
+        }
+        out
+    }
+
     pub fn body(&self, id: u64) -> Option<&Body> {
         self.bodies.iter().find(|b| b.id == id)
     }
@@ -431,6 +463,12 @@ impl Document {
                 FeatureKind::OffsetPlane { base, offset } => {
                     let d = offset.eval(&self.params).ok()?;
                     Some((f.uid, f.name.clone(), Plane { origin: (base.o() + base.normal() * d).to_array(), ..*base }))
+                }
+                FeatureKind::AnglePlane { base, angle } => {
+                    let a = angle.eval(&self.params).ok()?.to_radians();
+                    let (c, s) = (a.cos(), a.sin());
+                    let y = (base.ya() * c + base.normal() * s).to_array();
+                    Some((f.uid, f.name.clone(), Plane { y, ..*base }))
                 }
                 _ => None,
             })
@@ -583,6 +621,52 @@ fn find_sketch(uid: u64, steps: &[StepResult], feats: &[Feature]) -> Result<Arc<
 }
 
 /// Объединить несколько кусков в одно тело-инструмент.
+/// How far a through-all feature must reach from `plane`: past the farthest point of any body.
+fn through_all(model: &Model, plane: &Plane) -> f64 {
+    let mut far = 1.0f64;
+    for b in &model.bodies {
+        if let Some((lo, hi)) = b.mesh().bounds() {
+            for c in 0..8 {
+                let corner = DVec3::new(if c & 1 == 0 { lo.x } else { hi.x }, if c & 2 == 0 { lo.y } else { hi.y }, if c & 4 == 0 { lo.z } else { hi.z });
+                far = far.max((corner - plane.o()).length());
+            }
+        }
+    }
+    far * 1.5 + 1.0
+}
+
+/// Extrusion from `z0` to `z1` along the plane normal. A taper leans the side walls away from the profile plane
+/// (positive narrows); a body on both sides of the plane gets the taper on each half.
+fn tapered_extrude_mesh(plane: &Plane, region: &Region, z0: f64, z1: f64, taper_deg: f64) -> Result<Mesh, String> {
+    let plain = |a: f64, b: f64| geom::extrude_region(plane, region, a, b).ok_or_else(|| "не удалось построить выдавливание".to_string());
+    if taper_deg.abs() < 1e-9 {
+        return plain(z0, z1);
+    }
+    if taper_deg.abs() >= 45.0 {
+        return Err("угол наклона должен быть меньше 45°".into());
+    }
+    let n = plane.normal();
+    let neutral = n.dot(plane.o());
+    let half = |a: f64, b: f64, pull: DVec3, neutral: f64| -> Result<Mesh, String> {
+        let drafted = geom::draft_mesh(&plain(a, b)?, pull, neutral, taper_deg);
+        Solid::from_mesh(&drafted).map_err(|_| "угол слишком велик для этого профиля".to_string())?;
+        Ok(drafted)
+    };
+    let (lo, hi) = (z0.min(z1), z0.max(z1));
+    let mut parts = Vec::new();
+    if hi > 1e-9 {
+        parts.push(half(lo.max(0.0), hi, n, neutral)?);
+    }
+    if lo < -1e-9 {
+        parts.push(half(lo, hi.min(0.0), -n, -neutral)?);
+    }
+    union_all(parts).map(|s| s.mesh.clone())
+}
+
+fn tapered_extrude(plane: &Plane, region: &Region, z0: f64, z1: f64, taper_deg: f64) -> Result<Solid, String> {
+    Solid::from_mesh(&tapered_extrude_mesh(plane, region, z0, z1, taper_deg)?)
+}
+
 fn union_all(parts: Vec<Mesh>) -> Result<Solid, String> {
     let solids = parts.iter().map(Solid::from_mesh).collect::<Result<Vec<_>, _>>()?;
     match solids.len() {
@@ -665,7 +749,7 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             let regions = s.regions();
             Ok((prev.clone(), Some(SketchResult { plane: *plane, sketch: s, regions, status })))
         }
-        FeatureKind::Extrude { face: Some(f), extent, .. } => {
+        FeatureKind::Extrude { face: Some(f), extent, taper, .. } => {
             // same rule as press-pull: a positive distance adds material, a negative one cuts; symmetric adds
             let (z0, z1, op) = match extent {
                 Extent::OneSide(d) => {
@@ -680,17 +764,23 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                     (-d / 2.0, d / 2.0, Op::Join)
                 }
                 Extent::TwoSides(..) => return Err("для грани задайте одно расстояние или симметрично".into()),
+                Extent::All(_) => (-through_all(prev, &f.plane), 0.01, Op::Cut),
             };
             let region = prev.bodies.iter().find_map(|b| geom::face_region(b.mesh(), &f.plane, DVec3::from(f.seed))).ok_or("грань не найдена: тело изменилось")?;
-            let tool = Solid::from_mesh(&geom::extrude_region(&f.plane, &region, z0, z1).ok_or("не удалось построить грань")?)?;
+            let tool = tapered_extrude(&f.plane, &region, z0, z1, taper.eval(p)?)?;
             let mut m = (**prev).clone();
             apply_op(&mut m, tool, op, id_base)?;
             Ok((Arc::new(m), None))
         }
-        FeatureKind::Extrude { sketch, profiles, extent, op, .. } => {
+        FeatureKind::Extrude { sketch, profiles, extent, op, taper, .. } => {
             let sk = find_sketch(*sketch, steps, feats)?;
             let regions = pick_regions(&sk, profiles)?;
+            let taper = taper.eval(p)?;
             let (z0, z1) = match extent {
+                Extent::All(both) => {
+                    let far = through_all(prev, &sk.plane);
+                    (if *both { -far } else { 0.0 }, far)
+                }
                 Extent::OneSide(d) => (0.0, d.eval(p)?),
                 Extent::Symmetric(d) => {
                     let d = d.eval(p)?.abs();
@@ -701,7 +791,7 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             if (z1 - z0).abs() < 1e-9 {
                 return Err("расстояние не может быть нулевым".into());
             }
-            let parts: Vec<Mesh> = regions.iter().filter_map(|r| geom::extrude_region(&sk.plane, r, z0, z1)).collect();
+            let parts = regions.iter().map(|r| tapered_extrude_mesh(&sk.plane, r, z0, z1, taper)).collect::<Result<Vec<_>, _>>()?;
             let tool = union_all(parts)?;
             let mut m = (**prev).clone();
             apply_op(&mut m, tool, *op, id_base)?;
@@ -768,11 +858,12 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             }
             Ok((Arc::new(m), None))
         }
-        FeatureKind::Mirror { bodies, normal, join } => {
+        FeatureKind::Mirror { bodies, normal, join, offset } => {
             let sel = bodies_by_id(prev, bodies)?;
             let n = normal.dir();
             let s = DVec3::ONE - 2.0 * n;
-            let mat = DMat4::from_scale(s);
+            let shift = n * offset.eval(p)?;
+            let mat = DMat4::from_translation(shift) * DMat4::from_scale(s) * DMat4::from_translation(-shift);
             let mirrored: Vec<(u64, Solid)> = sel.iter().map(|b| (b.id, b.solid.transformed(&mat))).collect();
             let mut m = (**prev).clone();
             for (k, (id, mesh)) in mirrored.into_iter().enumerate() {
@@ -918,6 +1009,25 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             let tl = bodies_by_id(prev, tools)?;
             // объединение и вычитание — одной пакетной операцией (на порядки быстрее, чем по одному)
             let acc = match op {
+                BoolOp::Split => {
+                    // the tool cuts the target in two: the part outside it stays, the part inside becomes a new body
+                    let solids: Vec<Solid> = tl.iter().map(|b| (*b.solid).clone()).collect();
+                    let tool = if solids.len() == 1 { solids.into_iter().next().unwrap() } else { Solid::union_all(&solids) };
+                    let inside = t.solid.boolean(&tool, BoolOp::Intersect);
+                    let outside = t.solid.boolean(&tool, BoolOp::Subtract);
+                    if inside.is_empty() || outside.is_empty() {
+                        return Err("инструмент не делит тело на две части".into());
+                    }
+                    let mut m = (**prev).clone();
+                    if !keep_tools {
+                        m.bodies.retain(|b| !tools.contains(&b.id));
+                    }
+                    if let Some(b) = m.bodies.iter_mut().find(|b| b.id == *target) {
+                        b.solid = Arc::new(outside);
+                    }
+                    m.new_body(id_base, inside);
+                    return Ok((Arc::new(m), None));
+                }
                 BoolOp::Union => {
                     let mut all: Vec<Solid> = vec![(*t.solid).clone()];
                     all.extend(tl.iter().map(|b| (*b.solid).clone()));
@@ -1267,6 +1377,13 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             offset.eval(p)?;
             Ok((prev.clone(), None))
         }
+        FeatureKind::AnglePlane { angle, .. } => {
+            let a = angle.eval(p)?;
+            if a.abs() >= 180.0 {
+                return Err("угол должен быть меньше 180°".into());
+            }
+            Ok((prev.clone(), None))
+        }
         FeatureKind::Remove { bodies } => {
             bodies_by_id(prev, bodies)?;
             let mut m = (**prev).clone();
@@ -1292,7 +1409,7 @@ mod tests {
             sketch: sk,
             profiles: vec![ProfileRef::at([1.0, 1.0])],
             extent: Extent::OneSide(Expr::num(10.0)),
-            op: Op::NewBody, face: None });
+            op: Op::NewBody, face: None, taper: Expr::num(0.0) });
         (d, sk)
     }
 
@@ -1334,7 +1451,7 @@ mod tests {
             sketch: sk,
             profiles: vec![ProfileRef::at([20.0, 12.5])],
             extent: Extent::OneSide(Expr::num(10.0)),
-            op: Op::Join, face: None });
+            op: Op::Join, face: None, taper: Expr::num(0.0) });
         d.insert(FeatureKind::Primitive {
             shape: Shape::Box { w: Expr::num(5.0), d: Expr::num(5.0), h: Expr::num(20.0) },
             at: [Expr::num(-1.0), Expr::num(-1.0), Expr::num(-5.0)],
@@ -1418,7 +1535,7 @@ mod tests {
             op: Op::NewBody,
         });
         let body = b * 1000;
-        d.insert(FeatureKind::Mirror { bodies: vec![body], normal: Axis3::X, join: false });
+        d.insert(FeatureKind::Mirror { bodies: vec![body], normal: Axis3::X, join: false, offset: Expr::num(0.0) });
         d.insert(FeatureKind::Pattern {
             bodies: vec![body],
             kind: PatternKind::Rect { nx: Expr::num(3.0), dx: Expr::num(20.0), ny: Expr::num(1.0), dy: Expr::num(0.0) },
@@ -1484,7 +1601,7 @@ mod tests {
         let r = s.regions();
         let pref = ProfileRef::of(&r[0]);
         let sk = d.insert(FeatureKind::Sketch { plane: Plane::XY, sketch: s });
-        d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![pref], extent: Extent::OneSide(Expr::num(5.0)), op: Op::NewBody, face: None });
+        d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![pref], extent: Extent::OneSide(Expr::num(5.0)), op: Op::NewBody, face: None, taper: Expr::num(0.0) });
         d.params.set("x", "100");
         let mut ev = Evaluator::default();
         ev.evaluate(&d);
@@ -1648,7 +1765,7 @@ mod new_ops {
     fn extrude_can_take_a_body_face_instead_of_a_sketch() {
         let (mut d, _) = plate();
         let top = Plane { origin: [0.0, 0.0, 10.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
-        d.insert(FeatureKind::Extrude { sketch: 0, profiles: vec![], extent: Extent::OneSide(Expr::num(5.0)), op: Op::Join, face: Some(FaceRef { plane: top, seed: [20.0, 15.0, 10.0] }) });
+        d.insert(FeatureKind::Extrude { sketch: 0, profiles: vec![], extent: Extent::OneSide(Expr::num(5.0)), op: Op::Join, face: Some(FaceRef { plane: top, seed: [20.0, 15.0, 10.0] }), taper: Expr::num(0.0) });
         let v = run(&d).model().bodies[0].solid.volume();
         assert!((v - (12000.0 + 40.0 * 30.0 * 5.0)).abs() < 1.0, "a 5 mm pull on the top face adds 6000 mm3, got {v}");
     }
@@ -1850,7 +1967,7 @@ mod perf {
         let pref = ProfileRef::of(outer);
         let t = std::time::Instant::now();
         let sk = d.insert(FeatureKind::Sketch { plane: Plane::XY, sketch: s });
-        d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![pref], extent: Extent::OneSide(Expr::num(5.0)), op: Op::NewBody, face: None });
+        d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![pref], extent: Extent::OneSide(Expr::num(5.0)), op: Op::NewBody, face: None, taper: Expr::num(0.0) });
         let b = d.insert(FeatureKind::Primitive {
             shape: Shape::Cylinder { r: Expr::num(3.0), h: Expr::num(10.0) },
             at: [Expr::num(20.0), Expr::num(20.0), Expr::num(5.0)],
@@ -2078,5 +2195,192 @@ mod import_tests {
         let mut ev = Evaluator::default();
         ev.evaluate(&d);
         assert!(ev.error(uid).is_some_and(|e| e.contains("не замкнута")), "{:?}", ev.error(uid));
+    }
+}
+
+#[cfg(test)]
+mod modeling_batch_tests {
+    use super::*;
+
+    fn n(v: f64) -> Expr {
+        Expr::num(v)
+    }
+
+    fn run(d: &Document) -> Evaluator {
+        let mut ev = Evaluator::default();
+        ev.evaluate(d);
+        ev
+    }
+
+    fn square_sketch(d: &mut Document, side: f64) -> u64 {
+        let mut s = Sketch::default();
+        s.add_rect([0.0, 0.0], [side, side]);
+        d.insert(FeatureKind::Sketch { plane: Plane::XY, sketch: s })
+    }
+
+    fn extrude(sk: u64, extent: Extent, op: Op, taper: f64) -> FeatureKind {
+        FeatureKind::Extrude { sketch: sk, profiles: vec![ProfileRef::at([1.0, 1.0])], extent, op, face: None, taper: n(taper) }
+    }
+
+    #[test]
+    fn taper_extrude_narrows_the_walls_like_a_frustum() {
+        let mut d = Document::default();
+        let sk = square_sketch(&mut d, 20.0);
+        let uid = d.insert(extrude(sk, Extent::OneSide(n(10.0)), Op::NewBody, 5.0));
+        let ev = run(&d);
+        assert!(ev.error(uid).is_none(), "{:?}", ev.error(uid));
+        let shrink = 10.0 * 5f64.to_radians().tan();
+        let w1 = 20.0 - 2.0 * shrink;
+        let expect = 10.0 / 3.0 * (400.0 + 20.0 * w1 + w1 * w1);
+        let v = ev.model().bodies[0].mesh().volume();
+        assert!((v - expect).abs() < 1e-3, "{v} vs {expect}");
+        // a negative taper widens it, zero keeps the plain prism
+        let mut d2 = Document::default();
+        let sk2 = square_sketch(&mut d2, 20.0);
+        d2.insert(extrude(sk2, Extent::OneSide(n(10.0)), Op::NewBody, -5.0));
+        assert!(run(&d2).model().bodies[0].mesh().volume() > 4000.0);
+        let mut d3 = Document::default();
+        let sk3 = square_sketch(&mut d3, 20.0);
+        d3.insert(extrude(sk3, Extent::OneSide(n(10.0)), Op::NewBody, 0.0));
+        assert!((run(&d3).model().bodies[0].mesh().volume() - 4000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn taper_works_downwards_symmetrically_and_rejects_big_angles() {
+        let mut d = Document::default();
+        let sk = square_sketch(&mut d, 20.0);
+        let down = d.insert(extrude(sk, Extent::OneSide(n(-10.0)), Op::NewBody, 5.0));
+        let ev = run(&d);
+        assert!(ev.error(down).is_none(), "{:?}", ev.error(down));
+        let shrink = 10.0 * 5f64.to_radians().tan();
+        let w1 = 20.0 - 2.0 * shrink;
+        let expect = 10.0 / 3.0 * (400.0 + 20.0 * w1 + w1 * w1);
+        assert!((ev.model().bodies[0].mesh().volume() - expect).abs() < 1e-3);
+        let mut d2 = Document::default();
+        let sk2 = square_sketch(&mut d2, 20.0);
+        let sym = d2.insert(extrude(sk2, Extent::Symmetric(n(10.0)), Op::NewBody, 5.0));
+        let ev2 = run(&d2);
+        assert!(ev2.error(sym).is_none(), "{:?}", ev2.error(sym));
+        let half = 5.0 / 3.0 * (400.0 + 20.0 * (20.0 - 2.0 * 5.0 * 5f64.to_radians().tan()) + (20.0 - 2.0 * 5.0 * 5f64.to_radians().tan()).powi(2));
+        assert!((ev2.model().bodies[0].mesh().volume() - 2.0 * half).abs() < 1e-2);
+        let mut d3 = Document::default();
+        let sk3 = square_sketch(&mut d3, 20.0);
+        let bad = d3.insert(extrude(sk3, Extent::OneSide(n(10.0)), Op::NewBody, 50.0));
+        assert!(run(&d3).error(bad).is_some());
+    }
+
+    #[test]
+    fn through_all_cuts_the_whole_body_in_either_direction() {
+        let mut d = Document::default();
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(40.0), d: n(40.0), h: n(30.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        let mut s = Sketch::default();
+        s.add_circle([20.0, 20.0], 5.0);
+        let sk = d.insert(FeatureKind::Sketch { plane: Plane { origin: [0.0, 0.0, 30.0], ..Plane::XY }, sketch: s });
+        // cutting from the top face downwards needs the reverse; `All(true)` reaches both ways and never misses
+        let uid = d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![ProfileRef::at([20.0, 20.0])], extent: Extent::All(true), op: Op::Cut, face: None, taper: n(0.0) });
+        let ev = run(&d);
+        assert!(ev.error(uid).is_none(), "{:?}", ev.error(uid));
+        let v = ev.model().bodies[0].mesh().volume();
+        let hole = std::f64::consts::PI * 25.0 * 30.0;
+        assert!((v - (48000.0 - hole)).abs() < hole * 0.02, "{v}");
+        // one-way, forward from a sketch on the bottom face goes through the full height too
+        let mut d2 = Document::default();
+        d2.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(40.0), d: n(40.0), h: n(30.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        let mut s2 = Sketch::default();
+        s2.add_circle([20.0, 20.0], 5.0);
+        let sk2 = d2.insert(FeatureKind::Sketch { plane: Plane::XY, sketch: s2 });
+        let uid2 = d2.insert(FeatureKind::Extrude { sketch: sk2, profiles: vec![ProfileRef::at([20.0, 20.0])], extent: Extent::All(false), op: Op::Cut, face: None, taper: n(0.0) });
+        let ev2 = run(&d2);
+        assert!(ev2.error(uid2).is_none());
+        assert!((ev2.model().bodies[0].mesh().volume() - (48000.0 - hole)).abs() < hole * 0.02);
+    }
+
+    #[test]
+    fn mirror_about_an_offset_plane_lands_on_the_far_side() {
+        let mut d = Document::default();
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(10.0), d: n(10.0), h: n(10.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        let id = run(&d).model().bodies[0].id;
+        d.insert(FeatureKind::Mirror { bodies: vec![id], normal: Axis3::X, join: false, offset: n(20.0) });
+        let ev = run(&d);
+        assert_eq!(ev.model().bodies.len(), 2);
+        let (lo, hi) = ev.model().bodies[1].mesh().bounds().unwrap();
+        assert!((lo.x - 30.0).abs() < 1e-9 && (hi.x - 40.0).abs() < 1e-9, "{lo:?} {hi:?}");
+        assert!((ev.model().bodies[1].mesh().volume() - 1000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn combine_split_cuts_a_body_with_another_body() {
+        let mut d = Document::default();
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(20.0), d: n(20.0), h: n(20.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(10.0), d: n(30.0), h: n(30.0) }, at: [n(5.0), n(-5.0), n(-5.0)], op: Op::NewBody });
+        let ids: Vec<u64> = run(&d).model().bodies.iter().map(|b| b.id).collect();
+        let uid = d.insert(FeatureKind::Combine { target: ids[0], tools: vec![ids[1]], op: BoolOp::Split, keep_tools: false });
+        let ev = run(&d);
+        assert!(ev.error(uid).is_none(), "{:?}", ev.error(uid));
+        assert_eq!(ev.model().bodies.len(), 2, "tool is consumed, the target splits in two");
+        let total: f64 = ev.model().bodies.iter().map(|b| b.mesh().volume()).sum();
+        assert!((total - 8000.0).abs() < 1e-6, "{total}");
+        let mut vols: Vec<f64> = ev.model().bodies.iter().map(|b| b.mesh().volume()).collect();
+        vols.sort_by(f64::total_cmp);
+        assert!((vols[0] - 4000.0).abs() < 1e-6 && (vols[1] - 4000.0).abs() < 1e-6, "{vols:?}");
+        // a tool that misses the body does not split it
+        let mut d2 = Document::default();
+        d2.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(10.0), d: n(10.0), h: n(10.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        d2.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(5.0), d: n(5.0), h: n(5.0) }, at: [n(50.0), n(0.0), n(0.0)], op: Op::NewBody });
+        let ids2: Vec<u64> = run(&d2).model().bodies.iter().map(|b| b.id).collect();
+        let bad = d2.insert(FeatureKind::Combine { target: ids2[0], tools: vec![ids2[1]], op: BoolOp::Split, keep_tools: true });
+        assert!(run(&d2).error(bad).is_some());
+    }
+
+    #[test]
+    fn angle_plane_turns_about_the_base_x_axis_and_hosts_a_sketch() {
+        let mut d = Document::default();
+        let uid = d.insert(FeatureKind::AnglePlane { base: Plane::XY, angle: n(90.0) });
+        let ev = run(&d);
+        assert!(ev.error(uid).is_none());
+        let planes = d.offset_planes();
+        assert_eq!(planes.len(), 1);
+        let pl = planes[0].2;
+        // XY turned 90 degrees about X becomes the XZ-like wall: its normal lies along -Y
+        assert!((pl.normal().dot(DVec3::NEG_Y) - 1.0).abs() < 1e-9 || (pl.normal().dot(DVec3::Y) - 1.0).abs() < 1e-9, "{:?}", pl.normal());
+        let bad = d.insert(FeatureKind::AnglePlane { base: Plane::XY, angle: n(200.0) });
+        assert!(run(&d).error(bad).is_some());
+    }
+
+    #[test]
+    fn old_files_without_the_new_fields_still_open() {
+        let mut d = Document::default();
+        let sk = square_sketch(&mut d, 10.0);
+        d.insert(extrude(sk, Extent::OneSide(n(5.0)), Op::NewBody, 0.0));
+        d.insert(FeatureKind::Mirror { bodies: vec![], normal: Axis3::X, join: false, offset: n(0.0) });
+        let text = d.to_json();
+        let stripped = text.replace(r#""taper""#, r#""taper_unused""#).replace(r#""offset""#, r#""offset_unused""#);
+        let back = Document::from_json(&stripped);
+        assert!(back.is_ok(), "{:?}", back.err());
+    }
+}
+
+#[cfg(test)]
+mod interference_tests {
+    use super::*;
+
+    #[test]
+    fn overlapping_bodies_are_reported_with_their_shared_volume() {
+        let n = Expr::num;
+        let mut d = Document::default();
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(10.0), d: n(10.0), h: n(10.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(10.0), d: n(10.0), h: n(10.0) }, at: [n(5.0), n(0.0), n(0.0)], op: Op::NewBody });
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(10.0), d: n(10.0), h: n(10.0) }, at: [n(50.0), n(0.0), n(0.0)], op: Op::NewBody });
+        let mut ev = Evaluator::default();
+        ev.evaluate(&d);
+        let hits = ev.model().interferences();
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert!((hits[0].2 - 500.0).abs() < 1e-6);
+        // bodies that only touch along a face do not interfere
+        let mut d2 = Document::default();
+        d2.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(10.0), d: n(10.0), h: n(10.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        d2.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(10.0), d: n(10.0), h: n(10.0) }, at: [n(10.0), n(0.0), n(0.0)], op: Op::NewBody });
+        ev.evaluate(&d2);
+        assert!(ev.model().interferences().is_empty());
     }
 }

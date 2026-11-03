@@ -48,9 +48,15 @@ pub const MODIFY: &[Item] = &[
     it("remove", "✖", "Удалить", "Del", "Удалить тела"),
 ];
 
-pub const REFERENCE: &[Item] = &[it("plane", "▱", "Смещённая плоскость", "", "Плоскость на расстоянии от грани или плоскости")];
+pub const REFERENCE: &[Item] = &[
+    it("plane", "▱", "Смещённая плоскость", "", "Плоскость на расстоянии от грани или плоскости"),
+    it("angle_plane", "◺", "Плоскость под углом", "", "Плоскость, повёрнутая на угол вокруг оси X другой плоскости"),
+];
 
-pub const INSPECT: &[Item] = &[it("measure", "↔", "Измерить", "", "Расстояние между двумя точками тела")];
+pub const INSPECT: &[Item] = &[
+    it("measure", "↔", "Измерить", "", "Расстояние между двумя точками тела"),
+    it("interference", "⧉", "Пересечения", "", "Найти тела, которые занимают общий объём"),
+];
 
 const QUICK_CREATE: &[&str] = &["sketch", "extrude", "revolve", "hole"];
 const QUICK_MODIFY: &[&str] = &["move", "place", "fillet", "chamfer"];
