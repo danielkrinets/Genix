@@ -173,6 +173,8 @@ pub enum FeatureKind {
     Primitive { shape: Shape, at: [Expr; 3], op: Op },
     Move { bodies: Vec<u64>, translate: [Expr; 3], rotate: [Expr; 3], copy: bool },
     Mirror { bodies: Vec<u64>, normal: Axis3, join: bool },
+    /// Cuts each body by the plane perpendicular to `axis` at `offset`; the part on the far side becomes a new body.
+    Split { bodies: Vec<u64>, axis: Axis3, offset: Expr },
     Pattern { bodies: Vec<u64>, kind: PatternKind },
     Combine { target: u64, tools: Vec<u64>, op: BoolOp, keep_tools: bool },
     Remove { bodies: Vec<u64> },
@@ -246,6 +248,7 @@ impl FeatureKind {
             FeatureKind::Shell { .. } => "Оболочка",
             FeatureKind::Move { .. } => "Перемещение",
             FeatureKind::Mirror { .. } => "Зеркало",
+            FeatureKind::Split { .. } => "Разрезать",
             FeatureKind::Pattern { .. } => "Массив",
             FeatureKind::Combine { .. } => "Комбинирование",
             FeatureKind::Remove { .. } => "Удаление",
@@ -774,6 +777,39 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             }
             Ok((Arc::new(m), None))
         }
+        FeatureKind::Split { bodies, axis, offset } => {
+            let sel = bodies_by_id(prev, bodies)?;
+            let at = offset.eval(p)?;
+            let n = axis.dir();
+            let mut m = (**prev).clone();
+            let mut k = 0u64;
+            for b in sel {
+                let (lo, hi) = b.mesh().bounds().ok_or("тело пустое")?;
+                let (l, h) = (lo[*axis as usize], hi[*axis as usize]);
+                if at <= l + 1e-6 || at >= h - 1e-6 {
+                    return Err("плоскость не пересекает тело".into());
+                }
+                let pad = (hi - lo).max_element() * 2.0 + 1.0;
+                let far_lo = lo - DVec3::splat(pad);
+                let far_hi = hi + DVec3::splat(pad);
+                let cut = |upper: bool| -> Result<Solid, String> {
+                    let (mut a, mut z) = (far_lo, far_hi);
+                    if upper {
+                        a = a * (DVec3::ONE - n) + n * at;
+                    } else {
+                        z = z * (DVec3::ONE - n) + n * at;
+                    }
+                    Solid::from_mesh(&geom::box_mesh(a, z))
+                };
+                let upper = b.solid.boolean(&cut(true)?, BoolOp::Intersect);
+                let lower = b.solid.boolean(&cut(false)?, BoolOp::Intersect);
+                let i = m.bodies.iter().position(|x| x.id == b.id).unwrap();
+                m.bodies[i].solid = Arc::new(lower);
+                m.new_body(id_base + k, upper);
+                k += 1;
+            }
+            Ok((Arc::new(m), None))
+        }
         FeatureKind::Pattern { bodies, kind } => {
             let sel = bodies_by_id(prev, bodies)?;
             let mut mats = Vec::new();
@@ -1271,6 +1307,25 @@ mod tests {
         ev.evaluate(&d);
         assert!(t.elapsed().as_secs_f64() < 2.0, "the guard answers at once");
         assert!(ev.error(uid).is_some_and(|e| e.contains("слишком много рёбер")), "{:?}", ev.error(uid));
+    }
+
+    #[test]
+    fn split_cuts_a_box_into_two_bodies_with_the_same_total_volume() {
+        let mut d = Document::default();
+        let n = Expr::num;
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(10.0), d: n(10.0), h: n(10.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        let mut ev = Evaluator::default();
+        ev.evaluate(&d);
+        let id = ev.model().bodies[0].id;
+        let uid = d.insert(FeatureKind::Split { bodies: vec![id], axis: Axis3::Z, offset: n(4.0) });
+        ev.evaluate(&d);
+        assert!(ev.error(uid).is_none(), "{:?}", ev.error(uid));
+        let vols: Vec<f64> = ev.model().bodies.iter().map(|b| b.mesh().volume().abs()).collect();
+        assert_eq!(vols.len(), 2);
+        assert!((vols[0] - 400.0).abs() < 1.0 && (vols[1] - 600.0).abs() < 1.0, "{vols:?}");
+        let off = d.insert(FeatureKind::Split { bodies: vec![id], axis: Axis3::Z, offset: n(50.0) });
+        ev.evaluate(&d);
+        assert!(ev.error(off).is_some());
     }
 
     #[test]

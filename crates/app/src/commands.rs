@@ -50,7 +50,7 @@ impl Command {
     pub fn pick_for(kind: &FeatureKind) -> PickTarget {
         match kind {
             FeatureKind::Extrude { .. } | FeatureKind::Revolve { .. } | FeatureKind::Sweep { .. } | FeatureKind::Loft { .. } => PickTarget::Profiles,
-            FeatureKind::Move { .. } | FeatureKind::Mirror { .. } | FeatureKind::Pattern { .. } | FeatureKind::Remove { .. } | FeatureKind::Scale { .. } => PickTarget::Bodies,
+            FeatureKind::Move { .. } | FeatureKind::Mirror { .. } | FeatureKind::Split { .. } | FeatureKind::Pattern { .. } | FeatureKind::Remove { .. } | FeatureKind::Scale { .. } => PickTarget::Bodies,
             FeatureKind::Hole { .. } | FeatureKind::OffsetPlane { .. } | FeatureKind::Shell { .. } | FeatureKind::PressPull { .. } | FeatureKind::PlaceOnPlane { .. } => PickTarget::Face,
             FeatureKind::Chamfer { .. } | FeatureKind::Fillet { .. } => PickTarget::Edges,
             FeatureKind::Pipe { .. } => PickTarget::Path,
@@ -281,6 +281,20 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                 c
             });
             changed |= crate::widgets::checkbox(ui, join, tr("Объединить с исходным телом")).changed();
+        }
+        FeatureKind::Split { bodies, axis, offset } => {
+            bodies_ui(ui, bodies, body_name, &mut changed);
+            section(ui, tr("ПЛОСКОСТЬ РАЗРЕЗА"));
+            changed |= row(ui, tr("Перпендикулярно оси"), |ui| {
+                let mut c = false;
+                egui::ComboBox::from_id_salt("split_axis").selected_text(axis.label()).show_ui(ui, |ui| {
+                    for a in [Axis3::X, Axis3::Y, Axis3::Z] {
+                        c |= ui.selectable_value(axis, a, a.label()).changed();
+                    }
+                });
+                c
+            });
+            changed |= row(ui, tr("Положение"), |ui| expr_field(ui, ("split_at", uid), offset, p, tr("мм")));
         }
         FeatureKind::Pattern { bodies, kind } => {
             bodies_ui(ui, bodies, body_name, &mut changed);
@@ -703,7 +717,7 @@ pub fn awaiting_pick(kind: &FeatureKind) -> bool {
         FeatureKind::Loft { profiles, .. } => profiles.len() < 2,
         FeatureKind::Chamfer { edges, .. } | FeatureKind::Fillet { edges, .. } => edges.is_empty(),
         FeatureKind::PlaceOnPlane { body, .. } => *body == 0,
-        FeatureKind::Move { bodies, .. } | FeatureKind::Mirror { bodies, .. } | FeatureKind::Pattern { bodies, .. } | FeatureKind::Scale { bodies, .. } | FeatureKind::Remove { bodies } => bodies.is_empty(),
+        FeatureKind::Move { bodies, .. } | FeatureKind::Mirror { bodies, .. } | FeatureKind::Split { bodies, .. } | FeatureKind::Pattern { bodies, .. } | FeatureKind::Scale { bodies, .. } | FeatureKind::Remove { bodies } => bodies.is_empty(),
         FeatureKind::Combine { target, tools, .. } => *target == 0 || tools.is_empty(),
         _ => false,
     }
@@ -760,6 +774,7 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
         "move" => FeatureKind::Move { bodies: selected.to_vec(), translate: zero(), rotate: zero(), copy: false },
         "scale" => FeatureKind::Scale { bodies: selected.to_vec(), factor: [num(2.0), num(1.0), num(1.0)], uniform: true },
         "mirror" => FeatureKind::Mirror { bodies: selected.to_vec(), normal: Axis3::X, join: false },
+        "split" => FeatureKind::Split { bodies: selected.to_vec(), axis: Axis3::Z, offset: num(10.0) },
         "pattern" => FeatureKind::Pattern { bodies: selected.to_vec(), kind: PatternKind::Rect { nx: num(3.0), dx: num(30.0), ny: num(1.0), dy: num(30.0) } },
         "chamfer" => FeatureKind::Chamfer { body: selected.first().copied().unwrap_or(0), edges: vec![], dist: num(1.0) },
         "fillet" => FeatureKind::Fillet { body: selected.first().copied().unwrap_or(0), edges: vec![], radius: num(2.0) },

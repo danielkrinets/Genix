@@ -1569,7 +1569,7 @@ impl App {
             self.toast(tr("Сначала создайте чертёж (кнопка «Новый чертёж»)"), true, now);
             return;
         }
-        if matches!(kind, "hole" | "press_pull" | "place" | "fillet" | "chamfer" | "scale" | "move" | "mirror" | "pattern" | "combine" | "remove") && model.bodies.is_empty() {
+        if matches!(kind, "hole" | "press_pull" | "place" | "fillet" | "chamfer" | "scale" | "move" | "mirror" | "split" | "pattern" | "combine" | "remove") && model.bodies.is_empty() {
             self.toast(tr("Сначала создайте тело"), true, now);
             return;
         }
@@ -2126,7 +2126,7 @@ impl App {
                         }
                         changed = true;
                     }
-                    (FeatureKind::Move { bodies, .. } | FeatureKind::Mirror { bodies, .. } | FeatureKind::Pattern { bodies, .. } | FeatureKind::Remove { bodies } | FeatureKind::Scale { bodies, .. }, Some(Hit::Body { slot, .. }), _) => {
+                    (FeatureKind::Move { bodies, .. } | FeatureKind::Mirror { bodies, .. } | FeatureKind::Split { bodies, .. } | FeatureKind::Pattern { bodies, .. } | FeatureKind::Remove { bodies } | FeatureKind::Scale { bodies, .. }, Some(Hit::Body { slot, .. }), _) => {
                         let id = model.bodies[slot].id;
                         if let Some(i) = bodies.iter().position(|x| *x == id) {
                             bodies.remove(i);
@@ -3078,7 +3078,7 @@ impl App {
         };
         let cmd_bodies: Vec<u64> = match &self.mode {
             Mode::Command(c) => match self.doc.feature(c.uid).map(|f| &f.kind) {
-                Some(FeatureKind::Move { bodies, .. } | FeatureKind::Mirror { bodies, .. } | FeatureKind::Pattern { bodies, .. } | FeatureKind::Remove { bodies }) => bodies.clone(),
+                Some(FeatureKind::Move { bodies, .. } | FeatureKind::Mirror { bodies, .. } | FeatureKind::Split { bodies, .. } | FeatureKind::Pattern { bodies, .. } | FeatureKind::Remove { bodies }) => bodies.clone(),
                 Some(FeatureKind::Combine { target, tools, .. }) => std::iter::once(*target).chain(tools.iter().copied()).collect(),
                 _ => vec![],
             },
@@ -4038,6 +4038,7 @@ fn tool_id(kind: &FeatureKind) -> &'static str {
         FeatureKind::Coil { .. } => "coil",
         FeatureKind::Pipe { .. } => "pipe",
         FeatureKind::Mirror { .. } => "mirror",
+        FeatureKind::Split { .. } => "split",
         FeatureKind::Pattern { .. } => "pattern",
         FeatureKind::Move { .. } => "move",
         FeatureKind::Scale { .. } => "scale",
