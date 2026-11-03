@@ -1080,4 +1080,11 @@ pub const EN: &[(&str, &str)] = &[
     ("Первое расстояние откладывается по первой грани ребра; «Поменять» переносит его на вторую", "The first distance goes along the edge's first face; «Swap» moves it to the second"),
     ("второе расстояние", "second distance"),
     ("угол фаски слишком велик или мал для этого ребра", "the chamfer angle is too large or too small for this edge"),
+    ("Между гранями", "Between faces"),
+    ("Угол в средней точке между двумя другими", "The angle at the middle point between the other two"),
+    ("Щёлкните три точки: начало, вершину угла, конец ({} из 3)", "Click three points: start, the vertex, end ({} of 3)"),
+    ("Площадь выбранной грани", "Area of the chosen face"),
+    ("Щёлкните грань тела", "Click a face of a body"),
+    ("Угол между гранями: 90° у прямого угла коробки, 180° у граней в одной плоскости", "Angle between faces: 90° at a box corner, 180° for faces in one plane"),
+    ("Щёлкните две грани ({} из 2)", "Click two faces ({} of 2)"),
 ];

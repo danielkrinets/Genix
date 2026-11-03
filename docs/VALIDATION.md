@@ -184,3 +184,8 @@ Shell: Shift-click adds further open faces (click again removes), «Только
 
 Chamfer panel: «Равные / Два расстояния / Угол», «Расстояние 2» or the angle, «Поменять грани местами». `Chamfer.second` + `flip` (old files: equal chamfer); `EdgeOp::Chamfer2`, `ChamferAngle`, `ChamferAngleFlipped` work for straight and round edges.
 Test (core 131): on a 40 mm cube edge: 4 x 4 removes 320 mm3, 4 x 10 removes 800, flipping keeps the volume, 4 at 45 deg = 4 x 4, 4 at 60 deg gives the leg 4*tan60 (volume matches), 95 deg is refused with a message, old JSON without the new fields loads. Not checked by eye in the window; corners where several asymmetric chamfers meet use the same joins as equal chamfers and were not tested.
+
+## 0.00.41 — measure angles and areas (checked 2026-11-03)
+
+Inspect → «Измерить» now has four kinds: «Расстояние» (as before), «Угол» (three points: start, vertex, end), «Площадь» (click a flat face: sum of its triangles) and «Между гранями» (two flat faces: 90° at a box corner, 180° for faces in one plane).
+Test (core 132): box 40x30x20: top face 1200, side 600, whole surface 2*(1200+800+600) exactly; angles 90/45/180 from three points; faces 90/180/135 from their normals. Not checked by eye in the window.

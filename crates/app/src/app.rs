@@ -272,6 +272,10 @@ pub struct App {
     align_saved: Option<(fusion_core::Plane, Option<[f64; 3]>)>,
     /// The pointer is over a floating card (value fields, placement card): the model underneath must not react to it.
     over_overlay: bool,
+    /// Measure mode: 0 distance, 1 angle of three points, 2 area of a face, 3 angle between two faces.
+    measure_kind: usize,
+    /// Faces clicked in the measure modes: (plane with outward normal, area in mm²).
+    measure_faces: Vec<(Plane, f64)>,
     confirm: Option<Confirm>,
     allow_close: bool,
     need_fit: bool,
@@ -498,6 +502,8 @@ impl App {
             zoom_cursor: None,
             align_saved: None,
             over_overlay: false,
+            measure_kind: 0,
+            measure_faces: Vec::new(),
             confirm: None,
             allow_close: false,
             need_fit: false,
@@ -1948,6 +1954,19 @@ impl App {
                     }
                 }
             },
+            Mode::Measure(_) if self.measure_kind >= 2 => {
+                if let Some(Hit::Body { slot, tri, .. }) = hit {
+                    // a face: its plane (outward normal) and the total area of its triangles
+                    if let Some((plane, tris)) = self.face_plane(&model, slot, tri) {
+                        let area = model.bodies[slot].mesh().triangles_area(&tris);
+                        let keep = if self.measure_kind == 3 { 2 } else { 1 };
+                        if self.measure_faces.len() >= keep {
+                            self.measure_faces.clear();
+                        }
+                        self.measure_faces.push((plane, area));
+                    }
+                }
+            }
             Mode::Measure(pts) => {
                 if let Some(Hit::Body { slot, t, .. }) = hit {
                     let (o, d) = self.last_ray;
@@ -1956,7 +1975,7 @@ impl App {
                     if let Some(v) = model.bodies[slot].mesh().vertices.iter().map(|v| DVec3::from(*v)).filter(|v| v.distance(p) < snap).min_by(|a, b| a.distance(p).total_cmp(&b.distance(p))) {
                         p = v;
                     }
-                    if pts.len() >= 2 {
+                    if pts.len() >= if self.measure_kind == 1 { 3 } else { 2 } {
                         pts.clear();
                     }
                     pts.push(p);
@@ -3325,7 +3344,12 @@ impl App {
                     ov.lines_top.push(render::line(*p - d * r, *p + d * r, col, 2.5));
                 }
             }
-            if pts.len() == 2 {
+            if self.measure_kind == 1 {
+                // an angle: the two legs from the vertex
+                for w in pts.windows(2) {
+                    ov.lines_top.push(render::line(w[0], w[1], col, 2.5));
+                }
+            } else if pts.len() == 2 {
                 ov.lines_top.push(render::line(pts[0], pts[1], col, 2.5));
             } else if let (1, Some(Hit::Body { t, .. })) = (pts.len(), self.hover) {
                 let (o, d) = self.last_ray;
@@ -3511,7 +3535,7 @@ impl App {
         }
         // расстояние между измеряемыми точками
         if let Mode::Measure(pts) = &self.mode {
-            if pts.len() == 2 {
+            if pts.len() == 2 && self.measure_kind == 0 {
                 if let Some(p) = self.cam.project(rect, (pts[0] + pts[1]) / 2.0) {
                     let text = crate::units::fmt(pts[0].distance(pts[1]));
                     let g = painter.layout_no_wrap(text, egui::FontId::proportional(14.0), Color32::WHITE);
@@ -3877,7 +3901,41 @@ impl App {
             }
             Mode::Sketch(s) => s.status_ui(ui, &self.doc.params),
             Mode::Measure(pts) => {
-                if pts.len() == 2 {
+                let mut kind = self.measure_kind;
+                if let Some(i) = crate::widgets::segmented(ui, "measure-kind", &[tr("Расстояние"), tr("Угол"), tr("Площадь"), tr("Между гранями")], kind) {
+                    if i != kind {
+                        kind = i;
+                        pts.clear();
+                        self.measure_faces.clear();
+                    }
+                }
+                self.measure_kind = kind;
+                ui.add_space(4.0);
+                if kind == 1 {
+                    if pts.len() == 3 {
+                        let angle = fusion_core::Mesh::angle_at(pts[0], pts[1], pts[2]);
+                        ui.label(RichText::new(format!("{}°", format_num((angle * 1000.0).round() / 1000.0))).strong().size(20.0));
+                        ui.label(RichText::new(tr("Угол в средней точке между двумя другими")).weak().small());
+                    } else {
+                        ui.label(RichText::new(tf!("Щёлкните три точки: начало, вершину угла, конец ({} из 3)", pts.len())).weak());
+                    }
+                } else if kind == 2 {
+                    match self.measure_faces.first() {
+                        Some((_, area)) => {
+                            ui.label(RichText::new(format!("{} мм²", format_num((area * 100.0).round() / 100.0))).strong().size(20.0));
+                            ui.label(RichText::new(tr("Площадь выбранной грани")).weak().small());
+                        }
+                        None => { ui.label(RichText::new(tr("Щёлкните грань тела")).weak()); }
+                    }
+                } else if kind == 3 {
+                    if let [(p1, _), (p2, _)] = self.measure_faces.as_slice() {
+                        let angle = fusion_core::Mesh::angle_between_faces(p1.normal(), p2.normal());
+                        ui.label(RichText::new(format!("{}°", format_num((angle * 1000.0).round() / 1000.0))).strong().size(20.0));
+                        ui.label(RichText::new(tr("Угол между гранями: 90° у прямого угла коробки, 180° у граней в одной плоскости")).weak().small());
+                    } else {
+                        ui.label(RichText::new(tf!("Щёлкните две грани ({} из 2)", self.measure_faces.len())).weak());
+                    }
+                } else if pts.len() == 2 {
                     let d = pts[1] - pts[0];
                     egui::Grid::new("measure").num_columns(2).show(ui, |ui| {
                         ui.label(tr("Расстояние"));
@@ -3900,6 +3958,7 @@ impl App {
                 });
                 if reset {
                     pts.clear();
+                    self.measure_faces.clear();
                 }
                 if close {
                     self.mode = Mode::Idle;

@@ -331,6 +331,28 @@ impl Mesh {
         zip_stored(&[("[Content_Types].xml", types.as_bytes()), ("_rels/.rels", rels.as_bytes()), ("3D/3dmodel.model", model.as_bytes())])
     }
 
+    /// Area of the listed triangles (a face of the body is a group of them), in mm².
+    pub fn triangles_area(&self, tris: &[usize]) -> f64 {
+        tris.iter()
+            .map(|&t| {
+                let [a, b, c] = self.triangles[t].map(|i| glam::DVec3::from(self.vertices[i as usize]));
+                (b - a).cross(c - a).length() * 0.5
+            })
+            .sum()
+    }
+
+    /// Angle in degrees at `vertex` between the rays to `a` and `c` (0..=180).
+    pub fn angle_at(a: glam::DVec3, vertex: glam::DVec3, c: glam::DVec3) -> f64 {
+        let (u, v) = ((a - vertex).normalize_or_zero(), (c - vertex).normalize_or_zero());
+        u.dot(v).clamp(-1.0, 1.0).acos().to_degrees()
+    }
+
+    /// Angle between two faces in degrees, from their outward normals: 90 for the faces of a box that meet at an edge,
+    /// 180 for two coplanar faces, small for a sharp wedge.
+    pub fn angle_between_faces(n1: glam::DVec3, n2: glam::DVec3) -> f64 {
+        180.0 - n1.normalize_or_zero().dot(n2.normalize_or_zero()).clamp(-1.0, 1.0).acos().to_degrees()
+    }
+
     /// STEP (ISO 10303-21, AP214): every body as a faceted B-rep, one planar face per triangle, millimetres.
     /// It carries the exact triangles of the model (no curved surfaces), which CAD programs import as a solid made of facets.
     pub fn write_step(meshes: &[(&str, &Mesh)], file_name: &str) -> String {
@@ -571,6 +593,34 @@ mod tests {
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains("Тело &lt;1&gt;") && text.contains("unit=\"millimeter\""));
         assert_eq!(text.matches("<triangle ").count(), m.triangles.len());
+    }
+}
+
+#[cfg(test)]
+mod measure_tests {
+    use super::*;
+    use glam::DVec3;
+
+    #[test]
+    fn areas_and_angles_of_a_box_come_out_exact() {
+        let m = crate::geom::box_mesh(DVec3::ZERO, DVec3::new(40.0, 30.0, 20.0));
+        // the top face: the triangles whose normal is +z
+        let top: Vec<usize> = (0..m.triangles.len()).filter(|&t| m.tri_normal(&m.triangles[t]).z > 0.99).collect();
+        assert_eq!(top.len(), 2);
+        assert!((m.triangles_area(&top) - 1200.0).abs() < 1e-9);
+        let side: Vec<usize> = (0..m.triangles.len()).filter(|&t| m.tri_normal(&m.triangles[t]).x > 0.99).collect();
+        assert!((m.triangles_area(&side) - 600.0).abs() < 1e-9);
+        let all: Vec<usize> = (0..m.triangles.len()).collect();
+        assert!((m.triangles_area(&all) - 2.0 * (1200.0 + 800.0 + 600.0)).abs() < 1e-9, "the whole surface");
+        // three points
+        assert!((Mesh::angle_at(DVec3::X, DVec3::ZERO, DVec3::Y) - 90.0).abs() < 1e-9);
+        assert!((Mesh::angle_at(DVec3::X, DVec3::ZERO, DVec3::new(1.0, 1.0, 0.0)) - 45.0).abs() < 1e-9);
+        assert!((Mesh::angle_at(DVec3::X, DVec3::ZERO, DVec3::NEG_X) - 180.0).abs() < 1e-9);
+        // faces: box walls meet at 90, a coplanar pair at 180, an obtuse wedge in between
+        assert!((Mesh::angle_between_faces(DVec3::Z, DVec3::X) - 90.0).abs() < 1e-9);
+        assert!((Mesh::angle_between_faces(DVec3::Z, DVec3::Z) - 180.0).abs() < 1e-9);
+        let tilted = DVec3::new(1.0, 0.0, 1.0).normalize();
+        assert!((Mesh::angle_between_faces(DVec3::Z, tilted) - 135.0).abs() < 1e-9);
     }
 }
 

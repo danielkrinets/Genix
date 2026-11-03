@@ -2,6 +2,7 @@
 
 Every change, even a small fix, gets a new version: `0.00.N — what was added` (up to five words, English only). Newest first.
 
+- 0.00.41 — Measure angles and areas
 - 0.00.40 — Chamfer two distances, angle
 - 0.00.39 — Shell with several open faces
 - 0.00.38 — Thread on existing cylinder
