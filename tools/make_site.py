@@ -30,7 +30,7 @@ T = {
   lang="ru", prefix="", other="/en/", other_label="English", home="Главная", terms_t="Условия использования", priv_t="Конфиденциальность", ref_t="Возврат средств",
   title="Genix — параметрический CAD для Mac", desc="Нативный параметрический CAD: эскизы, операции, история, экспорт STL, STEP, DXF. 7 дней бесплатно, потом $0.99 в месяц.",
   h1="Параметрический CAD, который быстро открывается и приятно работает", lead="Genix — нативная программа для моделирования деталей: эскиз, выдавливание, отверстия, скругления, массивы, сборочные тела и экспорт в STL, STEP, DXF. Без облака, без регистрации на сервере.",
-  dl="Скачать для macOS", buy="Подписка " + PRICE + " в месяц", shots=["Библиотека и редактор в светлой теме", "Тёмная тема", "Эскиз с размерами и зависимостями", "Отверстие под болт"],
+  dl="Скачать для macOS", buy="Подписка " + PRICE + " в месяц", shots=["Библиотека моделей Genix 0.00.46", "Бокал с трубочкой, собранный в Genix"],
   feats_h="Что умеет", feats=[("Эскизы","Линии, дуги, окружности, эллипс, сплайн, текст, размеры и зависимости, зеркало и массивы."),("Операции","Выдавливание с уклоном и тонкой стенкой, вращение, отверстия, скругление, фаска, оболочка, резьба."),("История","Каждый шаг можно изменить; модель пересчитывается. Параметры и выражения."),("Тела","Объединение, вычитание, пересечение, исключающее, разрез, зеркало, массивы, проверка пересечений."),("Измерения","Расстояния, углы, площади граней."),("Экспорт","STL, 3MF, OBJ, STEP и DXF, открытие в слайсере.")],
   price_h="Цена", price_lead="7 дней бесплатно, потом " + PRICE + " в месяц. Отмена в любой момент.", price_list=["Первые 7 дней: всё работает, кроме сохранения и экспорта","Подписка: сохранение проектов и экспорт без ограничений","Оплата и отмена через Stripe","Ключ проверяется на вашем компьютере, интернет для работы не нужен"],
   honest_h="Честно о возможностях", honest="Geometry построена на сетках (мешах), а не на точных поверхностях: экспорт STEP и DXF — гранёный. Для мелких деталей, 3D-печати и ЧПУ-эскизов этого достаточно; для сложных сборок и точных поверхностей — нет. Сборка проверена на macOS (Apple Silicon); сборки для других систем собираются на GitHub, но мы их не тестировали.",
@@ -40,7 +40,7 @@ T = {
   lang="en", prefix="/en", other="/", other_label="Русский", home="Home", terms_t="Terms of use", priv_t="Privacy", ref_t="Refunds",
   title="Genix — parametric CAD for Mac", desc="Native parametric CAD: sketches, features, history, STL, STEP, DXF export. 7 days free, then $0.99 a month.",
   h1="Parametric CAD that opens fast and feels good", lead="Genix is a native app for modelling parts: sketch, extrude, holes, fillets, patterns, multi-body work and export to STL, STEP, DXF. No cloud, no server account.",
-  dl="Download for macOS", buy="Subscribe " + PRICE + " a month", shots=["Library and editor, light theme", "Dark theme", "Sketch with dimensions and constraints", "Bolt hole"],
+  dl="Download for macOS", buy="Subscribe " + PRICE + " a month", shots=["Genix 0.00.46 model library", "A wine glass with a straw built in Genix"],
   feats_h="What it does", feats=[("Sketches","Lines, arcs, circles, ellipse, spline, text, dimensions and constraints, mirror and patterns."),("Features","Extrude with draft and thin wall, revolve, holes, fillet, chamfer, shell, thread."),("History","Every step stays editable and the model recomputes. Parameters and expressions."),("Bodies","Join, cut, intersect, exclusive, split, mirror, patterns, interference check."),("Measure","Distances, angles, face areas."),("Export","STL, 3MF, OBJ, STEP and DXF, open in your slicer.")],
   price_h="Price", price_lead="7 days free, then " + PRICE + " a month. Cancel any time.", price_list=["First 7 days: everything works except saving and export","Subscription: saving projects and export without limits","Payment and cancelling through Stripe","The key is checked on your computer; no internet needed to work"],
   honest_h="An honest note on capabilities", honest="Geometry is mesh-based rather than exact surfaces: STEP and DXF export is faceted. That suits small parts, 3D printing and CNC sketches; it does not suit complex assemblies or exact freeform surfaces. The app is verified on macOS (Apple Silicon); builds for other systems are produced on GitHub but were not tested by us.",
@@ -105,14 +105,14 @@ def shell(t, title, body, here):
     p = t["prefix"]
     other = t["other"] + here
     return f"""<!doctype html><html lang="{t['lang']}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title}</title><meta name="description" content="{t['desc']}"><style>{CSS}</style></head><body>
-<header><a class="logo" href="{p}/">Genix</a><nav><a href="{p}/terms.html">{t['terms_t']}</a><a href="{p}/privacy.html">{t['priv_t']}</a><a href="{other}">{t['other_label']}</a></nav></header>
+<title>{title}</title><link rel="icon" href="/favicon.png"><meta name="description" content="{t['desc']}"><style>{CSS}</style></head><body>
+<header><a class="logo" href="{p}/"><img src="/img/logo.png" alt="" width="28" height="28" style="vertical-align:-7px;border-radius:7px;margin-right:8px">Genix</a><nav><a href="{p}/terms.html">{t['terms_t']}</a><a href="{p}/privacy.html">{t['priv_t']}</a><a href="{other}">{t['other_label']}</a></nav></header>
 {body}
 <footer><a href="{p}/terms.html">{t['terms_t']}</a><a href="{p}/privacy.html">{t['priv_t']}</a><a href="{p}/refunds.html">{t['ref_t']}</a><p>{t['foot']}</p></footer></body></html>"""
 
 def index(t):
-    imgs = ["light", "dark", "sketch", "hole"]
-    shots = "".join(f'<img class="shot" src="/img/{n}.png" alt="{a}" loading="lazy">' for n, a in zip(imgs, t["shots"]))
+    imgs = [("library", "jpg"), ("glass", "png")]
+    shots = "".join(f'<img class="shot" src="/img/{n}.{e}" alt="{a}" loading="lazy">' for (n, e), a in zip(imgs, t["shots"]))
     feats = "".join(f'<div class="card"><h3>{h}</h3><p>{p}</p></div>' for h, p in t["feats"])
     price = "".join(f"<li>{x}</li>" for x in t["price_list"])
     body = f"""<main><section class="hero"><h1>{t['h1']}</h1><p class="lead">{t['lead']}</p>

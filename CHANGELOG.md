@@ -2,6 +2,7 @@
 
 Every change, even a small fix, gets a new version: `0.00.N — what was added` (up to five words, English only). Newest first.
 
+- 0.00.49 — Fresh site screenshots and logo
 - 0.00.48 — Wine glass with straw example
 - 0.00.47 — Landing page, terms, privacy
 - 0.00.46 — Price $0.99, Stripe server
