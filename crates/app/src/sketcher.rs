@@ -85,6 +85,8 @@ pub enum Tool {
     Ellipse,
     Spline,
     Text,
+    /// Mirror the selected curves across a line chosen next.
+    Mirror,
     Cons(ConsKind),
 }
 
@@ -169,6 +171,8 @@ pub struct SketchSession {
     text_draft: Option<(Option<usize>, fusion_core::text::SketchText)>,
     /// The text field takes the keyboard (with its text selected) on the next frame.
     text_focus: bool,
+    /// Settings of the pattern panel: (circular?, nx, dx, ny, dy, count, angle).
+    pat: (bool, u32, f64, u32, f64, u32, f64),
 }
 
 const PICK_PX: f32 = 7.0;
@@ -206,6 +210,7 @@ impl SketchSession {
             spline_pts: Vec::new(),
             text_draft: None,
             text_focus: false,
+            pat: (false, 3, 20.0, 1, 20.0, 6, 360.0),
         };
         if uid.is_some() {
             s.tool = Tool::Select;
@@ -236,6 +241,7 @@ impl SketchSession {
             (Tool::Spline, Pending::None) => tr("Сплайн: щёлкните первую точку").into(),
             (Tool::Spline, _) => tr("Щёлкайте точки, Enter — закончить, щелчок по первой точке — замкнуть, Esc — отмена").into(),
             (Tool::Text, _) => tr("Текст: щёлкните, где поставить начало строки. Текст и размер задаются справа").into(),
+            (Tool::Mirror, _) => tr("Зеркало: выберите кривые (Выбор), затем щёлкните линию-ось").into(),
             (Tool::Arc, Pending::None) => tr("Дуга: щёлкните начальную точку").into(),
             (Tool::Arc, Pending::Arc1 { .. }) => tr("Щёлкните конечную точку дуги").into(),
             (Tool::Arc, _) => tr("Щёлкните точку, через которую проходит дуга").into(),
@@ -738,6 +744,28 @@ impl SketchSession {
                     self.pending = Pending::Spline;
                 }
             }
+            Tool::Mirror => {
+                let axis = match self.hover {
+                    Some(Pick::Entity(e)) => match self.sketch.entities[e] {
+                        Entity::Line { a, b, .. } => Some((e, self.sketch.p(a), self.sketch.p(b))),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let sel: Vec<usize> = self.selection.iter().filter_map(|p| if let Pick::Entity(e) = p { Some(*e) } else { None }).collect();
+                match axis {
+                    Some((axis, p0, p1)) if !sel.is_empty() => {
+                        self.checkpoint();
+                        let sel: Vec<usize> = sel.into_iter().filter(|e| *e != axis).collect();
+                        let made = self.sketch.mirror_entities(&sel, p0, p1);
+                        self.commit_checked(params, tr("Зеркало"));
+                        self.selection = made.into_iter().map(Pick::Entity).collect();
+                        self.tool = Tool::Select;
+                    }
+                    Some(_) => self.message = Some(tr("Сначала выберите кривые, которые нужно отразить (инструмент «Выбор»)").into()),
+                    None => self.message = Some(tr("Щёлкните линию — она станет осью зеркала").into()),
+                }
+            }
             Tool::Text => {
                 match &mut self.text_draft {
                     // a second click only moves the line, what was typed stays
@@ -1203,6 +1231,7 @@ impl SketchSession {
                 Tool::Ellipse => "sk_ellipse",
                 Tool::Spline => "sk_spline",
                 Tool::Text => "sk_text",
+                Tool::Mirror => "sk_mirror",
                 Tool::Cons(_) => "",
             };
             let text = label.split_once(' ').map(|x| x.1).unwrap_or(label);
@@ -1230,6 +1259,7 @@ impl SketchSession {
                 tool_btn(ui, self, Tool::Ellipse, tr("⬭ Эллипс"), "");
                 tool_btn(ui, self, Tool::Spline, tr("∿ Сплайн"), "");
                 tool_btn(ui, self, Tool::Text, tr("𝐓 Текст"), "");
+                tool_btn(ui, self, Tool::Mirror, tr("⇋ Зеркало"), "");
             });
             vsep(ui);
             group(ui, tr("ИМПОРТ"), |ui| {
@@ -1300,6 +1330,54 @@ impl SketchSession {
     }
 
     /// Палитра чертежа для панели справа: ограничения, настройки, состояние, выбранное.
+    /// Pattern of the selected curves: a grid or a ring of copies.
+    fn pattern_ui(&mut self, ui: &mut egui::Ui, params: &Params) {
+        let sel: Vec<usize> = self.selection.iter().filter_map(|p| if let Pick::Entity(e) = p { Some(*e) } else { None }).collect();
+        if sel.is_empty() {
+            return;
+        }
+        ui.label(RichText::new(tr("МАССИВ ИЗ ВЫБРАННОГО")).small().weak());
+        let mut circular = self.pat.0;
+        if let Some(i) = crate::widgets::segmented(ui, "sketch-pattern-kind", &[tr("Прямоугольный"), tr("Круговой")], circular as usize) {
+            circular = i == 1;
+        }
+        self.pat.0 = circular;
+        if !circular {
+            ui.horizontal(|ui| {
+                ui.label(tr("По X"));
+                ui.add(egui::DragValue::new(&mut self.pat.1).range(1..=50));
+                ui.label(tr("шаг"));
+                ui.add(egui::DragValue::new(&mut self.pat.2).speed(0.5).suffix(" мм"));
+            });
+            ui.horizontal(|ui| {
+                ui.label(tr("По Y"));
+                ui.add(egui::DragValue::new(&mut self.pat.3).range(1..=50));
+                ui.label(tr("шаг"));
+                ui.add(egui::DragValue::new(&mut self.pat.4).speed(0.5).suffix(" мм"));
+            });
+        } else {
+            ui.horizontal(|ui| {
+                ui.label(tr("Копий"));
+                ui.add(egui::DragValue::new(&mut self.pat.5).range(2..=100));
+                ui.label(tr("Угол"));
+                ui.add(egui::DragValue::new(&mut self.pat.6).speed(1.0).range(-360.0..=360.0).suffix("°"));
+            });
+            ui.label(RichText::new(tr("Центр — выбранная точка, иначе начало координат")).weak().small());
+        }
+        if crate::ui_kit::b02(ui, tr("Создать массив")).clicked() {
+            let centre = self.selection.iter().find_map(|p| if let Pick::Point(i) = p { Some(self.sketch.p(*i)) } else { None }).unwrap_or(DVec2::ZERO);
+            self.checkpoint();
+            let (c, nx, dx, ny, dy, n, a) = self.pat;
+            let made = if c { self.sketch.pattern_circular(&sel, centre, n as usize, a) } else { self.sketch.pattern_rect(&sel, nx as usize, dx, ny as usize, dy) };
+            if made.is_empty() {
+                self.history.pop();
+            } else {
+                self.commit_checked(params, tr("Массив"));
+            }
+        }
+        ui.separator();
+    }
+
     /// Texts of the sketch: the one being placed or edited, and the list of the existing ones.
     fn text_ui(&mut self, ui: &mut egui::Ui, params: &Params) {
         if let Some((index, mut t)) = self.text_draft.take() {
@@ -1376,6 +1454,7 @@ impl SketchSession {
 
     pub fn status_ui(&mut self, ui: &mut egui::Ui, params: &Params) {
         self.text_ui(ui, params);
+        self.pattern_ui(ui, params);
         // the object itself comes first: what is selected and its own settings; tools and constraints follow
         if !self.selection.is_empty() {
             ui.label(RichText::new(tr("ВЫБРАННОЕ")).small().weak());

@@ -130,6 +130,7 @@ fn raw(id: &str) -> Option<&'static str> {
         "sk_ellipse" => include_str!("../assets/icons/sk_ellipse.svg"),
         "sk_spline" => include_str!("../assets/icons/sk_spline.svg"),
         "sk_text" => include_str!("../assets/icons/sk_text.svg"),
+        "sk_mirror" => include_str!("../assets/icons/sk_mirror.svg"),
         "sk_circle_2pt" => include_str!("../assets/icons/sk_circle_2pt.svg"),
         "sk_circle_3pt" => include_str!("../assets/icons/sk_circle_3pt.svg"),
         "sk_conic" => include_str!("../assets/icons/sk_conic.svg"),

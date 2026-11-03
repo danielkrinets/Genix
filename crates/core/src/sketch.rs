@@ -821,6 +821,84 @@ impl Sketch {
         regions(self)
     }
 
+    /// Copies the given entities through the point map `f` (every sketch point is moved once, so copied shapes stay connected).
+    /// `flips` is true for a mirror: arcs run counter-clockwise, so their end points swap. Returns the indexes of the copies.
+    pub fn duplicate(&mut self, ents: &[usize], f: &dyn Fn(DVec2) -> DVec2, flips: bool) -> Vec<usize> {
+        use std::collections::HashMap;
+        let mut map: HashMap<usize, usize> = HashMap::new();
+        let mut copy_point = |s: &mut Sketch, i: usize| -> usize {
+            if let Some(&n) = map.get(&i) {
+                return n;
+            }
+            let n = s.add_point(f(s.p(i)).to_array());
+            map.insert(i, n);
+            n
+        };
+        let mut out = Vec::new();
+        for &e in ents {
+            let Some(&ent) = self.entities.get(e) else { continue };
+            let copy = match ent {
+                Entity::Line { a, b, construction } => Entity::Line { a: copy_point(self, a), b: copy_point(self, b), construction },
+                Entity::Circle { c, r, construction } => Entity::Circle { c: copy_point(self, c), r, construction },
+                Entity::Arc { c, a, b, construction } => {
+                    let (c, a, b) = (copy_point(self, c), copy_point(self, a), copy_point(self, b));
+                    if flips { Entity::Arc { c, a: b, b: a, construction } } else { Entity::Arc { c, a, b, construction } }
+                }
+                Entity::Ellipse { c, a, ratio, construction } => Entity::Ellipse { c: copy_point(self, c), a: copy_point(self, a), ratio, construction },
+                Entity::Spline { first, count, closed, construction } => {
+                    // fit points must stay consecutive: fresh points, never shared
+                    let nf = self.points.len();
+                    for k in 0..count {
+                        let np = f(self.p(first + k)).to_array();
+                        self.add_point(np);
+                    }
+                    Entity::Spline { first: nf, count, closed, construction }
+                }
+            };
+            out.push(self.add(copy));
+        }
+        out
+    }
+
+    /// Mirror copy of the entities across the line through `p0` and `p1`. Returns the new entities.
+    pub fn mirror_entities(&mut self, ents: &[usize], p0: DVec2, p1: DVec2) -> Vec<usize> {
+        let d = (p1 - p0).try_normalize().unwrap_or(DVec2::X);
+        self.duplicate(ents, &|p| {
+            let v = p - p0;
+            let along = d * v.dot(d);
+            p0 + 2.0 * along - v
+        }, true)
+    }
+
+    /// Rectangular pattern: `nx` x `ny` copies in total (the original counts as the first), `dx`/`dy` apart. Returns the new entities.
+    pub fn pattern_rect(&mut self, ents: &[usize], nx: usize, dx: f64, ny: usize, dy: f64) -> Vec<usize> {
+        let mut out = Vec::new();
+        for j in 0..ny.max(1) {
+            for i in 0..nx.max(1) {
+                if i + j > 0 {
+                    let off = DVec2::new(i as f64 * dx, j as f64 * dy);
+                    out.extend(self.duplicate(ents, &|p| p + off, false));
+                }
+            }
+        }
+        out
+    }
+
+    /// Circular pattern about `centre`: `count` copies in total over `angle_deg` (360 spreads them evenly round the full circle).
+    pub fn pattern_circular(&mut self, ents: &[usize], centre: DVec2, count: usize, angle_deg: f64) -> Vec<usize> {
+        let count = count.max(1);
+        let step = if (angle_deg.abs() - 360.0).abs() < 1e-9 || count < 2 { angle_deg / count as f64 } else { angle_deg / (count - 1) as f64 };
+        let mut out = Vec::new();
+        for k in 1..count {
+            let (s, c) = (step * k as f64).to_radians().sin_cos();
+            out.extend(self.duplicate(ents, &|p| {
+                let v = p - centre;
+                centre + DVec2::new(v.x * c - v.y * s, v.x * s + v.y * c)
+            }, false));
+        }
+        out
+    }
+
     /// Turns text `i` into ordinary closed polylines (a line per outline segment), so the letters can be selected, trimmed and
     /// dimensioned like any sketch curve. The text itself is removed. Returns the number of lines added.
     pub fn explode_text(&mut self, i: usize) -> usize {
@@ -1794,6 +1872,67 @@ mod freeform_tests {
         let back: Sketch = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back.entities.len(), 2);
         assert_eq!(back.regions().len(), 1);
+    }
+
+    #[test]
+    fn mirror_copies_a_rectangle_and_flips_arcs() {
+        let mut s = Sketch::default();
+        let r = s.add_rect([1.0, 0.0], [5.0, 3.0]);
+        let new = s.mirror_entities(&r, DVec2::new(0.0, 0.0), DVec2::new(0.0, 1.0));
+        assert_eq!(new.len(), 4);
+        let regions = s.regions();
+        assert_eq!(regions.len(), 2, "the original and its mirror image");
+        let xs: Vec<f64> = regions.iter().map(|r| r.outer.iter().map(|p| p[0]).fold(f64::MIN, f64::max)).collect();
+        assert!(xs.iter().any(|x| (x - 5.0).abs() < 1e-9) && xs.iter().any(|x| (x + 1.0).abs() < 1e-9), "{xs:?}");
+        assert!(regions.iter().all(|r| (r.area() - 12.0).abs() < 1e-9));
+        // an arc keeps its bulge on the mirrored side: its mid point is the mirror of the original's
+        let mut t = Sketch::default();
+        let c = t.add_point([0.0, 0.0]);
+        let a = t.add_point([2.0, 0.0]);
+        let b = t.add_point([0.0, 2.0]);
+        let arc = t.add(Entity::Arc { c, a, b, construction: false });
+        let m = t.mirror_entities(&[arc], DVec2::new(5.0, 0.0), DVec2::new(5.0, 1.0));
+        let (o, q) = (t.tessellate(arc), t.tessellate(m[0]));
+        let mid = |l: &Vec<P2>| l[l.len() / 2];
+        assert!((mid(&q)[0] - (10.0 - mid(&o)[0])).abs() < 1e-6 && (mid(&q)[1] - mid(&o)[1]).abs() < 1e-6, "{:?} vs {:?}", mid(&o), mid(&q));
+    }
+
+    #[test]
+    fn rectangular_and_circular_patterns_copy_connected_shapes() {
+        let mut s = Sketch::default();
+        let sq = s.add_rect([0.0, 0.0], [2.0, 2.0]);
+        let copies = s.pattern_rect(&sq, 3, 5.0, 2, 4.0);
+        assert_eq!(copies.len(), 4 * 5, "3 x 2 minus the original = 5 copies of 4 lines");
+        let regions = s.regions();
+        assert_eq!(regions.len(), 6);
+        assert!(regions.iter().all(|r| (r.area() - 4.0).abs() < 1e-9));
+        // a circle patterned round the origin: 6 copies over the full circle, evenly spaced
+        let mut c = Sketch::default();
+        let circle = c.add_circle([10.0, 0.0], 1.0);
+        let made = c.pattern_circular(&[circle], DVec2::ZERO, 6, 360.0);
+        assert_eq!(made.len(), 5);
+        let centres: Vec<DVec2> = made.iter().map(|&e| if let Entity::Circle { c: cc, .. } = c.entities[e] { c.p(cc) } else { panic!() }).collect();
+        for (k, p) in centres.iter().enumerate() {
+            let ang = (60.0 * (k + 1) as f64).to_radians();
+            assert!((p.x - 10.0 * ang.cos()).abs() < 1e-9 && (p.y - 10.0 * ang.sin()).abs() < 1e-9, "{p:?}");
+        }
+        // a partial arc of angle spreads the copies end to end (4 copies over 90 degrees = 30 degree steps)
+        let mut d = Sketch::default();
+        let dot = d.add_circle([10.0, 0.0], 0.5);
+        let part = d.pattern_circular(&[dot], DVec2::ZERO, 4, 90.0);
+        assert_eq!(part.len(), 3);
+        let last = if let Entity::Circle { c: cc, .. } = d.entities[*part.last().unwrap()] { d.p(cc) } else { panic!() };
+        assert!((last.x).abs() < 1e-9 && (last.y - 10.0).abs() < 1e-9, "{last:?}");
+        // splines stay consecutive after copying
+        let mut sp = Sketch::default();
+        let first = sp.points.len();
+        for p in [[0.0, 0.0], [3.0, 2.0], [6.0, 0.0]] { sp.add_point(p); }
+        let e = sp.add(Entity::Spline { first, count: 3, closed: false, construction: false });
+        let m = sp.pattern_rect(&[e], 2, 10.0, 1, 0.0);
+        if let Entity::Spline { first: f2, count, .. } = sp.entities[m[0]] {
+            assert_eq!(count, 3);
+            assert!((sp.p(f2).x - 10.0).abs() < 1e-9 && (sp.p(f2 + 2).x - 16.0).abs() < 1e-9);
+        } else { panic!() }
     }
 
     #[test]
