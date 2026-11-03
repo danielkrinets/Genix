@@ -168,3 +168,10 @@ Tests: core 125 + app 99. Live QA of these was interrupted: the QA window was be
 Sketch: «Зеркало» tool (select curves, then click a line: mirror copies, arcs flip), «Массив из выбранного» panel (rectangular grid or circular ring, centre = selected point or the origin). Constraints «На линии» (two lines on one straight line) and «Симметрия» (two points, then the axis line). Old files open unchanged.
 Tests (core 128 + app 99): mirrored rectangle regions and arc mid point; 3x2 grid = 5 copies / 6 regions, six circles evenly round a circle, a 4-copy 90° arc ends on the y axis, splines stay consecutive; collinear lines solve onto the x axis; symmetric point lands exactly on the mirror image (9,2) about x = 5 and the sketch becomes fully defined.
 Not checked by eye in the window.
+
+## 0.00.38 — thread on an existing cylinder (checked 2026-11-03)
+
+Create → «Резьба по цилиндру»: click a round edge (the rim of a rod or the mouth of a hole); the thread runs from it along the cylinder for «Длина резьбы», external (ridge fused to the boss) or internal (groove cut into the wall), decided automatically by probing just inside/outside the wall. `FeatureKind::ThreadOn`.
+Test (core 129): a boss r=5 gets a ridge reaching about r+depth with the body staying one solid and the volume between the plain and fat cylinder; a through hole r=4 gets a groove (volume drops but less than a full bore); a rim in the air and a straight edge give a message, not a crash.
+Also fixed: my sketch icons sk_ellipse/sk_spline/sk_text/sk_mirror had overwritten the designer's originals (restored from the first commit).
+Not checked by eye in the window: picking the rim with the mouse.

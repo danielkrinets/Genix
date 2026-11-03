@@ -52,7 +52,7 @@ impl Command {
             FeatureKind::Extrude { .. } | FeatureKind::Revolve { .. } | FeatureKind::Sweep { .. } | FeatureKind::Loft { .. } => PickTarget::Profiles,
             FeatureKind::Move { .. } | FeatureKind::Mirror { .. } | FeatureKind::Split { .. } | FeatureKind::Draft { .. } | FeatureKind::Pattern { .. } | FeatureKind::Remove { .. } | FeatureKind::Scale { .. } => PickTarget::Bodies,
             FeatureKind::Hole { .. } | FeatureKind::OffsetPlane { .. } | FeatureKind::AnglePlane { .. } | FeatureKind::Shell { .. } | FeatureKind::PressPull { .. } | FeatureKind::PlaceOnPlane { .. } => PickTarget::Face,
-            FeatureKind::Chamfer { .. } | FeatureKind::Fillet { .. } => PickTarget::Edges,
+            FeatureKind::Chamfer { .. } | FeatureKind::Fillet { .. } | FeatureKind::ThreadOn { .. } => PickTarget::Edges,
             FeatureKind::Pipe { .. } => PickTarget::Path,
             FeatureKind::Combine { .. } => PickTarget::CombineTarget,
             _ => PickTarget::None,
@@ -337,6 +337,18 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
             });
             changed |= row(ui, tr("Нейтральная плоскость"), |ui| expr_field(ui, ("draft_n", uid), neutral, p, tr("мм")));
             changed |= row(ui, tr("Угол"), |ui| expr_field(ui, ("draft_a", uid), angle, p, "°"));
+        }
+        FeatureKind::ThreadOn { body, length, pitch, depth, .. } => {
+            section(ui, tr("ЦИЛИНДР"));
+            if *body == 0 {
+                ui.label(RichText::new(tr("Щёлкните круглое ребро: край стержня или отверстия")).color(Color32::from_rgb(200, 120, 0)));
+            } else {
+                ui.label(RichText::new(tr("Ребро выбрано. Резьба идёт от него вдоль цилиндра, наружная или внутренняя — по виду ребра")).weak());
+            }
+            section(ui, tr("РАЗМЕРЫ"));
+            changed |= row(ui, tr("Длина резьбы"), |ui| expr_field(ui, ("thr_on", uid, 0), length, p, tr("мм")));
+            changed |= row(ui, tr("Шаг"), |ui| expr_field(ui, ("thr_on", uid, 1), pitch, p, tr("мм")));
+            changed |= row(ui, tr("Глубина резьбы"), |ui| expr_field(ui, ("thr_on", uid, 2), depth, p, tr("мм")));
         }
         FeatureKind::Thread { at, axis, dia, pitch, length, depth, op } => {
             section(ui, tr("ПОЛОЖЕНИЕ"));
@@ -836,6 +848,7 @@ pub fn awaiting_pick(kind: &FeatureKind) -> bool {
         FeatureKind::Pipe { path, .. } => *path == 0,
         FeatureKind::Loft { profiles, .. } => profiles.len() < 2,
         FeatureKind::Chamfer { edges, .. } | FeatureKind::Fillet { edges, .. } => edges.is_empty(),
+        FeatureKind::ThreadOn { body, .. } => *body == 0,
         FeatureKind::PlaceOnPlane { body, .. } => *body == 0,
         FeatureKind::Move { bodies, .. } | FeatureKind::Mirror { bodies, .. } | FeatureKind::Split { bodies, .. } | FeatureKind::Draft { bodies, .. } | FeatureKind::Pattern { bodies, .. } | FeatureKind::Scale { bodies, .. } | FeatureKind::Remove { bodies } => bodies.is_empty(),
         FeatureKind::Combine { target, tools, .. } => *target == 0 || tools.is_empty(),
@@ -897,6 +910,7 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
         "mirror" => FeatureKind::Mirror { bodies: selected.to_vec(), normal: Axis3::X, join: false, offset: Expr::num(0.0) },
         "split" => FeatureKind::Split { bodies: selected.to_vec(), axis: Axis3::Z, offset: num(10.0) },
         "draft" => FeatureKind::Draft { bodies: selected.to_vec(), axis: Axis3::Z, neutral: num(0.0), angle: num(5.0) },
+        "thread_on" => FeatureKind::ThreadOn { body: 0, edge: fusion_core::doc::EdgeRef::round([1.0, 0.0, 0.0], [0.0; 3], [0.0, 0.0, 1.0]), length: num(10.0), pitch: num(1.5), depth: num(0.8) },
         "thread" => FeatureKind::Thread { at: zero(), axis: Axis3::Z, dia: num(10.0), pitch: num(1.5), length: num(15.0), depth: num(0.8), op: Op::NewBody },
         "pattern" => FeatureKind::Pattern { bodies: selected.to_vec(), kind: PatternKind::Rect { nx: num(3.0), dx: num(30.0), ny: num(1.0), dy: num(30.0), nz: Expr::num(1.0), dz: Expr::num(0.0) } },
         "chamfer" => FeatureKind::Chamfer { body: selected.first().copied().unwrap_or(0), edges: vec![], dist: num(1.0) },

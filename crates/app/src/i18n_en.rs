@@ -1060,4 +1060,13 @@ pub const EN: &[(&str, &str)] = &[
     ("Щёлкните две линии: они ляжут на одну прямую", "Click two lines: they will lie on one straight line"),
     ("Щёлкните две точки, затем линию-ось симметрии", "Click two points, then the line that is the axis of symmetry"),
     ("На одной линии", "Collinear"),
+    ("Резьба по цилиндру", "Thread on a cylinder"),
+    ("Резьба на готовом стержне или в готовом отверстии: щёлкните круглое ребро", "Thread on an existing rod or in an existing hole: click the round edge"),
+    ("Резьба на цилиндре", "Thread on cylinder"),
+    ("ЦИЛИНДР", "CYLINDER"),
+    ("Щёлкните круглое ребро: край стержня или отверстия", "Click the round edge: the rim of a rod or of a hole"),
+    ("Ребро выбрано. Резьба идёт от него вдоль цилиндра, наружная или внутренняя — по виду ребра", "Edge chosen. The thread runs from it along the cylinder, external or internal as the edge dictates"),
+    ("Длина резьбы", "Thread length"),
+    ("выберите круглое ребро цилиндра", "choose the round edge of a cylinder"),
+    ("у этого ребра нет цилиндрической стенки", "this edge has no cylindrical wall"),
 ];

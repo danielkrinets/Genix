@@ -1540,7 +1540,7 @@ impl App {
         // edges for a fillet or chamfer belong to the body as it was before this feature: once some edges are rounded the result
         // has shorter edges, and an edge picked from it would no longer match the sharp ones that were picked first
         if let Mode::Command(c) = &self.mode {
-            if c.pick == PickTarget::Edges && self.doc.feature(c.uid).is_some_and(|f| matches!(f.kind, FeatureKind::Fillet { .. } | FeatureKind::Chamfer { .. })) {
+            if c.pick == PickTarget::Edges && self.doc.feature(c.uid).is_some_and(|f| matches!(f.kind, FeatureKind::Fillet { .. } | FeatureKind::Chamfer { .. } | FeatureKind::ThreadOn { .. })) {
                 if let Some(i) = self.doc.index_of(c.uid) {
                     return self.ev.model_before(i);
                 }
@@ -2097,6 +2097,14 @@ impl App {
                             *plane = pl;
                             at[0] = Expr::num(loc[0]);
                             at[1] = Expr::num(loc[1]);
+                            changed = true;
+                        }
+                    }
+                    (FeatureKind::ThreadOn { body, edge: rim, .. }, _, PickTarget::Edges) => {
+                        // one round edge of a cylinder: a boss rim or the mouth of a hole
+                        if let Some((e, owner)) = edge.filter(|(e, _)| e.circle) {
+                            *body = owner;
+                            *rim = e;
                             changed = true;
                         }
                     }
@@ -3345,6 +3353,13 @@ impl App {
                     }
                 }
             }
+            if let Some(FeatureKind::ThreadOn { body, edge, .. }) = self.doc.feature(cm.uid).map(|f| &f.kind) {
+                if *body != 0 {
+                    for w in edge.polyline().windows(2) {
+                        ov.lines_top.push(render::line(w[0], w[1], c.sketch_selected, 4.5));
+                    }
+                }
+            }
             if let (PickTarget::Edges, Some((e, _))) = (cm.pick, self.hover_edge) {
                 for w in e.polyline().windows(2) {
                     ov.lines_top.push(render::line(w[0], w[1], c.sketch_hover, 4.0));
@@ -4132,6 +4147,7 @@ fn tool_id(kind: &FeatureKind) -> &'static str {
         FeatureKind::Import { .. } => "insert_stl",
         FeatureKind::Draft { .. } => "draft",
         FeatureKind::Thread { .. } => "thread",
+        FeatureKind::ThreadOn { .. } => "thread",
         FeatureKind::Pattern { .. } => "pattern",
         FeatureKind::Move { .. } => "move",
         FeatureKind::Scale { .. } => "scale",

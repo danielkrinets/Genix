@@ -217,6 +217,10 @@ pub enum FeatureKind {
     Import { name: String, verts: Vec<f32>, tris: Vec<u32> },
     /// Draft: side faces of the bodies lean by `angle` degrees from the neutral plane perpendicular to `axis` at `neutral`.
     Draft { bodies: Vec<u64>, axis: Axis3, neutral: Expr, angle: Expr },
+    /// Thread on an existing cylinder of `body`: `edge` is a circle of that cylinder (its rim). The thread runs from the rim along
+    /// the cylinder for `length`; on a boss it is a helical ridge added to the surface, in a hole a helical groove cut into the wall
+    /// (found automatically). `depth` is how far the thread reaches beyond the cylinder surface.
+    ThreadOn { body: u64, edge: EdgeRef, length: Expr, pitch: Expr, depth: Expr },
     /// Modeled external thread: a helical ridge of depth `depth` on a rod of outer diameter `dia`, starting at `at`.
     Thread { at: [Expr; 3], axis: Axis3, dia: Expr, pitch: Expr, length: Expr, depth: Expr, op: Op },
     Pattern { bodies: Vec<u64>, kind: PatternKind },
@@ -299,6 +303,7 @@ impl FeatureKind {
             FeatureKind::Import { .. } => "Импорт",
             FeatureKind::Draft { .. } => "Уклон",
             FeatureKind::Thread { .. } => "Резьба",
+            FeatureKind::ThreadOn { .. } => "Резьба на цилиндре",
             FeatureKind::Pattern { .. } => "Массив",
             FeatureKind::Combine { .. } => "Комбинирование",
             FeatureKind::Remove { .. } => "Удаление",
@@ -1034,6 +1039,58 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                 }
                 let i = m.bodies.iter().position(|x| x.id == b.id).unwrap();
                 m.bodies[i].solid = Arc::new(solid);
+            }
+            Ok((Arc::new(m), None))
+        }
+        FeatureKind::ThreadOn { body, edge, length, pitch, depth } => {
+            let b = prev.body(*body).ok_or("выберите круглое ребро цилиндра")?;
+            if !edge.circle {
+                return Err("выберите круглое ребро цилиндра".into());
+            }
+            let (length, pitch, depth) = (positive(length, p, "длина")?, positive(pitch, p, "шаг")?, positive(depth, p, "глубина")?);
+            let center = DVec3::from(edge.b);
+            let axis = DVec3::from(edge.axis).normalize_or(DVec3::Z);
+            let radial = {
+                let v = DVec3::from(edge.a) - center;
+                (v - axis * v.dot(axis)).normalize_or(DVec3::X)
+            };
+            let r = (DVec3::from(edge.a) - center).length();
+            if r < 1e-6 || depth >= r {
+                return Err("глубина резьбы должна быть меньше радиуса цилиндра".into());
+            }
+            // which way the cylinder runs and whether the rim belongs to a boss or to a hole: probe just inside and just outside the wall
+            let inside = |dir: f64, rad: f64| -> bool {
+                let q = center + axis * dir * (length * 0.5) + radial * rad;
+                let probe = Solid::from_mesh(&geom::box_mesh(q - DVec3::splat(1e-3), q + DVec3::splat(1e-3)));
+                probe.map_or(false, |pr| pr.boolean(&b.solid, BoolOp::Intersect).volume() > 1e-12)
+            };
+            let eps = (depth * 0.1).max(1e-3).min(r * 0.5);
+            let mut found: Option<(f64, bool)> = None;
+            for dir in [1.0, -1.0] {
+                let (inner, outer) = (inside(dir, r - eps), inside(dir, r + eps));
+                if inner && !outer {
+                    found = Some((dir, true));
+                    break;
+                }
+                if !inner && outer {
+                    found = Some((dir, false));
+                    break;
+                }
+            }
+            let (dir, external) = found.ok_or("у этого ребра нет цилиндрической стенки")?;
+            let sec = (depth * 2.0).min(pitch * 0.8);
+            let helix = geom::helix_path(DVec3::new(0.0, 0.0, -pitch), DVec3::Z, 2.0 * (r + depth - sec / 2.0), pitch, length / pitch + 2.0);
+            let t = (helix[1] - helix[0]).normalize();
+            let thread = Solid::from_mesh(&geom::sweep_loops(&helix, &geom::circle_loop(helix[0], t, sec / 2.0, true), &[])?)?;
+            let envelope = Solid::from_mesh(&geom::cylinder_mesh(DVec3::ZERO, r + depth + 1.0, length))?;
+            let z = axis * dir;
+            let (xa, ya) = geom::perp_frame(z);
+            let mat = DMat4::from_cols(xa.extend(0.0), ya.extend(0.0), z.extend(0.0), center.extend(1.0));
+            let cut = thread.boolean(&envelope, BoolOp::Intersect).transformed(&mat);
+            let result = if external { b.solid.boolean(&cut, BoolOp::Union) } else { b.solid.boolean(&cut, BoolOp::Subtract) };
+            let mut m = (**prev).clone();
+            if let Some(slot) = m.bodies.iter_mut().find(|x| x.id == *body) {
+                slot.solid = Arc::new(result);
             }
             Ok((Arc::new(m), None))
         }
@@ -2486,6 +2543,44 @@ mod modeling_batch_tests {
         assert!(ev2.error(post).is_none(), "{:?}", ev2.error(post));
         let expect = std::f64::consts::PI * 10.0 * 5.0 * 8.0;
         assert!((ev2.model().bodies[0].mesh().volume() - expect).abs() < expect * 0.01);
+    }
+
+    #[test]
+    fn thread_on_an_existing_boss_and_in_an_existing_hole() {
+        let pi = std::f64::consts::PI;
+        // a boss: cylinder r = 5, 20 tall, thread from its top rim downwards
+        let mut d = Document::default();
+        d.insert(FeatureKind::Primitive { shape: Shape::Cylinder { r: n(5.0), h: n(20.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        let id = run(&d).model().bodies[0].id;
+        let rim = EdgeRef::round([5.0, 0.0, 20.0], [0.0, 0.0, 20.0], [0.0, 0.0, 1.0]);
+        let uid = d.insert(FeatureKind::ThreadOn { body: id, edge: rim, length: n(12.0), pitch: n(2.0), depth: n(0.8) });
+        let ev = run(&d);
+        assert!(ev.error(uid).is_none(), "{:?}", ev.error(uid));
+        assert_eq!(ev.model().bodies.len(), 1, "the ridge fuses into the boss");
+        let v = ev.model().bodies[0].mesh().volume();
+        let (plain, fat) = (pi * 25.0 * 20.0, pi * 5.8f64.powi(2) * 12.0 + pi * 25.0 * 8.0);
+        assert!(v > plain * 1.01 && v < fat, "external thread adds some material: {v} between {plain} and {fat}");
+        let (_, hi) = ev.model().bodies[0].mesh().bounds().unwrap();
+        assert!(hi.x > 5.4 && hi.x < 5.81, "the ridge reaches about r + depth: {}", hi.x);
+        // a hole: plate 30 x 30 x 14 with a through hole r = 4, thread from the top rim downwards
+        let mut h = Document::default();
+        h.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(30.0), d: n(30.0), h: n(14.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        let top = Plane { origin: [0.0, 0.0, 14.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+        h.insert(FeatureKind::Hole { plane: top, at: [n(15.0), n(15.0)], dia: n(8.0), depth: None, kind: HoleKind::Simple });
+        let pid = run(&h).model().bodies[0].id;
+        let before = run(&h).model().bodies[0].mesh().volume();
+        let rim2 = EdgeRef::round([19.0, 15.0, 14.0], [15.0, 15.0, 14.0], [0.0, 0.0, 1.0]);
+        let uid2 = h.insert(FeatureKind::ThreadOn { body: pid, edge: rim2, length: n(10.0), pitch: n(1.5), depth: n(0.6) });
+        let ev2 = run(&h);
+        assert!(ev2.error(uid2).is_none(), "{:?}", ev2.error(uid2));
+        let after = ev2.model().bodies[0].mesh().volume();
+        assert!(after < before - 1.0 && after > before - pi * 4.6f64.powi(2) * 10.0, "internal thread cuts a groove: {after} vs {before}");
+        // a rim in the air and a plain box edge are refused with a message, never a crash
+        let air = EdgeRef::round([60.0, 0.0, 0.0], [55.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
+        let bad = h.insert(FeatureKind::ThreadOn { body: pid, edge: air, length: n(10.0), pitch: n(1.5), depth: n(0.6) });
+        assert!(run(&h).error(bad).is_some());
+        let line = h.insert(FeatureKind::ThreadOn { body: pid, edge: EdgeRef::line([0.0; 3], [1.0, 0.0, 0.0]), length: n(10.0), pitch: n(1.5), depth: n(0.6) });
+        assert!(run(&h).error(line).is_some());
     }
 
     #[test]
