@@ -3184,6 +3184,7 @@ impl App {
         self.paint_labels(ui, rect, &model);
         self.nav_bar(ui, rect, now);
         self.value_box(ui, rect);
+        self.hole_snap_box(ui, rect);
         match viewcube::show(ui, rect, &self.cam, self.theme == Theme::Dark) {
             CubeAction::View(n, r) => {
                 let (yaw, pitch) = Camera::angles_for(n, r);
@@ -3804,7 +3805,10 @@ impl App {
         match &mut self.mode {
             Mode::Command(cmd) => {
                 let sketch_list: Vec<(u64, String)> = self.doc.features.iter().filter(|f| matches!(f.kind, FeatureKind::Sketch { .. })).map(|f| (f.uid, tr_name(&f.name))).collect();
-                let r = commands::dialog_ui(ui, &mut self.doc, &self.ev, cmd, &body_name, &sketch_list);
+                let mut footer = CmdResult::None;
+                egui::TopBottomPanel::bottom("command-footer").frame(egui::Frame::NONE).show_separator_line(true).show_inside(ui, |ui| footer = commands::footer_ui(ui));
+                let r = egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| commands::dialog_ui(ui, &mut self.doc, &self.ev, cmd, &body_name, &sketch_list)).inner;
+                let r = if matches!(footer, CmdResult::None) { r } else { footer };
                 match r {
                     CmdResult::Changed => self.after_param_change(),
                     CmdResult::Ok => self.finish_command(true),
@@ -4456,6 +4460,84 @@ impl App {
             });
         });
         if changed {
+            self.after_doc_change();
+        }
+    }
+
+    /// Hole placement: a small card at the top centre under the value fields. Nine buttons put the hole into the middle of the face
+    /// or against one of its edges/corners (offset from the edge: radius + 2 mm); arrows point towards where the hole goes.
+    fn hole_snap_box(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        let Mode::Command(cmd) = &self.mode else { return };
+        let uid = cmd.uid;
+        let Some(idx) = self.doc.index_of(uid) else { return };
+        let Some(FeatureKind::Hole { plane, dia, .. }) = self.doc.feature(uid).map(|f| f.kind.clone()) else { return };
+        let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+        for b in &self.ev.model_before(idx).bodies {
+            for v in &b.mesh().vertices {
+                let v = DVec3::from(*v);
+                if (v - DVec3::from(plane.origin)).dot(plane.normal()).abs() > 1e-4 {
+                    continue;
+                }
+                let q = plane.to_local(v);
+                for a in 0..2 {
+                    lo[a] = lo[a].min(q[a]);
+                    hi[a] = hi[a].max(q[a]);
+                }
+            }
+        }
+        if lo[0] >= hi[0] || lo[1] >= hi[1] {
+            return;
+        }
+        let inset = dia.eval(&self.doc.params).unwrap_or(8.0) / 2.0 + 2.0;
+        let mut chosen: Option<(usize, usize)> = None;
+        let pos = Pos2::new(rect.center().x, rect.top() + 58.0);
+        egui::Area::new(egui::Id::new("hole_snap_box")).fixed_pos(pos).pivot(egui::Align2::CENTER_TOP).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
+            egui::Frame::new().fill(crate::theme::surface(ui)).corner_radius(18).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                for ry in (0..3).rev() {
+                    ui.horizontal(|ui| {
+                        for rx in 0..3 {
+                            let (r, resp) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
+                            let hover = crate::widgets::feedback(ui, resp.id.with("hover"), resp.hovered());
+                            let press = crate::widgets::feedback(ui, resp.id.with("press"), resp.is_pointer_button_down_on());
+                            let r = r.shrink(press);
+                            let p = ui.painter();
+                            p.rect_filled(r, 10.0, ui.visuals().extreme_bg_color.lerp_to_gamma(crate::theme::accent(), 0.18 * hover));
+                            let ink = ui.visuals().text_color().lerp_to_gamma(crate::theme::accent(), hover);
+                            let stroke = egui::Stroke::new(1.7_f32, ink);
+                            let c = r.center();
+                            let dir = egui::vec2(rx as f32 - 1.0, ry as f32 - 1.0);
+                            if dir == egui::Vec2::ZERO {
+                                p.circle_filled(c, 3.6, ink);
+                            } else {
+                                // the sketch plane's y grows upwards on the card, like on a map
+                                let d = egui::vec2(dir.x, -dir.y).normalized();
+                                let (tail, tip) = (c - d * 6.0, c + d * 6.0);
+                                let side = egui::vec2(-d.y, d.x);
+                                p.line_segment([tail, tip], stroke);
+                                p.line_segment([tip, tip - d * 5.0 + side * 3.6], stroke);
+                                p.line_segment([tip, tip - d * 5.0 - side * 3.6], stroke);
+                            }
+                            if resp.on_hover_text(if dir == egui::Vec2::ZERO { tr("Поставить в центр грани") } else { tr("Поставить к краю или углу грани (отступ — радиус + 2 мм)") }).clicked() {
+                                chosen = Some((rx, ry));
+                            }
+                        }
+                    });
+                }
+            });
+        });
+        if let Some((rx, ry)) = chosen {
+            let pick = |a: usize, r: usize| match r {
+                0 => lo[a] + inset,
+                1 => (lo[a] + hi[a]) / 2.0,
+                _ => hi[a] - inset,
+            };
+            let at = [(pick(0, rx) * 100.0).round() / 100.0, (pick(1, ry) * 100.0).round() / 100.0];
+            if let Some(f) = self.doc.feature_mut(uid) {
+                if let FeatureKind::Hole { at: a, .. } = &mut f.kind {
+                    *a = [Expr::num(at[0]), Expr::num(at[1])];
+                }
+            }
             self.after_doc_change();
         }
     }

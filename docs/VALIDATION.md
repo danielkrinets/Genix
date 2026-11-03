@@ -116,3 +116,11 @@ Not checked by eye: the new "Насквозь" options in the direction drop-dow
 New: **thin extrude** (Extrude → «Тонкая стенка»: wall along the outline and around holes, also with taper), **3D grid pattern** (Count/Step along Z).
 Tests: core 106 + app 95 pass. Live (QA copy): the demo model shows the thin-walled box and the 2×1×2 cube grid next to the tapered posts.
 Not checked by eye: typing the new fields in the panel; thin extrude picked from a body face.
+
+## 0.00.29 — bolt holes, tooltip pictures, command footer (checked 2026-11-03)
+
+New: **hole for a bolt** — `HoleKind::Tapped` (tap drill + optional modeled thread groove, up to 40 mm), ISO metric table `crates/core/src/fasteners.rs` (M2–M24: clearance close/normal/loose, tap drill, DIN 974 counterbore, ISO 10642 countersink) and a «Под болт» block in the Hole panel. The 3x3 placement grid moved from the side panel to a card at the top centre of the viewport (arrows point towards the edge/corner, centre dot).
+Tooltips now show before/after pictures drawn by the renderer (`cargo test -p fusion-app render_tutorial_pictures -- --ignored`, then `python3 tools/make_tips.py`): 21 tools, cross-fade loop, side by side with reduced motion.
+Fix: OK/Cancel of every command now sit in a footer outside the scrolling fields (the side panel had no scroll, tall dialogs pushed OK off the screen).
+Tests: core 109 + app 97. Live (QA copy): Hole panel shows the bolt block, tapped preset sets Ø5 / thread Ø6 / pitch 1; the corner button gave X 6, Y 34 on a 40x40 face; OK/Cancel stay at the bottom of the panel.
+Not checked by eye: a modeled thread in a hole on screen, tooltips with pictures on hover, scrolling of a very tall panel.

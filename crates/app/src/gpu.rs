@@ -869,6 +869,32 @@ pub mod offscreen {
             after.insert(FeatureKind::PressPull { plane: Plane { origin: [0.0, 0.0, 14.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] }, seed: [22.0, 16.0, 14.0], distance: n(14.0) });
             jobs.push(("press_pull", Some(before), after));
         }
+        // draft: the walls of a block lean
+        {
+            let before = doc(vec![bx(40.0, 40.0, 34.0, [0.0, 0.0, 0.0])]);
+            let id = first_id(&before);
+            let mut after = before.clone();
+            after.insert(FeatureKind::Draft { bodies: vec![id], axis: Axis3::Z, neutral: n(0.0), angle: n(10.0) });
+            jobs.push(("draft", Some(before), after));
+        }
+        // thread: a plain rod gets a helical ridge
+        {
+            let before = doc(vec![cyl(7.0, 30.0, [0.0, 0.0, 0.0])]);
+            let after = doc(vec![FeatureKind::Thread { at: [n(0.0), n(0.0), n(0.0)], axis: Axis3::Z, dia: n(14.0), pitch: n(3.0), length: n(30.0), depth: n(1.2), op: Op::NewBody }]);
+            jobs.push(("thread", Some(before), after));
+        }
+        // split: one block becomes two bodies (the upper half is lifted by a move to show the cut)
+        {
+            let before = doc(vec![bx(40.0, 30.0, 30.0, [0.0, 0.0, 0.0])]);
+            let id = first_id(&before);
+            let mut after = before.clone();
+            after.insert(FeatureKind::Split { bodies: vec![id], axis: Axis3::Z, offset: n(14.0) });
+            let mut ev = Evaluator::default();
+            ev.evaluate(&after);
+            let upper = ev.model().bodies[1].id;
+            after.insert(FeatureKind::Move { bodies: vec![upper], translate: [n(0.0), n(0.0), n(10.0)], rotate: [n(0.0), n(0.0), n(0.0)], copy: false });
+            jobs.push(("split", Some(before), after));
+        }
         // delete
         {
             let before = doc(vec![bx(26.0, 26.0, 26.0, [0.0, 0.0, 0.0]), cyl(11.0, 26.0, [48.0, 13.0, 0.0])]);

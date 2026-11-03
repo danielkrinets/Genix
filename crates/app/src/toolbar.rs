@@ -169,6 +169,9 @@ pub fn visual_tip(ui: &mut egui::Ui, title: &str, body: &str, kind: &str) {
     ui.label(RichText::new(title).strong().size(15.0));
     ui.label(RichText::new(body).color(crate::theme::secondary(ui)));
     ui.add_space(6.0);
+    if crate::tips::show(ui, kind) {
+        return;
+    }
     let (rect, _) = ui.allocate_exact_size(egui::vec2(250.0, 112.0), Sense::hover());
     let p = ui.painter_at(rect);
     p.rect_filled(rect, 6.0, ui.visuals().extreme_bg_color);

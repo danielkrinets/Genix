@@ -464,48 +464,51 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                 changed = true;
             }
         }
-        FeatureKind::Hole { plane, at, dia, depth, kind } => {
+        FeatureKind::Hole { at, dia, depth, kind, .. } => {
             section(ui, tr("ПОЛОЖЕНИЕ"));
             ui.label(RichText::new(tr("Щёлкните грань: центр и оси привязываются автоматически")).weak());
             for (i, a) in ["X", "Y"].iter().enumerate() {
                 changed |= row(ui, a, |ui| expr_field(ui, ("hole_at", uid, i), &mut at[i], p, "мм"));
             }
-            // быстрая привязка по габаритам детали на этой плоскости: углы, середины сторон, центр
-            if let Some(idx) = my_index {
-                let mut lo = [f64::MAX; 2];
-                let mut hi = [f64::MIN; 2];
-                for b in &ev.model_before(idx).bodies {
-                    for vertex in &b.mesh().vertices {
-                        let vertex=glam::DVec3::from(*vertex);
-                        if (vertex-glam::DVec3::from(plane.origin)).dot(plane.normal()).abs()>1e-4 {continue;}
-                        let q=plane.to_local(vertex);
-                        for a in 0..2 {lo[a]=lo[a].min(q[a]);hi[a]=hi[a].max(q[a]);}
-                    }
-                }
-                if lo[0] < hi[0] {
-                    let inset = dia.eval(p).unwrap_or(8.0) / 2.0 + 2.0;
-                    if ui.button(tr("В центр грани")).clicked() {
-                        at[0]=num((lo[0]+hi[0])*0.5);at[1]=num((lo[1]+hi[1])*0.5);changed=true;
-                    }
-                    ui.label(RichText::new(tr("Привязка к детали")).small().weak());
-                    egui::Grid::new(("hole_snap", uid)).spacing([3.0, 3.0]).show(ui, |ui| {
-                        for ry in (0..3).rev() {
-                            for rx in 0..3 {
-                                let pick = |a: usize, r: usize| match r {
-                                    0 => lo[a] + inset,
-                                    1 => (lo[a] + hi[a]) / 2.0,
-                                    _ => hi[a] - inset,
-                                };
-                                let label = ["↙", "↓", "↘", "←", "●", "→", "↖", "↑", "↗"][(2 - ry) * 3 + rx];
-                                if ui.add_sized([30.0, 26.0], egui::Button::new(label)).on_hover_text(tr("Поставить отверстие сюда (отступ от края — радиус + 2 мм)")).clicked() {
-                                    at[0] = num((pick(0, rx) * 100.0).round() / 100.0);
-                                    at[1] = num((pick(1, ry) * 100.0).round() / 100.0);
-                                    changed = true;
-                                }
-                            }
-                            ui.end_row();
+            section(ui, tr("ПОД БОЛТ"));
+            {
+                use fusion_core::fasteners::{Fit, METRIC};
+                let sel_id = egui::Id::new(("hole_bolt", uid));
+                let (mut size, mut fit) = ui.data(|d| d.get_temp::<(usize, usize)>(sel_id)).unwrap_or((5, 1));
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt(("hole_bolt_size", uid)).selected_text(METRIC[size].name).show_ui(ui, |ui| {
+                        for (i, m) in METRIC.iter().enumerate() {
+                            ui.selectable_value(&mut size, i, m.name);
                         }
                     });
+                    egui::ComboBox::from_id_salt(("hole_bolt_fit", uid)).selected_text(tr(Fit::ALL[fit].label())).show_ui(ui, |ui| {
+                        for (i, f) in Fit::ALL.iter().enumerate() {
+                            ui.selectable_value(&mut fit, i, tr(f.label()));
+                        }
+                    });
+                });
+                ui.data_mut(|d| d.insert_temp(sel_id, (size, fit)));
+                let m = &METRIC[size];
+                let clearance = m.clearance_dia(Fit::ALL[fit]);
+                if ui.button(tr("Проходное отверстие")).on_hover_text(tr("Диаметр по ISO 273 для выбранной посадки")).clicked() {
+                    *dia = num(clearance);
+                    *kind = HoleKind::Simple;
+                    changed = true;
+                }
+                if ui.button(tr("Под винт с цилиндрической головкой")).on_hover_text(tr("Цековка по DIN 974 (ISO 4762)")).clicked() {
+                    *dia = num(clearance);
+                    *kind = HoleKind::Counterbore { dia: num(m.cbore.0), depth: num(m.cbore.1) };
+                    changed = true;
+                }
+                if ui.button(tr("Под винт с потайной головкой")).on_hover_text(tr("Зенковка 90° (ISO 10642)")).clicked() {
+                    *dia = num(clearance);
+                    *kind = HoleKind::Countersink { dia: num(m.csk), angle: num(90.0) };
+                    changed = true;
+                }
+                if ui.button(tr("Резьбовое отверстие")).on_hover_text(tr("Сверло под метчик, резьба крупная ISO")).clicked() {
+                    *dia = num(m.tap_drill);
+                    *kind = HoleKind::Tapped { major: num(m.d), pitch: num(m.pitch), modeled: false };
+                    changed = true;
                 }
             }
             section(ui, tr("РАЗМЕРЫ"));
@@ -523,8 +526,9 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                 HoleKind::Simple => 0,
                 HoleKind::Counterbore { .. } => 1,
                 HoleKind::Countersink { .. } => 2,
+                HoleKind::Tapped { .. } => 3,
             };
-            let names = [tr("Простое"), tr("С цековкой"), tr("С зенковкой")];
+            let names = [tr("Простое"), tr("С цековкой"), tr("С зенковкой"), tr("Резьбовое")];
             ui.horizontal(|ui| {
                 for (i, n) in names.iter().enumerate() {
                     if ui.selectable_label(which == i, *n).clicked() && which != i {
@@ -532,7 +536,8 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                         *kind = match i {
                             0 => HoleKind::Simple,
                             1 => HoleKind::Counterbore { dia: num(16.0), depth: num(3.0) },
-                            _ => HoleKind::Countersink { dia: num(16.0), angle: num(90.0) },
+                            2 => HoleKind::Countersink { dia: num(16.0), angle: num(90.0) },
+                            _ => HoleKind::Tapped { major: num(8.0), pitch: num(1.25), modeled: false },
                         };
                         changed = true;
                     }
@@ -547,6 +552,12 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
                 HoleKind::Countersink { dia: d2, angle } => {
                     changed |= row(ui, tr("Диаметр зенковки"), |ui| expr_field(ui, ("cs_d", uid), d2, p, "мм"));
                     changed |= row(ui, tr("Угол конуса"), |ui| expr_field(ui, ("cs_a", uid), angle, p, "°"));
+                }
+                HoleKind::Tapped { major, pitch, modeled } => {
+                    changed |= row(ui, tr("Диаметр резьбы"), |ui| expr_field(ui, ("tap_d", uid), major, p, "мм"));
+                    changed |= row(ui, tr("Шаг резьбы"), |ui| expr_field(ui, ("tap_p", uid), pitch, p, "мм"));
+                    changed |= crate::widgets::checkbox(ui, modeled, tr("Смоделировать резьбу (медленнее)")).changed();
+                    ui.label(RichText::new(tr("Диаметр отверстия выше — это сверло под резьбу. Резьба глубиной до 40 мм")).weak().small());
                 }
             }
         }
@@ -701,9 +712,13 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
         ui.add_space(4.0);
         ui.label(RichText::new(format!("⚠ {}", tr_dyn(err))).color(Color32::from_rgb(200, 40, 40)));
     }
-    ui.add_space(6.0);
-    ui.separator();
-    let mut result = if changed { CmdResult::Changed } else { CmdResult::None };
+    if changed { CmdResult::Changed } else { CmdResult::None }
+}
+
+/// OK / Cancel of a command. It is drawn outside the scrolling fields, so the main action never leaves the screen
+/// however tall the dialog is.
+pub fn footer_ui(ui: &mut egui::Ui) -> CmdResult {
+    let mut result = CmdResult::None;
     ui.add_space(6.0);
     // same pair as in the sketch: filled primary pill and a text «Отмена», both centred on one line
     ui.horizontal(|ui| {

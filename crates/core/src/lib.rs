@@ -4,6 +4,7 @@ pub mod csg;
 pub mod dxf;
 pub mod doc;
 pub mod expr;
+pub mod fasteners;
 pub mod geom;
 pub mod mesh;
 pub mod sketch;

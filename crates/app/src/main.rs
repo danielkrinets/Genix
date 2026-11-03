@@ -16,6 +16,7 @@ mod home;
 mod backgrounds;
 mod slicers;
 mod ticket;
+mod tips;
 mod ui_kit;
 mod units;
 mod version;

@@ -90,6 +90,10 @@ pub enum HoleKind {
     Simple,
     Counterbore { dia: Expr, depth: Expr },
     Countersink { dia: Expr, angle: Expr },
+    /// Threaded (tapped) hole for a screw of nominal diameter `major` and pitch `pitch`. The hole's own diameter is the tap
+    /// drill. With `modeled` the helical groove is cut into the wall (up to 40 mm deep), otherwise the thread is only
+    /// implied by the drill size, as a cosmetic thread.
+    Tapped { major: Expr, pitch: Expr, modeled: bool },
 }
 
 /// Ребро тела по двум концам (в мировых координатах; находится в теле с допуском).
@@ -1129,6 +1133,24 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                     let tn = (ang.to_radians() / 2.0).tan();
                     let depth_cone = ((r2 - r) / tn).min(d);
                     parts.push(Solid::from_mesh(&geom::frustum_mesh(center, n, r, -depth_cone, r2 + tn * 1.0, 1.0))?);
+                }
+                HoleKind::Tapped { major, pitch, modeled } => {
+                    let (rm, pitch) = (positive(major, p, "диаметр резьбы")? / 2.0, positive(pitch, p, "шаг резьбы")?);
+                    if rm <= r {
+                        return Err("диаметр резьбы должен быть больше диаметра отверстия под резьбу".into());
+                    }
+                    if *modeled {
+                        let len = d.min(40.0);
+                        let sr = ((rm - r) * 0.75).min(pitch * 0.45);
+                        let helix = geom::helix_path(DVec3::new(0.0, 0.0, -pitch), DVec3::Z, 2.0 * (rm - sr), pitch, len / pitch + 2.0);
+                        let t = (helix[1] - helix[0]).normalize();
+                        let groove = Solid::from_mesh(&geom::sweep_loops(&helix, &geom::circle_loop(helix[0], t, sr, true), &[])?)?;
+                        let envelope = Solid::from_mesh(&geom::cylinder_mesh(DVec3::ZERO, rm + 1.0, len))?;
+                        let (xa, ya) = geom::perp_frame(n);
+                        // local z runs into the material (-n); y is flipped so that the frame stays right-handed and the thread right-hand
+                        let mat = DMat4::from_cols(xa.extend(0.0), (-ya).extend(0.0), (-n).extend(0.0), center.extend(1.0));
+                        parts.push(groove.boolean(&envelope, BoolOp::Intersect).transformed(&mat));
+                    }
                 }
             }
             let tool = if parts.len() == 1 { parts.remove(0) } else { Solid::union_all(&parts) };
@@ -2338,6 +2360,54 @@ mod modeling_batch_tests {
         let ev2 = run(&d2);
         assert!(ev2.error(uid2).is_none());
         assert!((ev2.model().bodies[0].mesh().volume() - (48000.0 - hole)).abs() < hole * 0.02);
+    }
+
+    fn plate_with_hole(kind: HoleKind, dia: f64, depth: Option<f64>) -> (Evaluator, u64) {
+        let mut d = Document::default();
+        d.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(30.0), d: n(30.0), h: n(12.0) }, at: [n(0.0), n(0.0), n(0.0)], op: Op::NewBody });
+        let top = Plane { origin: [0.0, 0.0, 12.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+        let uid = d.insert(FeatureKind::Hole { plane: top, at: [n(15.0), n(15.0)], dia: n(dia), depth: depth.map(n), kind });
+        (run(&d), uid)
+    }
+
+    #[test]
+    fn tapped_hole_is_a_tap_drill_and_modeled_thread_cuts_a_groove() {
+        use crate::fasteners::find;
+        let m6 = find("M6").unwrap();
+        let plate = 30.0 * 30.0 * 12.0;
+        let (ev, uid) = plate_with_hole(HoleKind::Tapped { major: n(m6.d), pitch: n(m6.pitch), modeled: false }, m6.tap_drill, None);
+        assert!(ev.error(uid).is_none(), "{:?}", ev.error(uid));
+        let drill = std::f64::consts::PI * (m6.tap_drill / 2.0f64).powi(2) * 12.0;
+        let v0 = ev.model().bodies[0].mesh().volume();
+        assert!((plate - v0 - drill).abs() < drill * 0.03, "cosmetic thread = plain drill: removed {}", plate - v0);
+        let (ev2, uid2) = plate_with_hole(HoleKind::Tapped { major: n(m6.d), pitch: n(m6.pitch), modeled: true }, m6.tap_drill, None);
+        assert!(ev2.error(uid2).is_none(), "{:?}", ev2.error(uid2));
+        let v1 = ev2.model().bodies[0].mesh().volume();
+        let full = std::f64::consts::PI * (m6.d / 2.0f64).powi(2) * 12.0;
+        assert!(plate - v1 > drill * 1.05 && plate - v1 < full, "groove removes more than the drill but less than the full bore: {}", plate - v1);
+        assert_eq!(ev2.model().bodies.len(), 1, "still one solid");
+        // a blind threaded hole keeps its floor
+        let (ev3, uid3) = plate_with_hole(HoleKind::Tapped { major: n(m6.d), pitch: n(m6.pitch), modeled: true }, m6.tap_drill, Some(8.0));
+        assert!(ev3.error(uid3).is_none(), "{:?}", ev3.error(uid3));
+        let (lo, _) = ev3.model().bodies[0].mesh().bounds().unwrap();
+        assert!(lo.z.abs() < 1e-9);
+        let v3 = ev3.model().bodies[0].mesh().volume();
+        assert!(plate - v3 > 0.0 && plate - v3 < full * 8.0 / 12.0 * 1.01, "{}", plate - v3);
+        // the thread must be wider than the drill
+        let (_, bad) = plate_with_hole(HoleKind::Tapped { major: n(4.0), pitch: n(0.7), modeled: false }, 5.0, None);
+        assert!(plate_with_hole(HoleKind::Tapped { major: n(4.0), pitch: n(0.7), modeled: false }, 5.0, None).0.error(bad).is_some());
+    }
+
+    #[test]
+    fn bolt_presets_build_clearance_counterbore_and_countersink_holes() {
+        use crate::fasteners::{find, Fit};
+        let m5 = find("M5").unwrap();
+        let (ev, uid) = plate_with_hole(HoleKind::Counterbore { dia: n(m5.cbore.0), depth: n(m5.cbore.1) }, m5.clearance_dia(Fit::Normal), None);
+        assert!(ev.error(uid).is_none(), "{:?}", ev.error(uid));
+        let (ev2, uid2) = plate_with_hole(HoleKind::Countersink { dia: n(m5.csk), angle: n(90.0) }, m5.clearance_dia(Fit::Close), None);
+        assert!(ev2.error(uid2).is_none(), "{:?}", ev2.error(uid2));
+        let plain = 30.0 * 30.0 * 12.0 - std::f64::consts::PI * (m5.clearance_dia(Fit::Close) / 2.0f64).powi(2) * 12.0;
+        assert!(ev2.model().bodies[0].mesh().volume() < plain, "the countersink removes extra material");
     }
 
     #[test]
