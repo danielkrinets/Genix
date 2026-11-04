@@ -231,16 +231,20 @@ pub fn fill_arrow(out: &mut Vec<TriVertex>, base: DVec3, dir: DVec3, len: f64, w
     let sign = if len < 0.0 { -1.0 } else { 1.0 };
     let (x, y) = fusion_core::geom::perp_frame(dir);
     let tip = base + dir * len;
-    let head = (wpp * 30.0).min(len.abs() * 0.6) * sign;
+    // the head keeps its pixel size however short the distance is, so a 2 mm extrusion still has an arrow to grab
+    let head = wpp * 30.0 * sign;
+    let shaft_len = len - head;
     let neck = tip - dir * head;
     let (shaft_r, head_r) = (wpp * 4.5, wpp * 14.0);
     const N: usize = 16;
     let ring = |centre: DVec3, r: f64, i: usize| centre + (x * (std::f64::consts::TAU * i as f64 / N as f64).cos() + y * (std::f64::consts::TAU * i as f64 / N as f64).sin()) * r;
     for i in 0..N {
         let j = (i + 1) % N;
-        // shaft
-        for q in [ring(base, shaft_r, i), ring(neck, shaft_r, i), ring(neck, shaft_r, j), ring(base, shaft_r, i), ring(neck, shaft_r, j), ring(base, shaft_r, j)] {
+        // shaft (absent while the distance is shorter than the head)
+        if shaft_len * sign > 0.0 {
+          for q in [ring(base, shaft_r, i), ring(neck, shaft_r, i), ring(neck, shaft_r, j), ring(base, shaft_r, i), ring(neck, shaft_r, j), ring(base, shaft_r, j)] {
             out.push(TriVertex { pos: v3(q), color: c });
+          }
         }
         // head cone and its base disc
         for q in [ring(neck, head_r, i), tip, ring(neck, head_r, j), ring(neck, head_r, i), ring(neck, head_r, j), neck] {
