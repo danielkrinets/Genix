@@ -971,6 +971,17 @@ mod tests {
 /// Planar face of `mesh` that contains `seed`: the connected triangles lying in `plane` and facing along its normal,
 /// returned as an outer loop plus holes in plane coordinates. `None` when no such face exists.
 pub fn face_region(mesh: &Mesh, plane: &Plane, seed: DVec3) -> Option<Region> {
+    face_region_impl(mesh, plane, seed, false).map(|(r, _)| r)
+}
+
+/// Like [`face_region`], but a bevel around the face (chamfer or fillet: slanted faces that fall away from the plane and are
+/// reached from the face across their edges) belongs to the region, so the outline is the whole outer outline of the face with
+/// its bevels. The second value is how far the bevel reaches below the plane (0 when there is none).
+pub fn face_region_bevel(mesh: &Mesh, plane: &Plane, seed: DVec3) -> Option<(Region, f64)> {
+    face_region_impl(mesh, plane, seed, true)
+}
+
+fn face_region_impl(mesh: &Mesh, plane: &Plane, seed: DVec3, bevel: bool) -> Option<(Region, f64)> {
     use std::collections::{HashMap, HashSet};
     let (n, o) = (plane.normal(), plane.o());
     let mut ids: HashMap<(i64, i64, i64), usize> = HashMap::new();
@@ -1004,6 +1015,34 @@ pub fn face_region(mesh: &Mesh, plane: &Plane, seed: DVec3) -> Option<Region> {
             }
         }
     }
+    let mut depth = 0.0_f64;
+    if bevel {
+        // grow across edges onto slanted faces that lean away from the plane's normal side and lie below it
+        let mut all_edge: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+        for (i, t) in tris.iter().enumerate() {
+            for k in 0..3 {
+                let (a, b) = (t[k], t[(k + 1) % 3]);
+                all_edge.entry((a.min(b), a.max(b))).or_default().push(i);
+            }
+        }
+        let slanted = |t: &[usize; 3]| {
+            let c = (pos[t[1]] - pos[t[0]]).cross(pos[t[2]] - pos[t[0]]).normalize_or_zero().dot(n);
+            c > 0.02 && c < 0.9999 && t.iter().all(|&i| (pos[i] - o).dot(n) < 1e-4)
+        };
+        let mut stack: Vec<usize> = face.iter().copied().collect();
+        while let Some(i) = stack.pop() {
+            for k in 0..3 {
+                let (a, b) = (tris[i][k], tris[i][(k + 1) % 3]);
+                for &j in &all_edge[&(a.min(b), a.max(b))] {
+                    if !face.contains(&j) && slanted(&tris[j]) {
+                        face.insert(j);
+                        stack.push(j);
+                        for &v in &tris[j] { depth = depth.max(-(pos[v] - o).dot(n)); }
+                    }
+                }
+            }
+        }
+    }
     let tri_list = &tris;
     let directed: HashSet<(usize, usize)> = face.iter().flat_map(|&i| (0..3).map(move |k| (tri_list[i][k], tri_list[i][(k + 1) % 3]))).collect();
     let next: HashMap<usize, usize> = directed.iter().filter(|&&(a, b)| !directed.contains(&(b, a))).copied().collect();
@@ -1024,7 +1063,7 @@ pub fn face_region(mesh: &Mesh, plane: &Plane, seed: DVec3) -> Option<Region> {
     let big = (0..loops.len()).max_by(|&a, &b| area(&loops[a]).abs().total_cmp(&area(&loops[b]).abs()))?;
     if area(&loops[big]) < 0.0 { loops.iter_mut().for_each(|l| l.reverse()); }
     let outer = loops.remove(big);
-    Some(Region { outer, holes: loops.into_iter().filter(|l| area(l) < 0.0).collect(), ids: Vec::new() })
+    Some((Region { outer, holes: loops.into_iter().filter(|l| area(l) < 0.0).collect(), ids: Vec::new() }, depth))
 }
 
 /// Draft as in Fusion: every face parallel to `pull` leans by `angle_deg` away from the neutral plane

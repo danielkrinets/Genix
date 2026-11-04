@@ -811,6 +811,34 @@ fn union_all(parts: Vec<Mesh>) -> Result<Solid, String> {
 }
 
 /// Применить тело-инструмент к модели согласно операции.
+
+/// Press-pull of a planar face that has a bevel (chamfer or fillet) around it: the face and its bevels move together, the walls
+/// stretch (pull) or shorten (push) and the bevel keeps its shape at the new height. `None` when the face has no bevel.
+fn bevelled_press_pull(prev: &Model, plane: &Plane, seed: DVec3, d: f64) -> Result<Option<Model>, String> {
+    let found = prev.bodies.iter().enumerate().find_map(|(i, b)| geom::face_region_bevel(b.mesh(), plane, seed).map(|(r, depth)| (i, r, depth)));
+    let (bi, region, depth) = found.ok_or("грань не найдена: тело изменилось")?;
+    if depth < 1e-6 {
+        return Ok(None);
+    }
+    let zlow = -depth + d.min(0.0) - 0.01;
+    let top = d.max(0.0) + 0.05;
+    let column = |z0: f64, z1: f64| -> Result<Solid, String> { Solid::from_mesh(&geom::extrude_region(plane, &region, z0, z1).ok_or("не удалось построить грань")?) };
+    let body = prev.bodies[bi].solid.clone();
+    let shifted = body.transformed(&DMat4::from_translation(plane.normal() * d));
+    let kept = body.boolean(&column(zlow + 0.01, top)?, BoolOp::Subtract);
+    let lifted = shifted.boolean(&column(zlow, top)?, BoolOp::Intersect);
+    let mut res = kept.boolean(&lifted, BoolOp::Union);
+    if d > 0.0 {
+        res = res.boolean(&column(zlow, zlow + d + 0.01)?, BoolOp::Union);
+    }
+    if res.is_empty() {
+        return Err("пустое тело".into());
+    }
+    let mut m = prev.clone();
+    m.bodies[bi].solid = Arc::new(res);
+    Ok(Some(m))
+}
+
 pub fn apply_op(model: &mut Model, tool: Solid, op: Op, new_id: u64) -> Result<(), String> {
     if tool.is_empty() {
         return Err("пустое тело".into());
@@ -884,6 +912,15 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             Ok((prev.clone(), Some(SketchResult { plane: *plane, sketch: s, regions, status })))
         }
         FeatureKind::Extrude { face: Some(f), extent, taper, thin, .. } => {
+            // a face with a chamfer or fillet around it moves together with its bevel
+            if let Extent::OneSide(dist) = extent {
+                let dist = dist.eval(p)?;
+                if dist.abs() > 1e-9 && taper.eval(p)? == 0.0 && thin.eval(p)? == 0.0 {
+                    if let Some(m) = bevelled_press_pull(prev, &f.plane, DVec3::from(f.seed), dist)? {
+                        return Ok((Arc::new(m), None));
+                    }
+                }
+            }
             // same rule as press-pull: a positive distance adds material, a negative one cuts; symmetric adds
             let (z0, z1, op) = match extent {
                 Extent::OneSide(d) => {
@@ -1334,6 +1371,9 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             let d = distance.eval(p)?;
             if d.abs() < 1e-9 {
                 return Err("расстояние не может быть нулевым".into());
+            }
+            if let Some(m) = bevelled_press_pull(prev, plane, DVec3::from(*seed), d)? {
+                return Ok((Arc::new(m), None));
             }
             let region = prev.bodies.iter().find_map(|b| geom::face_region(b.mesh(), plane, DVec3::from(*seed))).ok_or("грань не найдена: тело изменилось")?;
             // заход на 0,01 мм внутрь тела (при добавлении) или за грань (при вырезании) исключает щель на стыке
@@ -2067,6 +2107,32 @@ mod new_ops {
             assert_eq!(ev.model().bodies.len(), 1);
             let v = ev.model().bodies[0].solid.volume();
             assert!((v - expect).abs() < 5.0, "{distance}: {v} != {expect}");
+        }
+    }
+
+    #[test]
+    fn press_pull_of_a_chamfered_top_lifts_the_bevel_with_it() {
+        let top = Plane { origin: [0.0, 0.0, 10.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+        let (mut d, body) = plate();
+        let edges: Vec<EdgeRef> = vec![
+            EdgeRef::line([0.0, 0.0, 10.0], [40.0, 0.0, 10.0]), EdgeRef::line([40.0, 0.0, 10.0], [40.0, 30.0, 10.0]),
+            EdgeRef::line([40.0, 30.0, 10.0], [0.0, 30.0, 10.0]), EdgeRef::line([0.0, 30.0, 10.0], [0.0, 0.0, 10.0]),
+        ];
+        d.insert(FeatureKind::Chamfer { body, edges, dist: Expr::num(2.0), second: ChamferSecond::Equal, flip: false });
+        let chamfered = run(&d).model().bodies[0].solid.volume();
+        for distance in [5.0, -4.0] {
+            let mut d2 = d.clone();
+            d2.insert(FeatureKind::PressPull { plane: top, seed: [20.0, 15.0, 10.0], distance: Expr::num(distance) });
+            let ev = run(&d2);
+            assert!(ev.steps().iter().all(|s| s.error.is_none()), "{:?}", ev.steps().iter().map(|s| s.error.clone()).collect::<Vec<_>>());
+            let m = ev.model();
+            assert_eq!(m.bodies.len(), 1);
+            let v = m.bodies[0].solid.volume();
+            // the whole 40x30 outline moves with its bevel: the walls grow or shrink by `distance`
+            let expect = chamfered + 40.0 * 30.0 * distance;
+            assert!((v - expect).abs() < 1.0, "{distance}: {v} vs {expect}");
+            let (_, hi) = m.bodies[0].mesh().bounds().unwrap();
+            assert!((hi.z - (10.0 + distance)).abs() < 1e-3, "top at {}", hi.z);
         }
     }
 

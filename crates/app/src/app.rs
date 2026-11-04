@@ -18,7 +18,7 @@ use fusion_core::doc::{EdgeRef, Model, SketchResult};
 use fusion_core::expr::format_num;
 use fusion_core::sketch::{region_at, ProfileRef};
 use fusion_core::{Document, Evaluator, Expr, FeatureKind, Mesh, Params, Plane, Sketch};
-use glam::DVec3;
+use glam::{DMat4, DVec3};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 
@@ -172,6 +172,9 @@ struct Tab {
 }
 
 struct Materials;
+/// Id of the red body that shows the material a cut removes (never a real body id).
+const CUT_PREVIEW_ID: u64 = u64::MAX;
+
 impl Materials {
     /// Название, плотность г/см³, базовый цвет, сила отражения.
     const LIST: [(&'static str, f64, Color32, f32); 8] = [
@@ -226,6 +229,8 @@ pub struct App {
     cache: RenderCache,
     /// модель, чьи буферы уже на GPU (держим ссылку, чтобы адрес не достался новой модели)
     shown_model: Option<Arc<Model>>,
+    /// the removed part of a cut being previewed: the model it was computed for (kept so its address is not reused) and the model with that part added in red
+    cut_preview: Option<(Arc<Model>, Arc<Model>)>,
     shown_edge_w: u32,
     ortho: bool,
     /// данные тел для GPU и их номер: сцена перезаливает буферы, когда номер меняется
@@ -506,6 +511,7 @@ impl App {
             hover: None,
             cache: RenderCache::default(),
             shown_model: None,
+            cut_preview: None,
             shown_edge_w: 0,
             ortho: false,
             upload: Default::default(),
@@ -1621,6 +1627,57 @@ impl App {
     }
 
     // ------------------------------------------------------------ команды
+
+    /// While a push (press-pull down, extrude that cuts) is being set up, the material it removes is shown as a solid red body
+    /// in the hole, so the cut can be judged before it is accepted. `None` when no cut is previewed.
+    fn cut_preview_model(&mut self, after: &Arc<Model>) -> Option<Arc<Model>> {
+        let Mode::Command(c) = &self.mode else { return None };
+        let params = self.doc.params.clone();
+        let cuts = match self.doc.feature(c.uid).map(|f| &f.kind) {
+            Some(FeatureKind::PressPull { distance, .. }) => distance.eval(&params).is_ok_and(|d| d < 0.0),
+            Some(FeatureKind::Extrude { extent: fusion_core::doc::Extent::OneSide(d), op, face, .. }) => {
+                *op == fusion_core::Op::Cut || (face.is_some() && d.eval(&params).is_ok_and(|v| v < 0.0))
+            }
+            Some(FeatureKind::Extrude { op, .. }) => *op == fusion_core::Op::Cut,
+            _ => false,
+        };
+        let i = self.doc.index_of(c.uid)?;
+        if !cuts || self.ev.error(c.uid).is_some() {
+            return None;
+        }
+        if let Some((k, m)) = &self.cut_preview {
+            if Arc::ptr_eq(k, after) {
+                return Some(m.clone());
+            }
+        }
+        let before = self.ev.model_before(i);
+        let mut parts: Vec<fusion_core::csg::Solid> = Vec::new();
+        for b in &before.bodies {
+            let rest = after.body(b.id);
+            let removed = match rest {
+                Some(r) => b.solid.boolean(&r.solid, fusion_core::csg::BoolOp::Subtract),
+                None => (*b.solid).clone(),
+            };
+            if !removed.is_empty() && removed.volume() > 1e-6 {
+                parts.push(removed);
+            }
+        }
+        if parts.is_empty() {
+            return None;
+        }
+        let mut red = if parts.len() == 1 { parts.remove(0) } else { fusion_core::csg::Solid::union_all(&parts) };
+        // a hair larger, so the red body covers the walls of the hole instead of fighting them for the same pixels
+        if let Some((lo, hi)) = red.mesh.bounds() {
+            let c = (lo + hi) / 2.0;
+            let k = 1.004;
+            red = red.transformed(&(DMat4::from_translation(c) * DMat4::from_scale(DVec3::splat(k)) * DMat4::from_translation(-c)));
+        }
+        let mut m = (**after).clone();
+        m.bodies.push(fusion_core::doc::Body { id: CUT_PREVIEW_ID, name: String::new(), solid: Arc::new(red) });
+        let m = Arc::new(m);
+        self.cut_preview = Some((after.clone(), m.clone()));
+        Some(m)
+    }
 
     /// Модель, которую сейчас показываем (при правке чертежа — до этого чертежа).
     fn shown(&self) -> Arc<Model> {
@@ -3323,14 +3380,15 @@ impl App {
         self.cam.fov_deg = if self.ortho { 5.0 } else { self.settings.fov_deg as f64 };
         // ---- данные для GPU
         let ew_bits = self.settings.edge_width.to_bits();
-        if !self.shown_model.as_ref().is_some_and(|m| Arc::ptr_eq(m, &model)) || ew_bits != self.shown_edge_w {
-            self.shown_model = Some(model.clone());
+        let gpu_model = self.cut_preview_model(&model).unwrap_or_else(|| model.clone());
+        if !self.shown_model.as_ref().is_some_and(|m| Arc::ptr_eq(m, &gpu_model)) || ew_bits != self.shown_edge_w {
+            self.shown_model = Some(gpu_model.clone());
             self.shown_edge_w = ew_bits;
-            self.upload = Arc::new(self.cache.assemble(&model.bodies, self.settings.edge_width));
+            self.upload = Arc::new(self.cache.assemble(&gpu_model.bodies, self.settings.edge_width));
             self.upload_gen += 1;
         }
         let overlay = self.build_overlay(&model, rect, &colors);
-        let mut body_colors = Vec::with_capacity(model.bodies.len());
+        let mut body_colors = Vec::with_capacity(gpu_model.bodies.len());
         let hover_slot = match self.hover {
             Some(Hit::Body { slot, .. }) if matches!(self.mode, Mode::Idle) || matches!(&self.mode, Mode::Command(c) if c.pick != PickTarget::Profiles) => Some(slot),
             _ => None,
@@ -3343,9 +3401,14 @@ impl App {
             },
             _ => vec![],
         };
-        for (slot, b) in model.bodies.iter().enumerate() {
+        for (slot, b) in gpu_model.bodies.iter().enumerate() {
             let material = Materials::get(self.doc.body_materials.get(&b.id).copied().unwrap_or(self.settings.material));
-            let c = if self.doc.hidden_bodies.contains(&b.id) {
+            let c = if b.id == CUT_PREVIEW_ID {
+                // the material a cut removes: solid red, matte
+                let mut c = linear(Color32::from_rgb(226, 48, 48));
+                c[3] = 0.12;
+                c
+            } else if self.doc.hidden_bodies.contains(&b.id) {
                 [0.0; 4]
             } else if self.doc.cutter_bodies.contains(&b.id) {
                 let mut c = linear(Color32::from_rgb(82, 205, 232));
