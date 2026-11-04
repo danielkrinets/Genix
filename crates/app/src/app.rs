@@ -672,6 +672,7 @@ impl App {
     /// Rebuilds on a worker thread and waits `EVAL_WAIT` for it: quick rebuilds land at once, slow ones (a fillet on many edges)
     /// leave the window alive, showing the previous model and a "calculating" card.
     fn start_eval(&mut self) {
+        self.sync_auto_op();
         let started = std::time::Instant::now();
         let (tx, rx) = mpsc::channel();
         let (mut ev, doc) = (self.ev.clone(), self.doc.clone());
@@ -704,6 +705,31 @@ impl App {
         let model = self.ev.model();
         self.selection.retain(|id| model.body(*id).is_some());
         self.settle_auto_op();
+    }
+
+    /// While the operation is automatic, the sign of a one-sided extrusion picks it: «+» joins, «−» cuts, however the number was entered.
+    fn sync_auto_op(&mut self) {
+        let Mode::Command(cmd) = &self.mode else { return };
+        if !cmd.auto_op {
+            return;
+        }
+        let uid = cmd.uid;
+        let Some(i) = self.doc.index_of(uid) else { return };
+        if self.ev.model_before(i).bodies.is_empty() {
+            return;
+        }
+        let params = self.doc.params.clone();
+        if let Some(f) = self.doc.feature_mut(uid) {
+            if let FeatureKind::Extrude { extent: fusion_core::doc::Extent::OneSide(d), op, .. } = &mut f.kind {
+                if let Ok(v) = d.eval(&params) {
+                    if v < 0.0 && *op == fusion_core::Op::Join {
+                        *op = fusion_core::Op::Cut;
+                    } else if v > 0.0 && *op == fusion_core::Op::Cut {
+                        *op = fusion_core::Op::Join;
+                    }
+                }
+            }
+        }
     }
 
     /// An extrusion that was left on the automatic operation and adds nothing (its tool lies entirely inside a body, as a smaller
@@ -3617,7 +3643,10 @@ impl App {
             Mode::Idle => None,
             Mode::PickPlane => Some(tr("Выберите плоскость (XY, XZ, YZ) или плоскую грань тела. Esc — отмена").into()),
             Mode::Sketch(s) => Some(s.hint()),
-            Mode::Command(c) => Some(c.hint().into()),
+            Mode::Command(c) => {
+                let picked = matches!(self.doc.feature(c.uid).map(|f| &f.kind), Some(FeatureKind::Extrude { face: Some(_), .. } | FeatureKind::Extrude { .. }) if !commands::awaiting_pick(&self.doc.feature(c.uid).unwrap().kind));
+                Some(if picked && c.pick == PickTarget::Profiles { tr("Потяните стрелку или впишите расстояние. «+» добавляет материал, «−» вырезает").to_string() } else { c.hint().into() })
+            }
             Mode::Measure(p) => Some(if p.len() == 1 { tr("Щёлкните вторую точку (вершина прилипает). Esc — выйти") } else { tr("Щёлкните точку на теле или его вершину. Esc — выйти") }.into()),
         };
         if let Some(h) = hint {
@@ -4447,17 +4476,21 @@ impl App {
     /// Стрелка выдавливания: начало, направление и текущая длина (в мире).
     fn extrude_handle(&self) -> Option<(DVec3, DVec3, f64)> {
         let Mode::Command(c) = &self.mode else { return None };
-        let FeatureKind::Extrude { sketch, profiles, extent, face: None, .. } = &self.doc.feature(c.uid)?.kind else { return None };
-        let sk = self.ev.sketch(*sketch)?;
-        let i = profiles.first()?.resolve(&sk.regions)?;
-        let base = sk.plane.to_world(sk.regions[i].interior_point());
+        let FeatureKind::Extrude { sketch, profiles, extent, face, .. } = &self.doc.feature(c.uid)?.kind else { return None };
+        let (base, normal) = if let Some(f) = face {
+            (DVec3::from(f.seed), f.plane.normal())
+        } else {
+            let sk = self.ev.sketch(*sketch)?;
+            let i = profiles.first()?.resolve(&sk.regions)?;
+            (sk.plane.to_world(sk.regions[i].interior_point()), sk.plane.normal())
+        };
         let params = &self.doc.params;
         let dist = match extent {
             fusion_core::doc::Extent::OneSide(d) | fusion_core::doc::Extent::TwoSides(d, _) => d.eval(params).ok()?,
             fusion_core::doc::Extent::Symmetric(d) => d.eval(params).ok()?.abs() / 2.0,
             fusion_core::doc::Extent::All(_) | fusion_core::doc::Extent::ToBody(_) => return None,
         };
-        Some((base, sk.plane.normal(), dist))
+        Some((base, normal, dist))
     }
 
     fn handle_hot(&self, rect: Rect, ctx: &egui::Context) -> bool {

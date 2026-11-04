@@ -213,7 +213,9 @@ pub fn dialog_ui(ui: &mut egui::Ui, doc: &mut Document, ev: &Evaluator, cmd: &mu
             if !matches!(thin.eval(p), Ok(v) if v == 0.0) {
                 ui.label(RichText::new(tr("Остаётся только стенка по контуру профиля. 0 — сплошное тело")).weak().small());
             }
-            if op_combo(ui, "ext_op", op) {
+            if face.is_some() {
+                ui.label(RichText::new(tr("Грань: расстояние «+» добавляет материал, «−» вырезает")).weak().small());
+            } else if op_combo(ui, "ext_op", op) {
                 changed = true;
                 cmd.auto_op = false;
             } else if changed && cmd.auto_op && has_bodies {

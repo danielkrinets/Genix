@@ -73,6 +73,8 @@ pub const EN: &[(&str, &str)] = &[
     ("Выбранные кривые станут вспомогательными (не образуют профилей) и обратно", "Selected curves become helpers (they form no profiles) and back"),
     ("Выбрано тел", "Bodies selected"),
     ("Выбрано: {}", "Selected: {}"),
+    ("Потяните стрелку или впишите расстояние. «+» добавляет материал, «−» вырезает", "Drag the arrow or type a distance. + adds material, − cuts"),
+    ("Грань: расстояние «+» добавляет материал, «−» вырезает", "Face: a + distance adds material, − cuts"),
     ("Тело целиком внутри другого: создано отдельное тело («Новое тело»)", "The body lies entirely inside another one: a separate body was created (New body)"),
     ("Выбрать тело", "Select a body"),
     ("Выйти без сохранения изменений", "Leave without saving changes"),
