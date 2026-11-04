@@ -949,6 +949,21 @@ pub struct Ctx {
     pub last_sketch: Option<(u64, Vec<fusion_core::sketch::ProfileRef>)>,
     /// Верхняя грань первого тела и центр на ней (для заготовки отверстия).
     pub top_face: Option<(fusion_core::Plane, [f64; 2])>,
+    /// Default size of a fillet radius or chamfer for the body being edited (see [`edge_default`]); None when unknown.
+    pub edge_size: Option<f64>,
+}
+
+/// 10 % of the largest radius that can fit the body (half of its shortest side), rounded to two significant digits,
+/// so a tiny part does not start with a radius bigger than itself.
+pub fn edge_default(lo: glam::DVec3, hi: glam::DVec3) -> f64 {
+    let shortest = (hi - lo).min_element();
+    let size = (shortest / 2.0) * 0.1;
+    if !(size > 0.0) || !size.is_finite() {
+        return 1.0;
+    }
+    let digits = size.log10().floor();
+    let step = 10f64.powf(digits - 1.0);
+    ((size / step).round() * step).max(step)
 }
 
 /// Шаг по умолчанию для новой команды.
@@ -999,8 +1014,8 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
         "thread_on" => FeatureKind::ThreadOn { body: 0, edge: fusion_core::doc::EdgeRef::round([1.0, 0.0, 0.0], [0.0; 3], [0.0, 0.0, 1.0]), length: num(10.0), pitch: num(1.5), depth: num(0.8) },
         "thread" => FeatureKind::Thread { at: zero(), axis: Axis3::Z, dia: num(10.0), pitch: num(1.5), length: num(15.0), depth: num(0.8), op: Op::NewBody },
         "pattern" => FeatureKind::Pattern { bodies: selected.to_vec(), kind: PatternKind::Rect { nx: num(3.0), dx: num(30.0), ny: num(1.0), dy: num(30.0), nz: Expr::num(1.0), dz: Expr::num(0.0) } },
-        "chamfer" => FeatureKind::Chamfer { body: selected.first().copied().unwrap_or(0), edges: vec![], dist: num(1.0), second: fusion_core::doc::ChamferSecond::Equal, flip: false },
-        "fillet" => FeatureKind::Fillet { body: selected.first().copied().unwrap_or(0), edges: vec![], radius: num(2.0) },
+        "chamfer" => FeatureKind::Chamfer { body: selected.first().copied().unwrap_or(0), edges: vec![], dist: num(c.edge_size.unwrap_or(1.0)), second: fusion_core::doc::ChamferSecond::Equal, flip: false },
+        "fillet" => FeatureKind::Fillet { body: selected.first().copied().unwrap_or(0), edges: vec![], radius: num(c.edge_size.unwrap_or(1.0)) },
         "combine" => FeatureKind::Combine {
             target: selected.first().copied().unwrap_or(0),
             tools: selected.iter().skip(1).copied().collect(),

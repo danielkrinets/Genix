@@ -1823,11 +1823,13 @@ impl App {
         if selected.is_empty() && matches!(kind, "fillet" | "chamfer") && model.bodies.len() == 1 {
             selected = vec![model.bodies[0].id];
         }
+        let selected_for_edges = selected.first().copied();
         let ctx = commands::Ctx {
             has_bodies: !model.bodies.is_empty(),
             selected,
             last_sketch,
             top_face,
+            edge_size: selected_for_edges.and_then(|id| model.body(id)).and_then(|b| b.mesh().bounds()).map(|(lo, hi)| commands::edge_default(lo, hi)),
         };
         let feature = commands::default_feature(kind, &ctx);
         let before = self.doc.clone();
@@ -2457,6 +2459,22 @@ impl App {
                         changed = true;
                     }
                     _ => {}
+                }
+                if changed {
+                    // the body was chosen by the first picked edge: the untouched placeholder size becomes 10 % of what fits that body
+                    let body_id = match self.doc.feature(uid).map(|f| &f.kind) {
+                        Some(FeatureKind::Fillet { body, edges, radius }) if *body != 0 && !edges.is_empty() && *radius == Expr::num(1.0) => Some(*body),
+                        Some(FeatureKind::Chamfer { body, edges, dist, .. }) if *body != 0 && !edges.is_empty() && *dist == Expr::num(1.0) => Some(*body),
+                        _ => None,
+                    };
+                    let size = body_id.and_then(|id| model.body(id)).and_then(|b| b.mesh().bounds()).map(|(lo, hi)| commands::edge_default(lo, hi));
+                    if let (Some(size), Some(f)) = (size, self.doc.feature_mut(uid)) {
+                        match &mut f.kind {
+                            FeatureKind::Fillet { radius, .. } => *radius = Expr::num(size),
+                            FeatureKind::Chamfer { dist, .. } => *dist = Expr::num(size),
+                            _ => {}
+                        }
+                    }
                 }
                 if face_done || next_pick.is_some() {
                     if let Mode::Command(c) = &mut self.mode { c.pick = next_pick.unwrap_or(PickTarget::None); }
@@ -5448,6 +5466,22 @@ mod lifecycle_tests {
         app.after_doc_change();
         assert_eq!(app.ev.error(uid), None);
         assert_eq!(app.ev.model().bodies.len(), 2, "the inner tool must stay a body of its own, not vanish into the part");
+    }
+
+    #[test]
+    fn the_default_fillet_radius_is_a_tenth_of_what_fits_the_body() {
+        use fusion_core::doc::Shape;
+        for (side, want) in [(40.0, 2.0), (6.0, 0.3), (400.0, 20.0)] {
+            let mut app = app();
+            let n = Expr::num;
+            app.doc.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(side), d: n(side * 2.0), h: n(side * 3.0) }, at: [n(0.0), n(0.0), n(0.0)], op: fusion_core::Op::NewBody });
+            app.after_doc_change();
+            app.start_command("fillet", 0.0);
+            let Mode::Command(c) = &app.mode else { panic!("the command did not start") };
+            let FeatureKind::Fillet { radius, .. } = app.doc.feature(c.uid).unwrap().kind.clone() else { panic!() };
+            let got = radius.eval(&app.doc.params).unwrap();
+            assert!((got - want).abs() < 1e-9, "a box with a shortest side of {side} must start at {want}, got {got}");
+        }
     }
 
     #[test]
