@@ -861,20 +861,37 @@ fn bodies_ui(ui: &mut egui::Ui, bodies: &mut Vec<u64>, body_name: &dyn Fn(u64) -
     section(ui, tr("ТЕЛА"));
     if bodies.is_empty() {
         ui.label(RichText::new(tr("Не выбрано — щёлкните тело в окне")).color(Color32::from_rgb(200, 120, 0)));
-    } else {
-        let mut remove = None;
-        for (i, b) in bodies.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(body_name(*b));
-                if ui.small_button("×").on_hover_text(tr("Убрать из выбора")).clicked() {
-                    remove = Some(i);
-                }
+        return;
+    }
+    let mut remove = None;
+    let accent = ui.visuals().selection.bg_fill;
+    ui.label(RichText::new(tf!("Выбрано: {}", bodies.len())).weak().small());
+    ui.add_space(2.0);
+    for (i, b) in bodies.iter().enumerate() {
+        egui::Frame::new()
+            .fill(accent.gamma_multiply(0.35))
+            .corner_radius(8)
+            .inner_margin(egui::Margin::symmetric(10, 5))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.add(egui::Label::new(body_name(*b)).truncate());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("×").on_hover_text(tr("Убрать из выбора")).clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                });
             });
-        }
-        if let Some(i) = remove {
-            bodies.remove(i);
-            *changed = true;
-        }
+        ui.add_space(2.0);
+    }
+    if bodies.len() > 1 && ui.small_button(tr("Сбросить выбор")).clicked() {
+        bodies.clear();
+        *changed = true;
+    }
+    if let Some(i) = remove {
+        bodies.remove(i);
+        *changed = true;
     }
 }
 

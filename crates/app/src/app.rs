@@ -263,6 +263,8 @@ pub struct App {
     /// the document changed again while a rebuild was running: one more rebuild follows
     eval_stale: bool,
     eval_wait: std::time::Duration,
+    /// a text field had keyboard focus when the frame began: a click that merely leaves the field must not pick a body
+    text_focus_at_frame_start: bool,
     last_eval_at: f64,
     last_eval_secs: f64,
     /// wheel zoom (natural log of the factor) still to be applied, and where it is aimed
@@ -534,6 +536,7 @@ impl App {
             eval_job: None,
             eval_stale: false,
             eval_wait: EVAL_WAIT,
+            text_focus_at_frame_start: false,
             last_eval_at: f64::NEG_INFINITY,
             last_eval_secs: 0.0,
             zoom_pending: 0.0,
@@ -700,6 +703,34 @@ impl App {
         self.last_eval_at = self.now;
         let model = self.ev.model();
         self.selection.retain(|id| model.body(*id).is_some());
+        self.settle_auto_op();
+    }
+
+    /// An extrusion that was left on the automatic operation and adds nothing (its tool lies entirely inside a body, as a smaller
+    /// copy of a part does) becomes a separate body, so it can be used as a cutter instead of vanishing into the part.
+    fn settle_auto_op(&mut self) {
+        let Mode::Command(cmd) = &mut self.mode else { return };
+        if !cmd.auto_op {
+            return;
+        }
+        let uid = cmd.uid;
+        let Some(i) = self.doc.index_of(uid) else { return };
+        if !matches!(self.doc.feature(uid).map(|f| &f.kind), Some(FeatureKind::Extrude { op: fusion_core::Op::Join, .. })) || self.ev.error(uid).is_some() {
+            return;
+        }
+        let volume = |m: &Model| m.bodies.iter().map(|b| b.mesh().volume().abs()).sum::<f64>();
+        let before = volume(&self.ev.model_before(i));
+        let after = self.ev.steps().get(i).map(|s| volume(&s.model)).unwrap_or(before);
+        if before > 0.0 && (after - before).abs() <= before * 1e-6 {
+            if let Some(f) = self.doc.feature_mut(uid) {
+                if let FeatureKind::Extrude { op, .. } = &mut f.kind {
+                    *op = fusion_core::Op::NewBody;
+                }
+            }
+            let now = self.now;
+            self.toast(tr("Тело целиком внутри другого: создано отдельное тело («Новое тело»)"), false, now);
+            self.start_eval();
+        }
     }
 
     /// Every frame: takes a finished background rebuild, starts the one that was asked for meanwhile, and shows the card while it runs.
@@ -3180,7 +3211,7 @@ impl App {
                 self.hover_edge = self.pick_edge(&self.pick_model(), rect, m);
             }
         }
-        if picking && resp.clicked() && !self.over_overlay {
+        if picking && resp.clicked() && !self.over_overlay && !(self.text_focus_at_frame_start && matches!(self.mode, Mode::Command(_))) {
             self.handle_click(self.hover, shift, now);
             // the click changes the selection after this frame was drawn: draw again at once, so highlights do not wait for the next mouse move
             ui.ctx().request_repaint();
@@ -3758,6 +3789,7 @@ impl eframe::App for App {
             self.theme = want;
             want.apply(ctx);
         }
+        self.text_focus_at_frame_start = ctx.wants_keyboard_input();
         self.device = detect_device(ctx);
         // на планшете и телефоне всё крупнее — под палец
         let scale = self.settings.ui_scale * if self.device == Device::Desktop { 1.0 } else { 1.25 };
@@ -5264,6 +5296,34 @@ mod lifecycle_tests {
         let kind = app.doc.feature(c.uid).unwrap().kind.clone();
         assert!(matches!(kind, FeatureKind::Fillet { body, .. } if body == only), "one body leaves nothing to choose");
         assert!(commands::awaiting_pick(&kind), "no red error before the first pick");
+    }
+
+    #[test]
+    fn a_smaller_extrusion_inside_a_body_becomes_a_separate_cutter_body() {
+        use fusion_core::doc::Shape;
+        let mut app = app();
+        let n = Expr::num;
+        app.doc.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(40.0), d: n(40.0), h: n(40.0) }, at: [n(0.0), n(0.0), n(0.0)], op: fusion_core::Op::NewBody });
+        let mut sk = fusion_core::Sketch::default();
+        sk.add_rect([10.0, 10.0], [30.0, 30.0]);
+        let regions = sk.regions();
+        let sk_uid = app.doc.insert(FeatureKind::Sketch { plane: Plane::XY, sketch: sk });
+        app.doc.visible_sketches.insert(sk_uid);
+        app.after_doc_change();
+        app.start_command("extrude", 0.0);
+        let Mode::Command(c) = &app.mode else { panic!("the command did not start") };
+        let uid = c.uid;
+        if let Some(f) = app.doc.feature_mut(uid) {
+            if let FeatureKind::Extrude { sketch, profiles, extent, start, .. } = &mut f.kind {
+                *sketch = sk_uid;
+                *profiles = vec![ProfileRef::of(&regions[0])];
+                *extent = fusion_core::doc::Extent::OneSide(n(20.0));
+                *start = n(5.0);
+            }
+        }
+        app.after_doc_change();
+        assert_eq!(app.ev.error(uid), None);
+        assert_eq!(app.ev.model().bodies.len(), 2, "the inner tool must stay a body of its own, not vanish into the part");
     }
 
     #[test]
