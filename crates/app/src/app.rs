@@ -852,6 +852,15 @@ impl App {
         self.settings.save();
     }
 
+    /// The language picked on the home screen's settings page takes effect at once (it was stored but never applied until a restart).
+    fn apply_language_choice(&mut self, ctx: &egui::Context) {
+        if i18n::lang() != self.settings.lang {
+            i18n::set_lang(self.settings.lang);
+            self.settings.save();
+            ctx.request_repaint();
+        }
+    }
+
     fn handle_home_action(&mut self, action: crate::home::HomeAction) {
         if matches!(action, crate::home::HomeAction::Report) {
             self.report.show(false);
@@ -3993,6 +4002,7 @@ impl eframe::App for App {
             let viewer = self.device == Device::Phone;
             self.trial_banner(ctx);
             egui::CentralPanel::default().show(ctx, |ui| act = crate::home::home_ui(ui, &mut self.home, &mut self.settings, &list, viewer));
+            self.apply_language_choice(ctx);
             self.handle_home_action(act);
             self.show_dialogs(ctx);
             return;
@@ -4065,6 +4075,7 @@ impl App {
             let mut act = crate::home::HomeAction::None;
             let list = self.project_list();
             egui::CentralPanel::default().show(ctx, |ui| act = crate::home::home_ui(ui, &mut self.home, &mut self.settings, &list, true));
+            self.apply_language_choice(ctx);
             self.handle_home_action(act);
         } else {
             egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| self.viewport(ui, now));
