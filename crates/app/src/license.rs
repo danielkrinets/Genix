@@ -95,13 +95,60 @@ pub fn sign(pkcs8: &[u8], claims: &Claims) -> Result<String, String> {
     Ok(format!("{payload}.{}", URL_SAFE_NO_PAD.encode(sig.as_ref())))
 }
 
-pub fn verify(token: &str, key: &[u8]) -> Result<Claims, String> {
+/// Checks the signature and returns the raw payload.
+fn open_payload(token: &str, key: &[u8]) -> Result<Vec<u8>, String> {
     let token = token.trim();
     let (payload, sig) = token.split_once('.').ok_or("в ключе нет подписи")?;
     let sig = URL_SAFE_NO_PAD.decode(sig).map_err(|_| "ключ повреждён")?;
     UnparsedPublicKey::new(&ED25519, key).verify(payload.as_bytes(), &sig).map_err(|_| "подпись ключа неверна")?;
-    let raw = URL_SAFE_NO_PAD.decode(payload).map_err(|_| "ключ повреждён")?;
-    serde_json::from_slice(&raw).map_err(|_| "ключ повреждён".to_string())
+    URL_SAFE_NO_PAD.decode(payload).map_err(|_| "ключ повреждён".to_string())
+}
+
+pub fn verify(token: &str, key: &[u8]) -> Result<Claims, String> {
+    serde_json::from_slice(&open_payload(token, key)?).map_err(|_| "ключ повреждён".to_string())
+}
+
+/// A free day for a reported and confirmed bug: a signed code the vendor hands to the reporter. `bonus` is its unique id, so one code counts once.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BonusClaims {
+    pub email: String,
+    pub bonus: String,
+    pub days: u32,
+}
+
+pub fn sign_bonus(pkcs8: &[u8], claims: &BonusClaims) -> Result<String, String> {
+    let pair = Ed25519KeyPair::from_pkcs8(pkcs8).map_err(|e| format!("bad private key: {e}"))?;
+    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(claims).map_err(|e| e.to_string())?);
+    let sig = pair.sign(payload.as_bytes());
+    Ok(format!("{payload}.{}", URL_SAFE_NO_PAD.encode(sig.as_ref())))
+}
+
+pub fn verify_bonus(token: &str, key: &[u8]) -> Result<BonusClaims, String> {
+    let c: BonusClaims = serde_json::from_slice(&open_payload(token, key)?).map_err(|_| "это не ключ и не бонусный код".to_string())?;
+    if c.bonus.is_empty() || c.days == 0 || c.days > 30 {
+        return Err("бонусный код повреждён".into());
+    }
+    Ok(c)
+}
+
+/// Extra time earned by bug reports. `secs` is added to whatever the trial or the paid key gives; `floor_until` is a window of
+/// trial-level access for someone whose trial and key have already ended (it is not added to a later subscription).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Bonus {
+    pub secs: u64,
+    pub floor_until: u64,
+}
+
+impl Bonus {
+    /// Adds `days` free days. `base_active` tells whether the trial or the key still runs without the floor window.
+    pub fn grant(&mut self, days: u32, now: u64, base_active: bool) {
+        let extra = days as u64 * DAY;
+        if base_active {
+            self.secs += extra;
+        } else {
+            self.floor_until = self.floor_until.max(now) + extra;
+        }
+    }
 }
 
 /// New key pair: (PKCS#8 private key, public key bytes).
@@ -114,23 +161,30 @@ pub fn generate_keypair() -> Result<(Vec<u8>, Vec<u8>), String> {
 
 /// The plan at `now` (unix seconds). `last_seen` is the latest time the app has ever seen: a clock set back cannot extend a trial or a key.
 pub fn status(now: u64, trial_started: u64, last_seen: u64, token: &str, key: &[u8]) -> Plan {
+    status_with_bonus(now, trial_started, last_seen, token, key, Bonus::default())
+}
+
+/// Like [`status`], with the free days earned by bug reports added to the trial and to the key.
+pub fn status_with_bonus(now: u64, trial_started: u64, last_seen: u64, token: &str, key: &[u8], bonus: Bonus) -> Plan {
     let eff = now.max(last_seen);
     if !token.trim().is_empty() {
         if let Ok(c) = verify(token, key) {
-            if c.until > eff {
-                return Plan::Pro { email: c.email, until: c.until };
+            if c.until + bonus.secs > eff {
+                return Plan::Pro { email: c.email, until: c.until + bonus.secs };
             }
         }
     }
     if trial_started == 0 {
         return Plan::Trial { days_left: TRIAL_DAYS as u32 };
     }
-    let used = eff.saturating_sub(trial_started) / DAY;
-    if used >= TRIAL_DAYS {
-        Plan::Expired
-    } else {
-        Plan::Trial { days_left: (TRIAL_DAYS - used) as u32 }
+    let end = trial_started + TRIAL_DAYS * DAY + bonus.secs;
+    if eff < end {
+        return Plan::Trial { days_left: (end - eff).div_ceil(DAY) as u32 };
     }
+    if eff < bonus.floor_until {
+        return Plan::Trial { days_left: (bonus.floor_until - eff).div_ceil(DAY) as u32 };
+    }
+    Plan::Expired
 }
 
 /// The earliest recorded trial start from the settings value and the marker file; records `now` in both when there is none yet.
@@ -201,6 +255,46 @@ mod tests {
         assert_eq!(status(t0 + 6 * DAY + 100, t0, t0, "", &key), Plan::Trial { days_left: 1 });
         assert_eq!(status(t0 + 7 * DAY, t0, t0, "", &key), Plan::Expired);
         assert_eq!(status(t0 + 100 * DAY, t0, t0, "", &key), Plan::Expired);
+    }
+
+    #[test]
+    fn a_bug_day_extends_the_trial_the_key_and_revives_an_ended_plan() {
+        let (private, public) = generate_keypair().unwrap();
+        let t0 = 1_700_000_000;
+        // inside the trial: one more day on top of the seven
+        let mut b = Bonus::default();
+        b.grant(1, t0 + 2 * DAY, status(t0 + 2 * DAY, t0, t0, "", &public) != Plan::Expired);
+        assert_eq!(status_with_bonus(t0 + 2 * DAY, t0, t0, "", &public, b), Plan::Trial { days_left: 6 });
+        assert_eq!(status_with_bonus(t0 + 7 * DAY + 100, t0, t0, "", &public, b), Plan::Trial { days_left: 1 });
+        assert_eq!(status_with_bonus(t0 + 8 * DAY, t0, t0, "", &public, b), Plan::Expired);
+        // after the trial: a day of trial-level access from the moment of redeeming, not from the old end
+        let mut late = Bonus::default();
+        let now = t0 + 30 * DAY;
+        late.grant(1, now, status(now, t0, t0, "", &public) != Plan::Expired);
+        assert_eq!(status_with_bonus(now + 100, t0, t0, "", &public, late), Plan::Trial { days_left: 1 });
+        assert_eq!(status_with_bonus(now + DAY + 1, t0, t0, "", &public, late), Plan::Expired);
+        // with a paid key: the key lasts a day longer
+        let token = sign(&private, &Claims { email: "a@b.c".into(), cid: String::new(), until: now + 2 * DAY }).unwrap();
+        let mut paid = Bonus::default();
+        paid.grant(1, now, true);
+        assert!(matches!(status_with_bonus(now + 2 * DAY + 100, t0, t0, &token, &public, paid), Plan::Pro { until, .. } if until == now + 3 * DAY));
+        assert_eq!(status(now + 2 * DAY + 100, t0, t0, &token, &public), Plan::Expired);
+    }
+
+    #[test]
+    fn a_bonus_code_is_signed_and_cannot_be_mistaken_for_a_key() {
+        let (private, public) = generate_keypair().unwrap();
+        let code = sign_bonus(&private, &BonusClaims { email: "r@x.y".into(), bonus: "bug-17".into(), days: 1 }).unwrap();
+        let c = verify_bonus(&code, &public).unwrap();
+        assert_eq!((c.bonus.as_str(), c.days), ("bug-17", 1));
+        assert!(verify(&code, &public).is_err(), "a bonus code is not a licence key");
+        let key = sign(&private, &Claims { email: "r@x.y".into(), cid: String::new(), until: 5 }).unwrap();
+        assert!(verify_bonus(&key, &public).is_err(), "a licence key is not a bonus code");
+        let (other, _) = generate_keypair().unwrap();
+        let forged = sign_bonus(&other, &BonusClaims { email: "r@x.y".into(), bonus: "bug-18".into(), days: 1 }).unwrap();
+        assert!(verify_bonus(&forged, &public).is_err());
+        let huge = sign_bonus(&private, &BonusClaims { email: "r@x.y".into(), bonus: "x".into(), days: 9999 }).unwrap();
+        assert!(verify_bonus(&huge, &public).is_err(), "no code may hand out years");
     }
 
     #[test]

@@ -180,6 +180,10 @@ pub struct Settings {
     pub trial_last_seen: u64,
     /// Signed licence key of the paid plan (empty = none).
     pub license_token: String,
+    /// Free days earned by confirmed bug reports: seconds added to the trial and the key, a window for an ended plan, and the used codes.
+    pub bonus_secs: u64,
+    pub bonus_floor_until: u64,
+    pub bonus_ids: Vec<String>,
 }
 
 impl Default for Settings {
@@ -223,6 +227,9 @@ impl Default for Settings {
             trial_started: 0,
             trial_last_seen: 0,
             license_token: String::new(),
+            bonus_secs: 0,
+            bonus_floor_until: 0,
+            bonus_ids: Vec::new(),
         }
     }
 }

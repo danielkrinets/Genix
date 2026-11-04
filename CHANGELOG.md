@@ -2,6 +2,7 @@
 
 Every change, even a small fix, gets a new version: `0.00.N — what was added` (up to five words, English only). Newest first.
 
+- 0.00.57 — Free day for confirmed bugs
 - 0.00.56 — Language change applies at once
 - 0.00.55 — Settings icon, face fillet extrusion
 - 0.00.54 — Pipes follow every chain

@@ -472,7 +472,7 @@ impl App {
             }
         }
         #[cfg(not(test))]
-        let plan = crate::license::status(now_s, settings.trial_started, settings.trial_last_seen, &settings.license_token, &crate::license::public_key());
+        let plan = crate::license::status_with_bonus(now_s, settings.trial_started, settings.trial_last_seen, &settings.license_token, &crate::license::public_key(), crate::license::Bonus { secs: settings.bonus_secs, floor_until: settings.bonus_floor_until });
         // the unit tests exercise saving and exporting, so they run as a paid plan
         #[cfg(test)]
         let plan = crate::license::Plan::Pro { email: "test@example.com".into(), until: u64::MAX };
@@ -5089,7 +5089,7 @@ impl App {
                     });
                     ui.add_space(6.0);
                     if ui.button(tr("Сбросить все настройки")).clicked() {
-                        *st = Settings { lang: st.lang, license: st.license.take(), account: st.account.take(), account_skipped: st.account_skipped, display_name: std::mem::take(&mut st.display_name), server_demo_account: st.server_demo_account.take(), recent: std::mem::take(&mut st.recent), ..Settings::default() };
+                        *st = Settings { lang: st.lang, license: st.license.take(), account: st.account.take(), account_skipped: st.account_skipped, display_name: std::mem::take(&mut st.display_name), server_demo_account: st.server_demo_account.take(), bonus_secs: st.bonus_secs, bonus_floor_until: st.bonus_floor_until, bonus_ids: std::mem::take(&mut st.bonus_ids), trial_started: st.trial_started, trial_last_seen: st.trial_last_seen, recent: std::mem::take(&mut st.recent), ..Settings::default() };
                     }
                 }
             }
@@ -5167,7 +5167,7 @@ impl App {
                 self.settings.trial_last_seen = now_s;
                 self.settings.save();
             }
-            self.plan = crate::license::status(now_s, self.settings.trial_started, self.settings.trial_last_seen, &self.settings.license_token, &crate::license::public_key());
+            self.plan = crate::license::status_with_bonus(now_s, self.settings.trial_started, self.settings.trial_last_seen, &self.settings.license_token, &crate::license::public_key(), crate::license::Bonus { secs: self.settings.bonus_secs, floor_until: self.settings.bonus_floor_until });
         }
     }
 
@@ -5310,7 +5310,24 @@ impl App {
                     self.refresh_plan();
                 }
                 Ok(_) => self.license_msg = Some(tr("Срок действия ключа истёк").into()),
-                Err(e) => self.license_msg = Some(tr_dyn(&e)),
+                Err(e) => match crate::license::verify_bonus(&key, &crate::license::public_key()) {
+                    Ok(b) if self.settings.bonus_ids.contains(&b.bonus) => self.license_msg = Some(tr("Этот бонусный код уже использован").into()),
+                    Ok(b) => {
+                        let now_s = crate::license::now_unix();
+                        let seen = self.settings.trial_last_seen;
+                        let base = crate::license::status_with_bonus(now_s, self.settings.trial_started, seen, &self.settings.license_token, &crate::license::public_key(), crate::license::Bonus { secs: self.settings.bonus_secs, floor_until: 0 });
+                        let mut bonus = crate::license::Bonus { secs: self.settings.bonus_secs, floor_until: self.settings.bonus_floor_until };
+                        bonus.grant(b.days, now_s.max(seen), base != crate::license::Plan::Expired);
+                        self.settings.bonus_secs = bonus.secs;
+                        self.settings.bonus_floor_until = bonus.floor_until;
+                        self.settings.bonus_ids.push(b.bonus);
+                        self.settings.save();
+                        self.license_msg = Some(format!("✓ {}", tf!("Спасибо за найденную ошибку! Добавлено дней: {}", b.days)));
+                        self.license_key_input.clear();
+                        self.refresh_plan();
+                    }
+                    Err(_) => self.license_msg = Some(tr_dyn(&e)),
+                },
             }
         }
         if !open {

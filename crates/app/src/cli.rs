@@ -164,6 +164,18 @@ pub fn run(args: &[String]) -> Option<i32> {
                 Err(e) => fail(e),
             }
         }
+        "--bonus-sign" => {
+            let (Some(key), Some(email), Some(id)) = (arg(2), arg(3), arg(4)) else {
+                eprintln!("usage: genix --bonus-sign private_key_file reporter_email bug_id [days]");
+                return Some(2);
+            };
+            let days = arg(5).and_then(|d| d.parse::<u32>().ok()).unwrap_or(1);
+            let pkcs8 = match std::fs::read(key) { Ok(b) => b, Err(e) => return fail(format!("{key}: {e}")) };
+            match crate::license::sign_bonus(&pkcs8, &crate::license::BonusClaims { email: email.to_string(), bonus: id.to_string(), days }) {
+                Ok(token) => { println!("{token}"); Some(0) }
+                Err(e) => fail(e),
+            }
+        }
         "--license-check" => {
             let Some(token) = arg(2) else { eprintln!("usage: genix --license-check token"); return Some(2) };
             match crate::license::verify(token, &crate::license::public_key()) {
