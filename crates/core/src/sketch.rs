@@ -787,6 +787,68 @@ impl Sketch {
         n - rank(jac, n)
     }
 
+    /// Every separate open chain or closed loop of lines and arcs (construction geometry is ignored), each as an ordered polyline.
+    /// A closed loop starts and ends at its lowest-numbered point. A point where three or more curves meet is an error.
+    pub fn chain_paths(&self) -> Result<Vec<Vec<P2>>, String> {
+        let curves: Vec<usize> = (0..self.entities.len())
+            .filter(|&i| !self.entities[i].construction() && matches!(self.entities[i], Entity::Line { .. } | Entity::Arc { .. }))
+            .collect();
+        if curves.is_empty() {
+            return Err("в чертеже пути нет линий или дуг".into());
+        }
+        let mut canon: Vec<usize> = (0..self.points.len()).collect();
+        for i in 0..self.points.len() {
+            if let Some(j) = (0..i).find(|&j| canon[j] == j && self.p(i).distance(self.p(j)) < 1e-3) {
+                canon[i] = j;
+            }
+        }
+        let ends = |i: usize| match self.entities[i] {
+            Entity::Line { a, b, .. } => (canon[a], canon[b]),
+            Entity::Arc { a, b, .. } => (canon[a], canon[b]),
+            _ => unreachable!(),
+        };
+        let mut deg = std::collections::HashMap::<usize, usize>::new();
+        for &i in &curves {
+            let (a, b) = ends(i);
+            *deg.entry(a).or_default() += 1;
+            *deg.entry(b).or_default() += 1;
+        }
+        if deg.values().any(|d| *d > 2) {
+            return Err("путь не должен ветвиться: в одной точке сходятся больше двух линий".into());
+        }
+        let mut used = vec![false; self.entities.len()];
+        let mut chains: Vec<Vec<P2>> = Vec::new();
+        // open chains first (they begin at a point with one curve), then whatever is left is a closed loop
+        let mut starts: Vec<usize> = deg.iter().filter(|(_, d)| **d == 1).map(|(p, _)| *p).collect();
+        starts.sort_unstable();
+        let mut loops: Vec<usize> = curves.iter().map(|&i| ends(i).0).collect();
+        loops.sort_unstable();
+        for start in starts.into_iter().chain(loops) {
+            if !curves.iter().any(|&i| !used[i] && (ends(i).0 == start || ends(i).1 == start)) {
+                continue;
+            }
+            let mut cur = start;
+            let mut out: Vec<P2> = Vec::new();
+            while let Some(&i) = curves.iter().find(|&&i| !used[i] && (ends(i).0 == cur || ends(i).1 == cur)) {
+                used[i] = true;
+                let (a, b) = ends(i);
+                let mut pts = self.tessellate(i);
+                if a != cur {
+                    pts.reverse();
+                }
+                if !out.is_empty() {
+                    pts.remove(0);
+                }
+                out.extend(pts);
+                cur = if a == cur { b } else { a };
+            }
+            if out.len() >= 2 {
+                chains.push(out);
+            }
+        }
+        Ok(chains)
+    }
+
     /// Упорядоченная ломаная пути: одна незамкнутая цепочка линий и дуг (вспомогательные не считаются).
     pub fn chain_path(&self) -> Result<Vec<P2>, String> {
         let curves: Vec<usize> = (0..self.entities.len())

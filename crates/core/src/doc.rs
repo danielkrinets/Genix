@@ -1360,7 +1360,8 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
         }
         FeatureKind::Pipe { path, outer, wall, op, shape, corner, bend } => {
             let sk = find_sketch(*path, steps, feats)?;
-            let raw: Vec<DVec3> = sk.sketch.chain_path()?.into_iter().map(|q| sk.plane.to_world(q)).collect();
+            // every separate line chain (and closed loop) of the drawing becomes its own pipe
+            let chains: Vec<Vec<DVec3>> = sk.sketch.chain_paths()?.into_iter().map(|c| c.into_iter().map(|q| sk.plane.to_world(q)).collect()).collect();
             let od = positive(outer, p, "диаметр")?;
             let w = wall.eval(p)?;
             if w < 0.0 {
@@ -1370,25 +1371,35 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             if corner_r < 0.0 || bend_r < 0.0 {
                 return Err("радиус скругления не может быть отрицательным".into());
             }
-            if raw.len() < 2 {
+            if chains.is_empty() || chains.iter().any(|c| c.len() < 2) {
                 return Err("путь слишком короткий".into());
             }
             if w * 2.0 >= od {
                 return Err("стенка слишком толстая для такого диаметра".into());
             }
-            let pts = geom::round_path(&raw, bend_r);
-            let t = (pts[1] - pts[0]).normalize();
-            let (o, i) = match shape {
-                PipeShape::Round => (geom::circle_loop(pts[0], t, od / 2.0, true), geom::circle_loop(pts[0], t, od / 2.0 - w, false)),
-                PipeShape::Square => (
-                    geom::rounded_rect_loop(pts[0], t, od / 2.0, od / 2.0, corner_r, true),
-                    geom::rounded_rect_loop(pts[0], t, od / 2.0 - w, od / 2.0 - w, (corner_r - w).max(0.0), false),
-                ),
-            };
-            let holes = if w > 1e-9 { vec![i] } else { vec![] };
-            let tool = Solid::from_mesh(&geom::sweep_loops(&pts, &o, &holes)?)?;
+            let mut tools = Vec::new();
+            for raw in &chains {
+                let pts = geom::round_path(raw, bend_r);
+                let t = (pts[1] - pts[0]).normalize();
+                let (o, i) = match shape {
+                    PipeShape::Round => (geom::circle_loop(pts[0], t, od / 2.0, true), geom::circle_loop(pts[0], t, od / 2.0 - w, false)),
+                    PipeShape::Square => (
+                        geom::rounded_rect_loop(pts[0], t, od / 2.0, od / 2.0, corner_r, true),
+                        geom::rounded_rect_loop(pts[0], t, od / 2.0 - w, od / 2.0 - w, (corner_r - w).max(0.0), false),
+                    ),
+                };
+                let holes = if w > 1e-9 { vec![i] } else { vec![] };
+                tools.push(Solid::from_mesh(&geom::sweep_loops(&pts, &o, &holes)?)?);
+            }
             let mut m = (**prev).clone();
-            apply_op(&mut m, tool, *op, id_base)?;
+            if tools.len() == 1 || *op == Op::NewBody {
+                // one tool, or New body: each chain keeps its own body
+                for (k, tool) in tools.into_iter().enumerate() {
+                    apply_op(&mut m, tool, *op, id_base + k as u64)?;
+                }
+            } else {
+                apply_op(&mut m, Solid::union_all(&tools), *op, id_base)?;
+            }
             Ok((Arc::new(m), None))
         }
         FeatureKind::Sweep { sketch, profiles, path, op } => {
@@ -2090,6 +2101,32 @@ mod new_ops {
         let v2 = ev.model().bodies[0].solid.volume();
         assert!(v2 < v1 - 500.0, "объём не изменился: {v1} -> {v2}");
         assert!(ev.steps().iter().all(|s| s.error.is_none()));
+    }
+
+    #[test]
+    fn a_pipe_follows_every_separate_chain_and_closed_loop_of_a_drawing() {
+        let pipe = |sk: crate::sketch::Sketch| {
+            let mut d = Document::default();
+            let ps = d.insert(FeatureKind::Sketch { plane: Plane::XY, sketch: sk });
+            d.insert(FeatureKind::Pipe { path: ps, outer: Expr::num(6.0), wall: Expr::num(1.0), op: Op::NewBody, shape: PipeShape::Round, corner: Expr::num(0.0), bend: Expr::num(0.0) });
+            let ev = run(&d);
+            (ev.error(d.features[1].uid).map(str::to_string), ev.model().bodies.len())
+        };
+        // two lines that do not touch: two pipes
+        let mut two = crate::sketch::Sketch::default();
+        two.add_line([0.0, 0.0], [40.0, 0.0]);
+        two.add_line([0.0, 20.0], [40.0, 30.0]);
+        assert_eq!(pipe(two), (None, 2));
+        // a closed rectangle: one pipe around it
+        let mut rect = crate::sketch::Sketch::default();
+        rect.add_rect([0.0, 0.0], [40.0, 30.0]);
+        assert_eq!(pipe(rect), (None, 1));
+        // an open polyline plus a rectangle in the same drawing
+        let mut mixed = crate::sketch::Sketch::default();
+        mixed.add_line([60.0, 0.0], [90.0, 0.0]);
+        mixed.add_line([90.0, 0.0], [90.0, 30.0]);
+        mixed.add_rect([0.0, 0.0], [40.0, 30.0]);
+        assert_eq!(pipe(mixed), (None, 2));
     }
 
     #[test]
