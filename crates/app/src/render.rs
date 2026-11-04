@@ -225,6 +225,30 @@ pub fn fill_region(out: &mut Vec<TriVertex>, plane: &Plane, region: &Region, col
     }
 }
 
+/// A solid arrow (round shaft and cone head) from `base` along `dir` for `len`; `wpp` is the world size of a pixel, so it keeps its look at any zoom.
+pub fn fill_arrow(out: &mut Vec<TriVertex>, base: DVec3, dir: DVec3, len: f64, wpp: f64, color: Color32) {
+    let c = linear(color);
+    let sign = if len < 0.0 { -1.0 } else { 1.0 };
+    let (x, y) = fusion_core::geom::perp_frame(dir);
+    let tip = base + dir * len;
+    let head = (wpp * 30.0).min(len.abs() * 0.6) * sign;
+    let neck = tip - dir * head;
+    let (shaft_r, head_r) = (wpp * 4.5, wpp * 14.0);
+    const N: usize = 16;
+    let ring = |centre: DVec3, r: f64, i: usize| centre + (x * (std::f64::consts::TAU * i as f64 / N as f64).cos() + y * (std::f64::consts::TAU * i as f64 / N as f64).sin()) * r;
+    for i in 0..N {
+        let j = (i + 1) % N;
+        // shaft
+        for q in [ring(base, shaft_r, i), ring(neck, shaft_r, i), ring(neck, shaft_r, j), ring(base, shaft_r, i), ring(neck, shaft_r, j), ring(base, shaft_r, j)] {
+            out.push(TriVertex { pos: v3(q), color: c });
+        }
+        // head cone and its base disc
+        for q in [ring(neck, head_r, i), tip, ring(neck, head_r, j), ring(neck, head_r, i), ring(neck, head_r, j), neck] {
+            out.push(TriVertex { pos: v3(q), color: c });
+        }
+    }
+}
+
 /// Полупрозрачный прямоугольник на плоскости.
 pub fn fill_quad(out: &mut Vec<TriVertex>, plane: &Plane, a: P2, b: P2, color: Color32) {
     let c = linear(color);

@@ -148,12 +148,17 @@ pub fn run(args: &[String]) -> Option<i32> {
             }
         }
         "--license-sign" => {
-            let (Some(key), Some(email), Some(days)) = (arg(2), arg(3), arg(4).and_then(|d| d.parse::<u64>().ok())) else {
-                eprintln!("usage: genix --license-sign private_key_file email days");
+            // the length is days, or minutes with an «m» suffix (`90m`)
+            let seconds = arg(4).and_then(|d| match d.strip_suffix('m') {
+                Some(m) => m.parse::<u64>().ok().map(|m| m * 60),
+                None => d.parse::<u64>().ok().map(|d| d * 86_400),
+            });
+            let (Some(key), Some(email), Some(seconds)) = (arg(2), arg(3), seconds) else {
+                eprintln!("usage: genix --license-sign private_key_file email days|minutes+m");
                 return Some(2);
             };
             let pkcs8 = match std::fs::read(key) { Ok(b) => b, Err(e) => return fail(format!("{key}: {e}")) };
-            let claims = crate::license::Claims { email: email.to_string(), cid: String::new(), until: crate::license::now_unix() + days * 86_400 };
+            let claims = crate::license::Claims { email: email.to_string(), cid: String::new(), until: crate::license::now_unix() + seconds };
             match crate::license::sign(&pkcs8, &claims) {
                 Ok(token) => { println!("{token}"); Some(0) }
                 Err(e) => fail(e),
