@@ -2,6 +2,7 @@
 
 Every change, even a small fix, gets a new version: `0.00.N — what was added` (up to five words, English only). Newest first.
 
+- 0.00.67 — Deterministic geometry, fuzz fixes
 - 0.00.66 — Smarter face and edge following
 - 0.00.65 — Steps follow moved faces, edges
 - 0.00.64 — Agent QA: 31 bugs fixed

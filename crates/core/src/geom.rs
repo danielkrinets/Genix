@@ -297,6 +297,28 @@ pub fn rounded_rect_loop(c: DVec3, t: DVec3, hw: f64, hh: f64, corner: f64, ccw:
     pts
 }
 
+/// The tightest bend [`round_path`] makes with `radius`: on short segments it has to shrink the radius, and a pipe bent
+/// tighter than its own radius would fold through itself.
+pub fn round_path_min_radius(pts: &[DVec3], radius: f64) -> f64 {
+    let closed = pts.len() > 3 && pts[0].distance(pts[pts.len() - 1]) < 1e-6;
+    let q: Vec<DVec3> = if closed { pts[..pts.len() - 1].to_vec() } else { pts.to_vec() };
+    let n = q.len();
+    let mut least = f64::INFINITY;
+    let corners: Vec<usize> = if closed { (0..n).collect() } else { (1..n.saturating_sub(1)).collect() };
+    for i in corners {
+        let (a, b, c) = (q[(i + n - 1) % n], q[i], q[(i + 1) % n]);
+        let (u, v) = ((a - b).normalize_or_zero(), (c - b).normalize_or_zero());
+        let theta = u.dot(v).clamp(-1.0, 1.0).acos();
+        if theta < 1e-3 || theta > std::f64::consts::PI - 1e-3 {
+            continue;
+        }
+        let half = theta / 2.0;
+        let l = (radius / half.tan()).min(0.5 * (a - b).length().min((c - b).length()));
+        least = least.min(l * half.tan());
+    }
+    least
+}
+
 /// Скругляет углы ломаной дугами радиуса `radius` (на коротких сегментах радиус уменьшается сам).
 pub fn round_path(pts: &[DVec3], radius: f64) -> Vec<DVec3> {
     if radius < 1e-9 || pts.len() < 3 {
@@ -1074,7 +1096,9 @@ pub fn face_region_bevel(mesh: &Mesh, plane: &Plane, seed: DVec3) -> Option<(Reg
 }
 
 fn face_region_impl(mesh: &Mesh, plane: &Plane, seed: DVec3, bevel: bool) -> Option<(Region, f64)> {
-    use std::collections::{HashMap, HashSet};
+    // ordered maps and sets: the outline is walked in the same order every time, so the same document always gives the same
+    // solid (a hash order changes from run to run and once made a press-pull give eight different volumes)
+    use std::collections::{BTreeMap as HashMap, BTreeSet as HashSet};
     let (n, o) = (plane.normal(), plane.o());
     let mut ids: HashMap<(i64, i64, i64), usize> = HashMap::new();
     let mut pos: Vec<DVec3> = Vec::new();
@@ -1146,17 +1170,35 @@ fn face_region_impl(mesh: &Mesh, plane: &Plane, seed: DVec3, bevel: bool) -> Opt
     }
     let tri_list = &tris;
     let directed: HashSet<(usize, usize)> = face.iter().flat_map(|&i| (0..3).map(move |k| (tri_list[i][k], tri_list[i][(k + 1) % 3]))).collect();
-    let next: HashMap<usize, usize> = directed.iter().filter(|&&(a, b)| !directed.contains(&(b, a))).copied().collect();
+    // boundary edges, by their start: where two pockets meet at a corner the outline passes one vertex twice, so a vertex can
+    // have two ways on; the walk then takes the one nearest clockwise from where it came, keeping the face on its left
+    let mut outs: HashMap<usize, Vec<usize>> = HashMap::new();
+    for &(a, b) in directed.iter().filter(|&&(a, b)| !directed.contains(&(b, a))) {
+        outs.entry(a).or_default().push(b);
+    }
+    let (ex, ey) = (DVec3::from(plane.x), DVec3::from(plane.y));
+    let ang = |a: usize, b: usize| { let d = pos[b] - pos[a]; d.dot(ey).atan2(d.dot(ex)) };
     let mut loops: Vec<Vec<P2>> = Vec::new();
-    let mut used: HashSet<usize> = HashSet::new();
-    for &first in next.keys() {
-        if used.contains(&first) { continue; }
-        let (mut lp, mut cur) = (Vec::new(), first);
+    let mut done: HashSet<(usize, usize)> = HashSet::new();
+    let starts: Vec<(usize, usize)> = outs.iter().flat_map(|(&a, bs)| bs.iter().map(move |&b| (a, b))).collect();
+    for (a0, b0) in starts {
+        if done.contains(&(a0, b0)) { continue; }
+        let mut lp = Vec::new();
+        let (mut a, mut b) = (a0, b0);
         loop {
-            used.insert(cur);
-            lp.push(plane.to_local(pos[cur]));
-            cur = *next.get(&cur)?;
-            if cur == first || used.contains(&cur) { break; }
+            done.insert((a, b));
+            lp.push(plane.to_local(pos[a]));
+            let back = ang(b, a);
+            let cands = outs.get(&b)?;
+            let next = cands.iter().copied().filter(|&c| !done.contains(&(b, c)) || (b, c) == (a0, b0)).min_by(|&x, &y| {
+                let turn = |c: usize| { let mut t = back - ang(b, c); while t <= 1e-12 { t += std::f64::consts::TAU; } t };
+                turn(x).total_cmp(&turn(y))
+            });
+            let Some(c) = next else { break };
+            if (b, c) == (a0, b0) { break; }
+            a = b;
+            b = c;
+            if lp.len() > directed.len() { break; }
         }
         if lp.len() >= 3 { loops.push(lp); }
     }
@@ -1232,7 +1274,8 @@ pub fn draft_mesh(mesh: &Mesh, pull: DVec3, neutral: f64, angle_deg: f64) -> Mes
 /// The cross-section of `mesh` by the plane parallel to `plane` at `height` along its normal, as the region of the loop that contains
 /// `seed` (projected onto the plane): its outline is the exact wall of the part there, with the loops directly inside it as holes.
 pub fn section_region(mesh: &Mesh, plane: &Plane, height: f64, seed: DVec3) -> Option<Region> {
-    use std::collections::HashMap;
+    // ordered: the same loops in the same order on every run
+    use std::collections::BTreeMap as HashMap;
     let (n, o) = (plane.normal(), plane.o() + plane.normal() * height);
     let side = |v: DVec3| { let d = (v - o).dot(n); if d.abs() < 1e-9 { 1e-9 } else { d } };
     let key = |q: P2| ((q[0] * 1e5).round() as i64, (q[1] * 1e5).round() as i64);

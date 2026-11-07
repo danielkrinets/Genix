@@ -62,7 +62,7 @@ impl Params {
     }
 
     pub fn eval(&self, src: &str) -> Result<f64, String> {
-        let mut p = Parser { s: src.as_bytes(), i: 0, params: self, depth: 0 };
+        let mut p = Parser { s: src.as_bytes(), i: 0, params: self, depth: 0, nest: 0 };
         let v = p.expr()?;
         p.ws();
         if p.i != p.s.len() {
@@ -91,6 +91,9 @@ struct Parser<'a> {
     i: usize,
     params: &'a Params,
     depth: u32,
+    /// Brackets and signs open at the moment: each one is a level of recursion, so a pasted string of thousands of them
+    /// is refused instead of overflowing the stack and closing the program.
+    nest: u32,
 }
 
 impl Parser<'_> {
@@ -142,11 +145,15 @@ impl Parser<'_> {
 
     /// Унарный минус слабее степени: -2^2 = -4.
     fn power(&mut self) -> Result<f64, String> {
-        if self.eat(b'-') {
-            return Ok(-self.power()?);
-        }
-        if self.eat(b'+') {
-            return self.power();
+        if self.eat(b'-') || self.eat(b'+') {
+            let neg = self.s[self.i - 1] == b'-';
+            self.nest += 1;
+            if self.nest > 200 {
+                return Err("слишком глубокое выражение".into());
+            }
+            let v = self.power()?;
+            self.nest -= 1;
+            return Ok(if neg { -v } else { v });
         }
         let base = self.atom()?;
         if self.eat(b'^') {
@@ -159,7 +166,12 @@ impl Parser<'_> {
     fn atom(&mut self) -> Result<f64, String> {
         self.ws();
         if self.eat(b'(') {
+            self.nest += 1;
+            if self.nest > 200 {
+                return Err("слишком глубокое выражение".into());
+            }
             let v = self.expr()?;
+            self.nest -= 1;
             if !self.eat(b')') {
                 return Err("не закрыта скобка".into());
             }
@@ -232,7 +244,7 @@ impl Parser<'_> {
         if self.depth > 32 {
             return Err(format!("циклическая ссылка через «{name}»"));
         }
-        let mut sub = Parser { s: e.0.as_bytes(), i: 0, params: self.params, depth: self.depth + 1 };
+        let mut sub = Parser { s: e.0.as_bytes(), i: 0, params: self.params, depth: self.depth + 1, nest: 0 };
         let v = sub.expr()?;
         sub.ws();
         if sub.i != sub.s.len() {

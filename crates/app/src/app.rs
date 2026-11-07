@@ -738,7 +738,10 @@ impl App {
         if let Some(f) = self.doc.feature_mut(uid) {
             if let FeatureKind::Fillet { edges, .. } | FeatureKind::Chamfer { edges, .. } = &mut f.kind {
                 for e in edges.iter_mut().filter(|e| !e.circle && e.faces.is_none()) {
-                    e.faces = e.face_normals(&mesh);
+                    if let Some((n, concave)) = e.face_info(&mesh) {
+                        e.faces = Some(n);
+                        e.concave = concave;
+                    }
                 }
             }
         }

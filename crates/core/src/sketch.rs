@@ -1256,28 +1256,39 @@ impl Region {
         };
         // a full triangulation of a polygon with holes has V + 2H - 2 triangles; only a short one can hold a T-junction
         let full = tris.len() + 2 >= verts.len() + 2 * holes.len();
-        let mut guard = if full { usize::MAX - 1 } else { 0 };
-        'outer: loop {
-            guard = guard.saturating_add(1);
-            if guard > verts.len() * 4 + 16 {
-                break;
-            }
-            for v in 0..verts.len() {
-                let hit = tris.iter().enumerate().find_map(|(ti, t)| {
-                    if t.contains(&v) {
-                        return None;
+        if !full {
+            // vertices sorted by x: an edge only looks at the vertices inside its own x-range
+            let mut by_x: Vec<usize> = (0..verts.len()).collect();
+            by_x.sort_by(|&i, &j| verts[i][0].total_cmp(&verts[j][0]));
+            let xs: Vec<f64> = by_x.iter().map(|&i| verts[i][0]).collect();
+            let mut queue: Vec<usize> = (0..tris.len()).collect();
+            let mut budget = verts.len() * 4 + 64;
+            while let Some(ti) = queue.pop() {
+                let t = tris[ti];
+                let mut split = None;
+                'edges: for e in 0..3 {
+                    let (a, b) = (verts[t[e]], verts[t[(e + 1) % 3]]);
+                    let (lo, hi) = (a[0].min(b[0]) - 1e-9, a[0].max(b[0]) + 1e-9);
+                    let start = xs.partition_point(|x| *x < lo);
+                    for &v in by_x[start..].iter().take_while(|&&v| verts[v][0] <= hi) {
+                        if !t.contains(&v) && on(verts[v], a, b) {
+                            split = Some((e, v));
+                            break 'edges;
+                        }
                     }
-                    (0..3).find(|&e| on(verts[v], verts[t[e]], verts[t[(e + 1) % 3]])).map(|e| (ti, e))
-                });
-                if let Some((ti, e)) = hit {
-                    let t = tris[ti];
+                }
+                if let Some((e, v)) = split {
+                    if budget == 0 {
+                        break;
+                    }
+                    budget -= 1;
                     let (a, b, c) = (t[e], t[(e + 1) % 3], t[(e + 2) % 3]);
                     tris[ti] = [a, v, c];
                     tris.push([v, b, c]);
-                    continue 'outer;
+                    queue.push(ti);
+                    queue.push(tris.len() - 1);
                 }
             }
-            break;
         }
         (verts, tris)
     }

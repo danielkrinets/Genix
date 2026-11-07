@@ -115,20 +115,28 @@ pub struct EdgeRef {
     /// moves those faces, each is followed and the edge is found again where they meet. Old files have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub faces: Option<[[f64; 3]; 2]>,
+    /// The edge is an inside corner (the faces meet in a valley): each face then lies towards the other's outside.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub concave: bool,
 }
 
 impl EdgeRef {
     pub fn line(a: [f64; 3], b: [f64; 3]) -> Self {
-        EdgeRef { a, b, circle: false, axis: [0.0; 3], sweep: None, faces: None }
+        EdgeRef { a, b, circle: false, axis: [0.0; 3], sweep: None, faces: None, concave: false }
     }
 
     pub fn round(point: [f64; 3], center: [f64; 3], axis: [f64; 3]) -> Self {
-        EdgeRef { a: point, b: center, circle: true, axis, sweep: None, faces: None }
+        EdgeRef { a: point, b: center, circle: true, axis, sweep: None, faces: None, concave: false }
     }
 
     /// The outward normals of the two faces of `mesh` that meet along this straight edge (None for a round edge, or when the
     /// edge is not found or more than two directions meet there).
     pub fn face_normals(&self, mesh: &Mesh) -> Option<[[f64; 3]; 2]> {
+        self.face_info(mesh).map(|(n, _)| n)
+    }
+
+    /// [`EdgeRef::face_normals`] and whether the edge is concave.
+    pub fn face_info(&self, mesh: &Mesh) -> Option<([[f64; 3]; 2], bool)> {
         if self.circle {
             return None;
         }
@@ -142,18 +150,23 @@ impl EdgeRef {
             let t = (p - a).dot(d);
             (p - a - d * t).length() < 1e-5 && t > -1e-5 && t < len + 1e-5
         };
-        let mut normals: Vec<DVec3> = Vec::new();
+        let mut normals: Vec<(DVec3, DVec3)> = Vec::new();
         for t in &mesh.triangles {
             let [p, q, r] = mesh.tri(t);
             let touches = [(p, q), (q, r), (r, p)].iter().any(|(x, y)| on(*x) && on(*y) && x.distance(*y) > 1e-9);
             if touches {
                 let n = (q - p).cross(r - p).normalize_or_zero();
-                if n != DVec3::ZERO && !normals.iter().any(|m| m.dot(n) > 1.0 - 1e-6) {
-                    normals.push(n);
+                if n != DVec3::ZERO && !normals.iter().any(|(m, _)| m.dot(n) > 1.0 - 1e-6) {
+                    normals.push((n, (p + q + r) / 3.0));
                 }
             }
         }
-        (normals.len() == 2).then(|| [normals[0].to_array(), normals[1].to_array()])
+        if normals.len() != 2 {
+            return None;
+        }
+        // a valley: the first face's triangle lies on the outer side of the second face
+        let concave = (normals[0].1 - a).dot(normals[1].0) > 1e-9;
+        Some(([normals[0].0.to_array(), normals[1].0.to_array()], concave))
     }
 
     /// Ломаная для показа и выбора мышью (окружность — 72 отрезка).
@@ -948,8 +961,9 @@ fn grow_outer(region: &crate::sketch::Region, e: f64, free: &dyn Fn(crate::sketc
 /// The straight sharp edges of a mesh, collinear pieces joined into whole lines. Pieces are grouped by the line they lie on
 /// (direction and offset, rounded), then joined along it, so the cost stays near linear even for a plate with many holes.
 fn sharp_lines(mesh: &Mesh) -> Vec<(DVec3, DVec3)> {
-    use std::collections::HashMap;
-    let mut groups: HashMap<[i64; 6], (DVec3, DVec3, Vec<(f64, f64)>)> = HashMap::new();
+    // ordered, so the lines come out in the same order on every run
+    use std::collections::BTreeMap;
+    let mut groups: BTreeMap<[i64; 6], (DVec3, DVec3, Vec<(f64, f64)>)> = BTreeMap::new();
     for (i, j) in mesh.sharp_edges(20.0) {
         let (a, b) = (DVec3::from(mesh.vertices[i as usize]), DVec3::from(mesh.vertices[j as usize]));
         let mut d = (b - a).normalize_or_zero();
@@ -1014,8 +1028,9 @@ fn followed_edges(model: &Model, mesh: &Mesh, edges: &[EdgeRef]) -> Vec<EdgeRef>
             }
             let mut h = [0.0; 2];
             for (k, (ni, nj)) in [(n1, n2), (n2, n1)].into_iter().enumerate() {
-                // a point on face i just off the edge, away from face j
-                let into = -(nj - ni * ni.dot(nj)).normalize_or_zero();
+                // a point on face i just off the edge: away from face j at a ridge, towards face j's outside in a valley
+                let w = (nj - ni * ni.dot(nj)).normalize_or_zero();
+                let into = if e.concave { w } else { -w };
                 let pl = Plane::from_point_normal(mid, ni);
                 let (moved, _) = followed(model, &pl, mid + into * 0.05);
                 h[k] = (moved.o() - pl.o()).dot(ni);
@@ -1111,8 +1126,28 @@ fn followed(m: &Model, plane: &Plane, seed: DVec3) -> (Plane, DVec3) {
                 best = Some(h);
             }
         }
-        if let Some(h) = best {
-            return shifted(h);
+        // the same body may still have the face on its plane, only cut shorter (a wall of a step after the plate under it got
+        // thicker): when that is nearer than the next face along the normal, the face stayed where it was
+        let mut same: Option<(f64, DVec3)> = None;
+        for t in &mesh.triangles {
+            let [p, q, r] = mesh.tri(t);
+            if !facing(p, q, r) || (p - o).dot(n).abs() >= 1e-3 {
+                continue;
+            }
+            let c = (p + q + r) / 3.0;
+            let near = [(p, q), (q, r), (r, p)].into_iter().map(|(u, v)| {
+                let e = v - u;
+                u + e * ((s - u).dot(e) / e.length_squared().max(1e-24)).clamp(0.0, 1.0)
+            }).min_by(|a, b| a.distance(s).total_cmp(&b.distance(s))).unwrap();
+            if same.is_none_or(|(dd, _)| near.distance(s) < dd) {
+                same = Some((near.distance(s), near + (c - near) * 1e-3));
+            }
+        }
+        match (same, best) {
+            (Some((dd, at)), Some(h)) if dd <= h => return (*plane, at),
+            (Some((_, at)), None) => return (*plane, at),
+            (_, Some(h)) => return shifted(h),
+            _ => {}
         }
     }
     // 3a. the nearest part of a face still on the same plane
@@ -1215,6 +1250,11 @@ pub fn apply_op(model: &mut Model, tool: Solid, op: Op, new_id: u64) -> Result<(
     if tool.is_empty() || tool.volume().abs() < 1e-9 {
         return Err("пустое тело".into());
     }
+    // a tool turned inside out (a taper that closes up and goes on, a pipe bent tighter than its own radius) has a negative
+    // volume: it would cut nothing and hide a reversed shell in the part
+    if tool.volume() < 0.0 {
+        return Err("тело вывернуто наизнанку — уменьшите уклон, длину или радиус изгиба".into());
+    }
     let overlapping: Vec<usize> = model.bodies.iter().enumerate().filter(|(_, b)| b.solid.bounds_overlap(&tool)).map(|(i, _)| i).collect();
     match op {
         Op::NewBody => model.new_body(new_id, tool),
@@ -1268,7 +1308,11 @@ pub fn apply_op(model: &mut Model, tool: Solid, op: Op, new_id: u64) -> Result<(
             let mut extra = 0;
             for (i, r) in results.into_iter().rev() {
                 if gone(&r) {
-                    model.bodies.remove(i);
+                    // an intersection leaves a body the tool does not meet as it is (whether or not their boxes overlap);
+                    // a cut that swallows a body removes it
+                    if op == Op::Cut {
+                        model.bodies.remove(i);
+                    }
                     continue;
                 }
                 // a cut right through a body leaves separate pieces: each becomes a body of its own, as in other CAD programs
@@ -1278,6 +1322,9 @@ pub fn apply_op(model: &mut Model, tool: Solid, op: Op, new_id: u64) -> Result<(
                     model.bodies[i].solid = Arc::new(parts.next().unwrap());
                     for s in parts {
                         extra += 1;
+                        if extra > 499 {
+                            return Err("вырез разбил тело на слишком много частей".into());
+                        }
                         model.new_body(new_id + 500 + extra, s);
                     }
                 } else {
@@ -1517,10 +1564,15 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                 };
                 let upper = b.solid.boolean(&cut(true)?, BoolOp::Intersect);
                 let lower = b.solid.boolean(&cut(false)?, BoolOp::Intersect);
+                // a U shape split across its arms falls into more than two pieces: each is a body of its own
+                let parts = |s: Solid| { let p = split_shells(&s.mesh); if p.len() > 1 { p } else { vec![s] } };
+                let mut lowers = parts(lower).into_iter();
                 let i = m.bodies.iter().position(|x| x.id == b.id).unwrap();
-                m.bodies[i].solid = Arc::new(lower);
-                m.new_body(id_base + k, upper);
-                k += 1;
+                m.bodies[i].solid = Arc::new(lowers.next().unwrap());
+                for s in lowers.chain(parts(upper)) {
+                    m.new_body(id_base + k, s);
+                    k += 1;
+                }
             }
             Ok((Arc::new(m), None))
         }
@@ -1670,7 +1722,10 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             let mut k = 0;
             for mat in &mats {
                 for b in &sel {
-                    m.new_body(id_base + k, b.solid.transformed(mat));
+                    // a step owns the ids uid*1000 .. uid*1000+999; copies past that take ids from a range far above every
+                    // step's own, so a big pattern never reuses the id of a later step's body
+                    let id = if k < 999 { id_base + k } else { (1u64 << 44) + (id_base / 1000) * 1_000_000 + k };
+                    m.new_body(id, b.solid.transformed(mat));
                     k += 1;
                 }
             }
@@ -1690,7 +1745,7 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                     let tool = if solids.len() == 1 { solids.into_iter().next().unwrap() } else { Solid::union_all(&solids) };
                     let inside = t.solid.boolean(&tool, BoolOp::Intersect);
                     let outside = t.solid.boolean(&tool, BoolOp::Subtract);
-                    if inside.is_empty() || outside.is_empty() {
+                    if inside.is_empty() || outside.is_empty() || inside.volume().abs() < 1e-9 || outside.volume().abs() < 1e-9 {
                         return Err("инструмент не делит тело на две части".into());
                     }
                     let mut m = (**prev).clone();
@@ -1732,10 +1787,19 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             if !keep_tools {
                 m.bodies.retain(|b| !tools.contains(&b.id));
             }
-            if acc.is_empty() {
+            if acc.is_empty() || acc.volume().abs() < 1e-9 {
                 m.bodies.retain(|b| b.id != *target);
-            } else if let Some(b) = m.bodies.iter_mut().find(|b| b.id == *target) {
-                b.solid = Arc::new(acc);
+            } else {
+                // a subtraction can cut the target into separate pieces: each becomes a body of its own, as a cut does
+                // (a union or an exclusive combine keeps everything in the target, joined or not, as it always did)
+                let pieces = if *op == BoolOp::Subtract { split_shells(&acc.mesh) } else { Vec::new() };
+                let mut pieces = if pieces.len() > 1 { pieces.into_iter() } else { vec![acc].into_iter() };
+                if let Some(b) = m.bodies.iter_mut().find(|b| b.id == *target) {
+                    b.solid = Arc::new(pieces.next().unwrap());
+                }
+                for (k, s) in pieces.enumerate() {
+                    m.new_body(id_base + 1 + k as u64, s);
+                }
             }
             Ok((Arc::new(m), None))
         }
@@ -1868,6 +1932,9 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             }
             let mut tools = Vec::new();
             for raw in &chains {
+                if bend_r > 1e-9 && geom::round_path_min_radius(raw, bend_r) < od / 2.0 - 1e-9 {
+                    return Err("изгиб туже радиуса трубы: удлините отрезки пути или уменьшите диаметр".into());
+                }
                 let pts = geom::round_path(raw, bend_r);
                 let t = (pts[1] - pts[0]).normalize();
                 let (o, i) = match shape {
@@ -1895,7 +1962,15 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             let sk = find_sketch(*sketch, steps, feats)?;
             let ps = find_sketch(*path, steps, feats)?;
             let regions = pick_regions(&sk, profiles)?;
-            let pts: Vec<DVec3> = ps.sketch.chain_path()?.into_iter().map(|q| ps.plane.to_world(q)).collect();
+            // an open chain, or one closed loop (the profile then sweeps round into a ring)
+            let path = match ps.sketch.chain_path() {
+                Ok(p) => p,
+                Err(e) => match ps.sketch.chain_paths() {
+                    Ok(mut chains) if chains.len() == 1 => chains.remove(0),
+                    _ => return Err(e),
+                },
+            };
+            let pts: Vec<DVec3> = path.into_iter().map(|q| ps.plane.to_world(q)).collect();
             let mut parts = Vec::new();
             for r in &regions {
                 let w = |l: &[[f64; 2]]| -> Vec<DVec3> { l.iter().map(|q| sk.plane.to_world(*q)).collect() };
@@ -2115,7 +2190,8 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                         mesh.vertices.iter().any(|q| (DVec3::from(*q) - pl.o()).dot(pl.normal()).abs() < 1e-6)
                     }
                 };
-                if *open && !faces.iter().any(|pl| on_body(pl)) {
+                // an open shell hollows the body its face was picked on; so does a closed one when the click is known
+                if (*open || clicked[0]) && !faces.iter().any(|pl| on_body(pl)) {
                     continue;
                 }
                 let mut s = (*b.solid).clone();

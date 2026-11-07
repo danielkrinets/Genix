@@ -1,7 +1,8 @@
 //! Recover selectable lines, circles and open circular arcs from sharp mesh edges.
 use fusion_core::{Mesh, doc::EdgeRef};
 use glam::DVec3;
-use std::collections::{HashMap,HashSet};
+// ordered: edges come out in the same order every time, so «all edges» gives the same solid on every run
+use std::collections::{BTreeMap as HashMap,BTreeSet as HashSet};
 
 pub fn selectable(mesh: &Mesh) -> Vec<EdgeRef> {
     let segs=mesh.sharp_edges(30.0);
