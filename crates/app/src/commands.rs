@@ -926,6 +926,12 @@ fn face_pick_row(ui: &mut egui::Ui, pick: &mut PickTarget, has_face: bool, hint:
 }
 
 /// Пользователь ещё не выбрал то, без чего операция не строится: ошибку не показываем, ждём щелчка.
+/// The fillet/chamfer size shown until the body is known. Written "1.0", not "1", so a radius of 1 the user types is not
+/// mistaken for it and replaced by the body's default.
+pub fn edge_placeholder() -> Expr {
+    Expr("1.0".into())
+}
+
 pub fn awaiting_pick(kind: &FeatureKind) -> bool {
     match kind {
         FeatureKind::Extrude { profiles, face, .. } => profiles.is_empty() && face.is_none(),
@@ -1014,8 +1020,8 @@ pub fn default_feature(kind: &str, c: &Ctx) -> FeatureKind {
         "thread_on" => FeatureKind::ThreadOn { body: 0, edge: fusion_core::doc::EdgeRef::round([1.0, 0.0, 0.0], [0.0; 3], [0.0, 0.0, 1.0]), length: num(10.0), pitch: num(1.5), depth: num(0.8) },
         "thread" => FeatureKind::Thread { at: zero(), axis: Axis3::Z, dia: num(10.0), pitch: num(1.5), length: num(15.0), depth: num(0.8), op: Op::NewBody },
         "pattern" => FeatureKind::Pattern { bodies: selected.to_vec(), kind: PatternKind::Rect { nx: num(3.0), dx: num(30.0), ny: num(1.0), dy: num(30.0), nz: Expr::num(1.0), dz: Expr::num(0.0) } },
-        "chamfer" => FeatureKind::Chamfer { body: selected.first().copied().unwrap_or(0), edges: vec![], dist: num(c.edge_size.unwrap_or(1.0)), second: fusion_core::doc::ChamferSecond::Equal, flip: false },
-        "fillet" => FeatureKind::Fillet { body: selected.first().copied().unwrap_or(0), edges: vec![], radius: num(c.edge_size.unwrap_or(1.0)) },
+        "chamfer" => FeatureKind::Chamfer { body: selected.first().copied().unwrap_or(0), edges: vec![], dist: c.edge_size.map(num).unwrap_or_else(edge_placeholder), second: fusion_core::doc::ChamferSecond::Equal, flip: false },
+        "fillet" => FeatureKind::Fillet { body: selected.first().copied().unwrap_or(0), edges: vec![], radius: c.edge_size.map(num).unwrap_or_else(edge_placeholder) },
         "combine" => FeatureKind::Combine {
             target: selected.first().copied().unwrap_or(0),
             tools: selected.iter().skip(1).copied().collect(),

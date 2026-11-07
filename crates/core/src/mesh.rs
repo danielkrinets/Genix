@@ -113,10 +113,49 @@ impl Mesh {
         }
         let mut mesh = Mesh { triangles: (0..corners.len() as u32 / 3).map(|i| [3 * i, 3 * i + 1, 3 * i + 2]).collect(), vertices: corners };
         mesh.weld(1e-6);
+        if mesh.triangles.is_empty() {
+            return Err("в файле STL нет треугольников".into());
+        }
         if mesh.volume() < 0.0 {
             mesh.flip();
         }
         Ok(mesh)
+    }
+
+    /// The separate pieces of the mesh: triangles joined through shared vertices stay together.
+    pub fn components(&self) -> Vec<Mesh> {
+        let n = self.vertices.len();
+        let mut parent: Vec<usize> = (0..n).collect();
+        fn find(p: &mut Vec<usize>, mut i: usize) -> usize {
+            while p[i] != i {
+                p[i] = p[p[i]];
+                i = p[i];
+            }
+            i
+        }
+        for t in &self.triangles {
+            let a = find(&mut parent, t[0] as usize);
+            for &v in &t[1..] {
+                let b = find(&mut parent, v as usize);
+                if a != b {
+                    parent[b] = a;
+                }
+            }
+        }
+        let mut groups: std::collections::BTreeMap<usize, Mesh> = std::collections::BTreeMap::new();
+        let mut remap: Vec<Option<u32>> = vec![None; n];
+        for t in &self.triangles {
+            let root = find(&mut parent, t[0] as usize);
+            let g = groups.entry(root).or_insert_with(|| Mesh { vertices: Vec::new(), triangles: Vec::new() });
+            let tri = t.map(|v| {
+                *remap[v as usize].get_or_insert_with(|| {
+                    g.vertices.push(self.vertices[v as usize]);
+                    (g.vertices.len() - 1) as u32
+                })
+            });
+            g.triangles.push(tri);
+        }
+        groups.into_values().collect()
     }
 
     /// Добавить другую сетку (без слияния вершин).

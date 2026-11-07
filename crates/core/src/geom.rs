@@ -970,6 +970,29 @@ mod tests {
 
 /// Planar face of `mesh` that contains `seed`: the connected triangles lying in `plane` and facing along its normal,
 /// returned as an outer loop plus holes in plane coordinates. `None` when no such face exists.
+/// How far `seed` is from the faces of `mesh` that lie on `plane` and face its way: 0 when it is on one of them, `None` when the
+/// mesh has no such face. Used to tell which of several bodies with faces on the same plane the user clicked.
+pub fn face_seed_distance(mesh: &Mesh, plane: &Plane, seed: DVec3) -> Option<f64> {
+    let (n, o) = (plane.normal(), plane.o());
+    let mut best: Option<f64> = None;
+    for t in &mesh.triangles {
+        let [a, b, c] = mesh.tri(t);
+        if [a, b, c].iter().any(|p| (*p - o).dot(n).abs() >= 1e-3) || (b - a).cross(c - a).normalize_or_zero().dot(n) <= 0.9999 {
+            continue;
+        }
+        let q = seed - n * (seed - o).dot(n);
+        let inside = [(a, b), (b, c), (c, a)].iter().all(|(p, r)| (*r - *p).cross(q - *p).dot(n) > -1e-6);
+        let d = if inside { 0.0 } else { [a, b, c].iter().map(|p| p.distance(q)).fold(f64::INFINITY, f64::min) };
+        best = Some(best.map_or(d, |x: f64| x.min(d)));
+    }
+    best
+}
+
+/// The index of the body whose face on `plane` the point `seed` was picked on (the nearest one when it lies on none).
+pub fn body_of_face(meshes: &[&Mesh], plane: &Plane, seed: DVec3) -> Option<usize> {
+    meshes.iter().enumerate().filter_map(|(i, m)| face_seed_distance(m, plane, seed).map(|d| (i, d))).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(i, _)| i)
+}
+
 pub fn face_region(mesh: &Mesh, plane: &Plane, seed: DVec3) -> Option<Region> {
     face_region_impl(mesh, plane, seed, false).map(|(r, _)| r)
 }

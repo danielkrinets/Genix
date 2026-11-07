@@ -1138,4 +1138,5 @@ pub const EN: &[(&str, &str)] = &[
     ("Открыть подписку и лицензию", "Open subscription and licence"),
     ("Исключающее", "Exclusive"),
     ("Три угла одного шага применяются по порядку Z, затем Y, затем X вокруг неподвижных осей. Нужен другой порядок — сделайте два шага. Несколько тел поворачиваются вместе вокруг центра всей группы", "The three angles of one step are applied Z, then Y, then X about fixed axes. For another order use two steps. Several bodies turn together about the centre of the whole group"),
+    ("Ничего не выбрано — операция не добавлена", "Nothing selected — the operation was not added"),
 ];

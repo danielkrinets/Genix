@@ -555,6 +555,11 @@ impl Document {
         if d.version > FORMAT_VERSION {
             return Err("файл создан более новой версией программы".into());
         }
+        for f in &d.features {
+            if let FeatureKind::Sketch { sketch, .. } = &f.kind {
+                sketch.check_indices().map_err(|e| format!("файл повреждён: {e}"))?;
+            }
+        }
         let mut d = d;
         d.rollback = d.rollback.min(d.features.len());
         Ok(d)
@@ -889,10 +894,17 @@ fn grow_outer(region: &crate::sketch::Region, e: f64, free: &dyn Fn(crate::sketc
     crate::sketch::Region { outer, holes: region.holes.clone(), ids: region.ids.clone() }
 }
 
+/// The body whose face on `plane` holds the picked `seed` point.
+fn picked_body(m: &Model, plane: &Plane, seed: DVec3) -> Option<usize> {
+    let meshes: Vec<&crate::mesh::Mesh> = m.bodies.iter().map(|b| b.mesh()).collect();
+    geom::body_of_face(&meshes, plane, seed)
+}
+
 /// Press-pull of a planar face that has a bevel (chamfer or fillet) around it: the face and its bevels move together, the walls
 /// stretch (pull) or shorten (push) and the bevel keeps its shape at the new height. `None` when the face has no bevel.
 fn bevelled_press_pull(prev: &Model, plane: &Plane, seed: DVec3, d: f64) -> Result<Option<Model>, String> {
-    let found = prev.bodies.iter().enumerate().find_map(|(i, b)| geom::face_region_bevel(b.mesh(), plane, seed).map(|(r, depth)| (i, r, depth)));
+    // of several bodies with a face on this plane, the one the seed was picked on
+    let found = picked_body(prev, plane, seed).and_then(|i| geom::face_region_bevel(prev.bodies[i].mesh(), plane, seed).map(|(r, depth)| (i, r, depth)));
     let (bi, region, depth) = found.ok_or("грань не найдена: тело изменилось")?;
     if depth < 1e-6 {
         return Ok(None);
@@ -936,13 +948,27 @@ fn bevelled_press_pull(prev: &Model, plane: &Plane, seed: DVec3, d: f64) -> Resu
 }
 
 pub fn apply_op(model: &mut Model, tool: Solid, op: Op, new_id: u64) -> Result<(), String> {
-    if tool.is_empty() {
+    // a tool without volume (a loft between profiles in one plane, a flat sliver) would leave a body you cannot see or use
+    if tool.is_empty() || tool.volume().abs() < 1e-9 {
         return Err("пустое тело".into());
     }
     let overlapping: Vec<usize> = model.bodies.iter().enumerate().filter(|(_, b)| b.solid.bounds_overlap(&tool)).map(|(i, _)| i).collect();
     match op {
         Op::NewBody => model.new_body(new_id, tool),
         Op::Join => {
+            // overlapping boxes are not enough: a body joins only when the tool really meets it (shares volume, or touches it
+            // face to face, where the boxes overlap with zero thickness); a nearby body stays a body of its own
+            let overlapping: Vec<usize> = overlapping.into_iter().filter(|&i| {
+                let b = &model.bodies[i].solid;
+                let touching = match (b.mesh.bounds(), tool.mesh.bounds()) {
+                    (Some((alo, ahi)), Some((blo, bhi))) => {
+                        let gap = (ahi.min(bhi) - alo.max(blo)).min_element();
+                        gap.abs() < 1e-6
+                    }
+                    _ => false,
+                };
+                touching || !b.boolean(&tool, BoolOp::Intersect).is_empty()
+            }).collect();
             if overlapping.is_empty() {
                 model.new_body(new_id, tool);
                 return Ok(());
@@ -961,10 +987,36 @@ pub fn apply_op(model: &mut Model, tool: Solid, op: Op, new_id: u64) -> Result<(
                 return Err(if op == Op::Cut { "инструмент не касается ни одного тела" } else { "нет пересечения с телами" }.into());
             }
             let bop = if op == Op::Cut { BoolOp::Subtract } else { BoolOp::Intersect };
-            for &i in overlapping.iter().rev() {
-                let r = model.bodies[i].solid.boolean(&tool, bop);
-                if r.is_empty() {
+            let results: Vec<(usize, Solid)> = overlapping.iter().map(|&i| (i, model.bodies[i].solid.boolean(&tool, bop))).collect();
+            // boxes that overlap say nothing about the bodies themselves: a cut that changed nothing missed, and an intersection
+            // without volume (bodies that only touch) is no intersection
+            let gone = |s: &Solid| s.is_empty() || s.volume().abs() < 1e-9;
+            if op == Op::Cut && results.iter().all(|(i, r)| (r.volume() - model.bodies[*i].solid.volume()).abs() <= 1e-9 * model.bodies[*i].solid.volume().abs().max(1.0)) {
+                return Err("инструмент не касается ни одного тела".into());
+            }
+            if op == Op::Intersect && results.iter().all(|(_, r)| gone(r)) {
+                return Err("нет пересечения с телами".into());
+            }
+            // a cut that would swallow every body it touches is almost always a distance or size typed too big: say so instead of
+            // silently deleting the part
+            if op == Op::Cut && results.iter().all(|(_, r)| r.is_empty()) {
+                return Err("вырез удалил бы тело целиком — уменьшите размер или расстояние".into());
+            }
+            let mut extra = 0;
+            for (i, r) in results.into_iter().rev() {
+                if gone(&r) {
                     model.bodies.remove(i);
+                    continue;
+                }
+                // a cut right through a body leaves separate pieces: each becomes a body of its own, as in other CAD programs
+                let parts: Vec<Solid> = if op == Op::Cut { r.mesh.components().iter().filter_map(|c| Solid::from_mesh(c).ok()).filter(|s| !gone(s)).collect() } else { Vec::new() };
+                if parts.len() > 1 {
+                    let mut parts = parts.into_iter();
+                    model.bodies[i].solid = Arc::new(parts.next().unwrap());
+                    for s in parts {
+                        extra += 1;
+                        model.new_body(new_id + 500 + extra, s);
+                    }
                 } else {
                     model.bodies[i].solid = Arc::new(r);
                 }
@@ -978,6 +1030,9 @@ fn bodies_by_id<'a>(model: &'a Model, ids: &[u64]) -> Result<Vec<&'a Body>, Stri
     if ids.is_empty() {
         return Err("не выбрано ни одного тела".into());
     }
+    // a body listed twice is still one body: it must not be copied, split or patterned twice
+    let mut seen = std::collections::HashSet::new();
+    let ids: Vec<u64> = ids.iter().copied().filter(|id| seen.insert(*id)).collect();
     ids.iter().map(|id| model.body(*id).ok_or_else(|| "выбранное тело больше не существует".to_string())).collect()
 }
 
@@ -1034,7 +1089,7 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                 Extent::All(_) => (-through_all(prev, &f.plane), 0.01, Op::Cut),
                 Extent::ToBody(id) => (0.0, distance_to_body(prev, &f.plane, *id)?, Op::Join),
             };
-            let region = prev.bodies.iter().find_map(|b| geom::face_region(b.mesh(), &f.plane, DVec3::from(f.seed))).ok_or("грань не найдена: тело изменилось")?;
+            let region = picked_body(prev, &f.plane, DVec3::from(f.seed)).and_then(|i| geom::face_region(prev.bodies[i].mesh(), &f.plane, DVec3::from(f.seed))).ok_or("грань не найдена: тело изменилось")?;
             let tool = thin_extrude(&f.plane, &region, z0, z1, taper.eval(p)?, thin.eval(p)?)?;
             let mut m = (**prev).clone();
             apply_op(&mut m, tool, op, id_base)?;
@@ -1471,7 +1526,7 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             if let Some(m) = bevelled_press_pull(prev, plane, DVec3::from(*seed), d)? {
                 return Ok((Arc::new(m), None));
             }
-            let region = prev.bodies.iter().find_map(|b| geom::face_region(b.mesh(), plane, DVec3::from(*seed))).ok_or("грань не найдена: тело изменилось")?;
+            let region = picked_body(prev, plane, DVec3::from(*seed)).and_then(|i| geom::face_region(prev.bodies[i].mesh(), plane, DVec3::from(*seed))).ok_or("грань не найдена: тело изменилось")?;
             // заход на 0,01 мм внутрь тела (при добавлении) или за грань (при вырезании) исключает щель на стыке
             let (z0, z1, op) = if d > 0.0 { (-0.01, d, Op::Join) } else { (d, 0.01, Op::Cut) };
             let tool = Solid::from_mesh(&geom::extrude_region(plane, &region, z0, z1).ok_or("не удалось построить грань")?)?;
@@ -1721,6 +1776,15 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                 if (0..3).any(|i| after[i] < before[i] * 0.9 - 1e-6) {
                     return Err("радиус слишком велик для этого тела".into());
                 }
+                // where a flat face lies at the extent (a box's top), a rounding that fits leaves part of that face and the extent
+                // stays exactly; it moves only when the size no longer fits the face. An extent made by an edge may move.
+                let mesh0 = &b.solid.mesh;
+                let flat_at = |axis: usize, at: f64| mesh0.triangles.iter().any(|t| t.iter().all(|&k| (mesh0.vertices[k as usize][axis] - at).abs() < 1e-6));
+                let tol = (1e-3f64).max(v * 0.002);
+                let moved = (0..3).any(|i| (flat_at(i, lo0[i]) && lo1[i] > lo0[i] + tol) || (flat_at(i, hi0[i]) && hi1[i] < hi0[i] - tol));
+                if moved {
+                    return Err("радиус слишком велик для этого тела".into());
+                }
             }
             let mut m = (**prev).clone();
             if let Some(bb) = m.bodies.iter_mut().find(|x| x.id == *body) {
@@ -1734,10 +1798,22 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             let mut m = (**prev).clone();
             let mut done = 0;
             let faces: Vec<&Plane> = std::iter::once(plane).chain(more.iter()).collect();
+            // the app puts the clicked point into the plane's origin, which tells which body was clicked; older files only have
+            // the plane, and then every body with a face on it is hollowed as before
+            let clicked: Vec<bool> = faces.iter().map(|pl| prev.bodies.iter().any(|b| geom::face_seed_distance(b.mesh(), pl, pl.o()).is_some_and(|d| d < 1e-6))).collect();
             for b in m.bodies.iter_mut() {
                 let mesh = b.solid.mesh.clone();
                 let Some((lo, hi)) = mesh.bounds() else { continue };
-                let on_body = |pl: &Plane| mesh.vertices.iter().any(|q| (DVec3::from(*q) - pl.o()).dot(pl.normal()).abs() < 1e-6);
+                // the face was picked on this body (its plane's origin is a corner of the picked face), not merely on its plane:
+                // a neighbour of the same height stays solid
+                let on_body = |pl: &Plane| {
+                    let k = faces.iter().position(|f| std::ptr::eq(*f, pl)).unwrap_or(0);
+                    if clicked[k] {
+                        geom::face_seed_distance(&mesh, pl, pl.o()).is_some_and(|d| d < 1e-6)
+                    } else {
+                        mesh.vertices.iter().any(|q| (DVec3::from(*q) - pl.o()).dot(pl.normal()).abs() < 1e-6)
+                    }
+                };
                 if *open && !faces.iter().any(|pl| on_body(pl)) {
                     continue;
                 }
@@ -1758,7 +1834,12 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                 if cavity.is_empty() {
                     return Err("толщина слишком велика для этого тела".into());
                 }
-                b.solid = Arc::new(b.solid.boolean(&cavity, BoolOp::Subtract));
+                let hollow = b.solid.boolean(&cavity, BoolOp::Subtract);
+                // the cavity can land entirely in the opening's slab and miss the body: the walls would be thicker than the body
+                if hollow.volume() >= b.solid.volume() * (1.0 - 1e-6) {
+                    return Err("толщина слишком велика для этого тела".into());
+                }
+                b.solid = Arc::new(hollow);
                 done += 1;
             }
             if done == 0 {

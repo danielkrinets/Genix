@@ -195,11 +195,12 @@ impl Sketch {
                     G::C(_, r) => r,
                     _ => unreachable!(),
                 };
+                if !arc && ts.len() < 2 {
+                    // a whole circle needs two crossings; a refused trim must not change the sketch
+                    return false;
+                }
                 self.drop_constraints_of(e);
                 if !arc {
-                    if ts.len() < 2 {
-                        return false;
-                    }
                     // убираем участок, содержащий щелчок (циклически)
                     let n = ts.len();
                     let i = ts.iter().rposition(|t| *t <= tc).unwrap_or(n - 1);
@@ -300,7 +301,10 @@ impl Sketch {
             _ => unreachable!(),
         };
         let (q1, q2) = (other(self, lines[0]), other(self, lines[1]));
-        let (u1, u2) = ((q1 - corner).normalize(), (q2 - corner).normalize());
+        let (Some(u1), Some(u2)) = ((q1 - corner).try_normalize(), (q2 - corner).try_normalize()) else {
+            // a zero-length neighbour (a repeated vertex) has no direction to round along
+            return Err("corner");
+        };
         let cosv = u1.dot(u2).clamp(-1.0, 1.0);
         let theta = cosv.acos();
         if theta < 1e-3 || theta > std::f64::consts::PI - 1e-3 {

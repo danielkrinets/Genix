@@ -578,6 +578,10 @@ impl App {
     }
 
     fn do_undo(&mut self) {
+        // undo while a command is open first drops that command, then steps back, so closing it cannot bring the undone step back
+        if matches!(self.mode, Mode::Command(_)) {
+            self.finish_command(false);
+        }
         if let Some(d) = self.undo.pop() {
             self.redo.push(std::mem::replace(&mut self.doc, d));
             self.after_doc_change();
@@ -585,6 +589,9 @@ impl App {
     }
 
     fn do_redo(&mut self) {
+        if matches!(self.mode, Mode::Command(_)) {
+            self.finish_command(false);
+        }
         if let Some(d) = self.redo.pop() {
             self.undo.push(std::mem::replace(&mut self.doc, d));
             self.after_doc_change();
@@ -1809,7 +1816,7 @@ impl App {
             self.toast(tr("Сначала создайте чертёж (кнопка «Новый чертёж»)"), true, now);
             return;
         }
-        if matches!(kind, "hole" | "press_pull" | "place" | "fillet" | "chamfer" | "scale" | "move" | "mirror" | "split" | "draft" | "pattern" | "combine" | "remove") && model.bodies.is_empty() {
+        if matches!(kind, "hole" | "press_pull" | "place" | "fillet" | "chamfer" | "scale" | "move" | "mirror" | "split" | "draft" | "pattern" | "combine" | "remove" | "shell" | "thread_on") && model.bodies.is_empty() {
             self.toast(tr("Сначала создайте тело"), true, now);
             return;
         }
@@ -1888,7 +1895,16 @@ impl App {
             self.after_doc_change();
         }
         let Mode::Command(cmd) = std::mem::replace(&mut self.mode, Mode::Idle) else { return };
-        if ok {
+        // OK before anything was picked would store a step that only shows an error: nothing is added instead
+        let unpicked = ok && self.doc.feature(cmd.uid).is_some_and(|f| commands::awaiting_pick(&f.kind));
+        if unpicked {
+            let now = self.now;
+            self.toast(tr("Ничего не выбрано — операция не добавлена"), false, now);
+        }
+        let ok = ok && !unpicked;
+        if ok && self.doc == cmd.before {
+            // an edit closed without a change leaves nothing to undo
+        } else if ok {
             // использованный чертёж прячем
             if let Some(kind) = self.doc.feature(cmd.uid).map(|f| f.kind.clone()) {
                 for sk in used_sketches(&kind) {
@@ -2212,6 +2228,8 @@ impl App {
                     _ => None,
                 };
                 let ray = self.last_ray;
+                // bodies that exist before this step: a copy the step itself makes (mirror, pattern, move with copy) is only a preview
+                let existing: Vec<u64> = self.doc.index_of(uid).map(|i| self.ev.model_before(i).bodies.iter().map(|b| b.id).collect()).unwrap_or_default();
                 let face_pick = face;
                 let hit_body = match hit { Some(Hit::Body { slot, .. }) => model.bodies.get(slot).map(|b| b.id), _ => None };
                 let edge = self.hover_edge;
@@ -2259,7 +2277,9 @@ impl App {
                         }
                     }
                     (FeatureKind::Shell { plane, more, .. }, _, PickTarget::Face) => {
-                        if let Some((pl, _)) = face {
+                        if let Some((pl, at)) = face {
+                            // the clicked point becomes the plane's origin: it tells the shell which body's face was clicked
+                            let pl = Plane { origin: pl.to_world(at).to_array(), ..pl };
                             let same = |a: &Plane, b: &Plane| (a.normal() - b.normal()).length() < 1e-6 && (a.o() - b.o()).dot(b.normal()).abs() < 1e-6;
                             if shift {
                                 // Shift adds a face to the open ones, a second Shift-click takes it away again
@@ -2432,7 +2452,7 @@ impl App {
                         }
                         changed = true;
                     }
-                    (FeatureKind::Move { bodies, .. } | FeatureKind::Mirror { bodies, .. } | FeatureKind::Split { bodies, .. } | FeatureKind::Draft { bodies, .. } | FeatureKind::Pattern { bodies, .. } | FeatureKind::Remove { bodies } | FeatureKind::Scale { bodies, .. }, Some(Hit::Body { slot, .. }), _) => {
+                    (FeatureKind::Move { bodies, .. } | FeatureKind::Mirror { bodies, .. } | FeatureKind::Split { bodies, .. } | FeatureKind::Draft { bodies, .. } | FeatureKind::Pattern { bodies, .. } | FeatureKind::Remove { bodies } | FeatureKind::Scale { bodies, .. }, Some(Hit::Body { slot, .. }), _) if existing.contains(&model.bodies[slot].id) => {
                         let id = model.bodies[slot].id;
                         if let Some(i) = bodies.iter().position(|x| *x == id) {
                             bodies.remove(i);
@@ -2463,8 +2483,8 @@ impl App {
                 if changed {
                     // the body was chosen by the first picked edge: the untouched placeholder size becomes 10 % of what fits that body
                     let body_id = match self.doc.feature(uid).map(|f| &f.kind) {
-                        Some(FeatureKind::Fillet { body, edges, radius }) if *body != 0 && !edges.is_empty() && *radius == Expr::num(1.0) => Some(*body),
-                        Some(FeatureKind::Chamfer { body, edges, dist, .. }) if *body != 0 && !edges.is_empty() && *dist == Expr::num(1.0) => Some(*body),
+                        Some(FeatureKind::Fillet { body, edges, radius }) if *body != 0 && !edges.is_empty() && *radius == commands::edge_placeholder() => Some(*body),
+                        Some(FeatureKind::Chamfer { body, edges, dist, .. }) if *body != 0 && !edges.is_empty() && *dist == commands::edge_placeholder() => Some(*body),
                         _ => None,
                     };
                     let size = body_id.and_then(|id| model.body(id)).and_then(|b| b.mesh().bounds()).map(|(lo, hi)| commands::edge_default(lo, hi));
@@ -6061,3 +6081,8 @@ mod lifecycle_tests {
         assert!(app.confirm.is_none());
     }
 }
+
+// QA flows written by testing agents: a child module, so it reaches the app's private state like the tests above.
+#[cfg(test)]
+#[path = "qa_flows.rs"]
+mod qa_flows;

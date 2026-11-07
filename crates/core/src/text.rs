@@ -164,7 +164,9 @@ pub fn regions(t: &SketchText) -> Vec<Region> {
     }
     let (s, c) = t.angle.to_radians().sin_cos();
     let placed: Vec<Vec<P2>> = contours(&t.text, t.height).into_iter().map(|l| l.into_iter().map(|p| [t.pos[0] + p[0] * c - p[1] * s, t.pos[1] + p[0] * s + p[1] * c]).collect()).collect();
-    let depth: Vec<usize> = (0..placed.len()).map(|i| (0..placed.len()).filter(|&j| j != i && inside(&placed[j], placed[i][0])).count()).collect();
+    // nesting by most of the vertices, not one: in rotated text a corner of one letter can touch another letter's outline
+    let within = |outer: &Vec<P2>, inner: &Vec<P2>| inner.iter().filter(|p| inside(outer, **p)).count() * 2 > inner.len();
+    let depth: Vec<usize> = (0..placed.len()).map(|i| (0..placed.len()).filter(|&j| j != i && within(&placed[j], &placed[i])).count()).collect();
     let mut regions: Vec<(usize, Region)> = Vec::new();
     for i in 0..placed.len() {
         if depth[i] % 2 == 0 {
@@ -178,7 +180,7 @@ pub fn regions(t: &SketchText) -> Vec<Region> {
     for i in 0..placed.len() {
         if depth[i] % 2 == 1 {
             // the hole belongs to the smallest outer contour that contains it
-            let owner = regions.iter().enumerate().filter(|(_, (j, _))| inside(&placed[*j], placed[i][0])).min_by(|a, b| area(&placed[a.1 .0]).abs().total_cmp(&area(&placed[b.1 .0]).abs())).map(|(k, _)| k);
+            let owner = regions.iter().enumerate().filter(|(_, (j, _))| within(&placed[*j], &placed[i])).min_by(|a, b| area(&placed[a.1 .0]).abs().total_cmp(&area(&placed[b.1 .0]).abs())).map(|(k, _)| k);
             if let Some(k) = owner {
                 let mut hole = placed[i].clone();
                 if area(&hole) > 0.0 {

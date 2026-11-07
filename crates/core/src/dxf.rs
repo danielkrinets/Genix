@@ -26,8 +26,12 @@ pub fn export(sk: &Sketch) -> String {
             }
             // ellipses and splines leave as polylines (LWPOLYLINE) of their sampled outline
             Entity::Ellipse { .. } | Entity::Spline { .. } => {
-                let pts = sk.tessellate(i);
+                let mut pts = sk.tessellate(i);
                 let closed = matches!(*e, Entity::Ellipse { .. } | Entity::Spline { closed: true, .. });
+                // the closed flag already joins the last vertex to the first
+                if closed && pts.len() > 2 && (DVec2::from(pts[0]) - DVec2::from(pts[pts.len() - 1])).length() < 1e-9 {
+                    pts.pop();
+                }
                 let _ = write!(s, "0\nLWPOLYLINE\n8\n{layer}\n90\n{}\n70\n{}\n", pts.len(), if closed { 1 } else { 0 });
                 for p in &pts {
                     let _ = write!(s, "10\n{}\n20\n{}\n", p[0], p[1]);
@@ -36,12 +40,25 @@ pub fn export(sk: &Sketch) -> String {
         }
         let _ = i;
     }
+    // letters of sketch text leave as closed outlines, so they survive in other programs and come back as regions
+    for t in &sk.texts {
+        for r in crate::text::regions(t) {
+            for ring in std::iter::once(&r.outer).chain(r.holes.iter()) {
+                let _ = write!(s, "0\nLWPOLYLINE\n8\n0\n90\n{}\n70\n1\n", ring.len());
+                for p in ring {
+                    let _ = write!(s, "10\n{}\n20\n{}\n", p[0], p[1]);
+                }
+            }
+        }
+    }
     s.push_str("0\nENDSEC\n0\nEOF\n");
     s
 }
 
 /// Прочитать DXF и добавить кривые в чертёж. Возвращает число добавленных кривых.
 pub fn import(sk: &mut Sketch, text: &str) -> Result<usize, String> {
+    // Windows programs often start the file with a UTF-8 byte order mark
+    let text = text.trim_start_matches('\u{feff}');
     let mut lines = text.lines().map(|l| l.trim());
     let mut pairs: Vec<(i32, String)> = Vec::new();
     while let (Some(c), Some(v)) = (lines.next(), lines.next()) {
@@ -68,30 +85,51 @@ pub fn import(sk: &mut Sketch, text: &str) -> Result<usize, String> {
             }
         }
     }
-    let num = |d: &[(i32, String)], code: i32| d.iter().find(|(c, _)| *c == code).and_then(|(_, v)| v.parse::<f64>().ok());
+    // non-finite values (nan, inf, 1e999) would be saved as null and make the project unreadable
+    let num = |d: &[(i32, String)], code: i32| d.iter().find(|(c, _)| *c == code).and_then(|(_, v)| v.parse::<f64>().ok()).filter(|v| v.is_finite());
+    // curves imported together share coincident end points, so their corners can be filleted and dragged as one
+    let mut shared: Vec<usize> = Vec::new();
+    let mut point = |sk: &mut Sketch, p: [f64; 2]| -> usize {
+        if let Some(&i) = shared.iter().find(|&&i| (sk.p(i) - DVec2::from(p)).length() < 1e-9) {
+            return i;
+        }
+        let i = sk.add_point(p);
+        shared.push(i);
+        i
+    };
     let mut added = 0;
     for (name, d) in &ents {
         let cons = d.iter().any(|(c, v)| *c == 8 && v.to_uppercase().contains("CONSTR"));
         match name.as_str() {
             "LINE" => {
                 if let (Some(x1), Some(y1), Some(x2), Some(y2)) = (num(d, 10), num(d, 20), num(d, 11), num(d, 21)) {
-                    let l = sk.add_line([x1, y1], [x2, y2]);
-                    sk.entities[l].set_construction(cons);
-                    added += 1;
+                    if (x1 - x2).abs() > 1e-12 || (y1 - y2).abs() > 1e-12 {
+                        let (a, b) = (point(sk, [x1, y1]), point(sk, [x2, y2]));
+                        sk.add(Entity::Line { a, b, construction: cons });
+                        added += 1;
+                    }
                 }
             }
             "CIRCLE" => {
-                if let (Some(x), Some(y), Some(r)) = (num(d, 10), num(d, 20), num(d, 40)) {
+                if let (Some(x), Some(y), Some(r)) = (num(d, 10), num(d, 20), num(d, 40).filter(|r| *r > 0.0)) {
                     let e = sk.add_circle([x, y], r);
                     sk.entities[e].set_construction(cons);
                     added += 1;
                 }
             }
             "ARC" => {
-                if let (Some(x), Some(y), Some(r), Some(a0), Some(a1)) = (num(d, 10), num(d, 20), num(d, 40), num(d, 50), num(d, 51)) {
-                    let pt = |a: f64| [x + r * a.to_radians().cos(), y + r * a.to_radians().sin()];
-                    let (c, a, b) = (sk.add_point([x, y]), sk.add_point(pt(a0)), sk.add_point(pt(a1)));
-                    sk.add(Entity::Arc { c, a, b, construction: cons });
+                if let (Some(x), Some(y), Some(r), Some(a0), Some(a1)) = (num(d, 10), num(d, 20), num(d, 40).filter(|r| *r > 0.0), num(d, 50), num(d, 51)) {
+                    let sweep = (a1 - a0).rem_euclid(360.0);
+                    if sweep < 1e-9 || 360.0 - sweep < 1e-9 {
+                        // an arc from 0 to 360 degrees is a whole circle
+                        let e = sk.add_circle([x, y], r);
+                        sk.entities[e].set_construction(cons);
+                    } else {
+                        let pt = |a: f64| [x + r * a.to_radians().cos(), y + r * a.to_radians().sin()];
+                        let c = sk.add_point([x, y]);
+                        let (a, b) = (point(sk, pt(a0)), point(sk, pt(a1)));
+                        sk.add(Entity::Arc { c, a, b, construction: cons });
+                    }
                     added += 1;
                 }
             }
@@ -101,11 +139,14 @@ pub fn import(sk: &mut Sketch, text: &str) -> Result<usize, String> {
                 let mut bulges = vec![];
                 for (c, v) in d {
                     match *c {
-                        10 => cur = v.parse().ok(),
+                        10 => cur = v.parse().ok().filter(|x: &f64| x.is_finite()),
                         20 => {
-                            if let (Some(x), Ok(y)) = (cur.take(), v.parse::<f64>()) {
-                                xs.push([x, y]);
-                                bulges.push(0.0_f64);
+                            if let (Some(x), Some(y)) = (cur.take(), v.parse::<f64>().ok().filter(|y| y.is_finite())) {
+                                // a repeated vertex would make a zero-length line
+                                if xs.last() != Some(&[x, y]) {
+                                    xs.push([x, y]);
+                                    bulges.push(0.0_f64);
+                                }
                             }
                         }
                         42 => {
@@ -117,8 +158,13 @@ pub fn import(sk: &mut Sketch, text: &str) -> Result<usize, String> {
                     }
                 }
                 let closed = num(d, 70).map(|f| (f as i32) & 1 == 1).unwrap_or(false);
+                // a closed outline that also repeats its first vertex at the end
+                if closed && xs.len() > 2 && xs.first() == xs.last() {
+                    xs.pop();
+                    bulges.pop();
+                }
                 if xs.len() >= 2 {
-                    let ids: Vec<usize> = xs.iter().map(|&p| sk.add_point(p)).collect();
+                    let ids: Vec<usize> = xs.iter().map(|&p| point(sk, p)).collect();
                     let n = if closed { ids.len() } else { ids.len() - 1 };
                     for i in 0..n {
                         let (a, b) = (ids[i], ids[(i + 1) % ids.len()]);

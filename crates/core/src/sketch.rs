@@ -301,6 +301,25 @@ pub fn arc_segments(sweep_rad: f64) -> usize {
 }
 
 impl Sketch {
+    /// Every entity and constraint refers to points and entities that exist, and every coordinate is a number.
+    pub fn check_indices(&self) -> Result<(), String> {
+        let (np, ne) = (self.points.len(), self.entities.len());
+        if self.points.iter().any(|p| !p.pos[0].is_finite() || !p.pos[1].is_finite()) {
+            return Err("в чертеже есть точка без координат".into());
+        }
+        for e in &self.entities {
+            if e.points().iter().any(|&p| p >= np) {
+                return Err("кривая чертежа ссылается на несуществующую точку".into());
+            }
+        }
+        for c in &self.constraints {
+            if c.points().iter().any(|&p| p >= np) || c.entities().iter().any(|&e| e >= ne) {
+                return Err("ограничение чертежа ссылается на несуществующий объект".into());
+            }
+        }
+        Ok(())
+    }
+
     pub fn add_point(&mut self, p: P2) -> usize {
         self.points.push(SPoint { pos: p });
         self.points.len() - 1
@@ -662,6 +681,12 @@ impl Sketch {
     /// тянет: они стремятся к заданным позициям, но ограничения важнее.
     pub fn solve(&mut self, params: &Params, drag: &[(usize, P2)]) -> Result<SolveStatus, String> {
         let dims = self.dim_values(params)?;
+        // a negative diameter is impossible, just like a negative length; never solve it as its absolute value
+        for (c, v) in self.constraints.iter().filter(|c| c.expr().is_some()).zip(dims.iter()) {
+            if matches!(c, Constraint::Diameter(..)) && *v < 0.0 {
+                return Ok(SolveStatus::Conflict(-v));
+            }
+        }
         let (mut x, rvar) = self.vars();
         let n = x.len();
         if n == 0 {
