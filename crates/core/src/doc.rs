@@ -812,6 +812,31 @@ fn union_all(parts: Vec<Mesh>) -> Result<Solid, String> {
 
 /// Применить тело-инструмент к модели согласно операции.
 
+/// The region with its outer outline moved outwards by `e` (mitred corners, the spike length is capped). Holes stay as they are.
+fn grow_outer(region: &crate::sketch::Region, e: f64) -> crate::sketch::Region {
+    let pts = &region.outer;
+    let n = pts.len();
+    if n < 3 {
+        return region.clone();
+    }
+    let sign = if crate::sketch::signed_area(pts) >= 0.0 { 1.0 } else { -1.0 };
+    let normal = |a: [f64; 2], b: [f64; 2]| {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let l = (dx * dx + dy * dy).sqrt().max(1e-12);
+        [sign * dy / l, -sign * dx / l]
+    };
+    let outer = (0..n)
+        .map(|i| {
+            let (p, c, q) = (pts[(i + n - 1) % n], pts[i], pts[(i + 1) % n]);
+            let (n1, n2) = (normal(p, c), normal(c, q));
+            let k = 1.0 + n1[0] * n2[0] + n1[1] * n2[1];
+            let (mx, my) = ((n1[0] + n2[0]) / k.max(0.3), (n1[1] + n2[1]) / k.max(0.3));
+            [c[0] + mx * e, c[1] + my * e]
+        })
+        .collect();
+    crate::sketch::Region { outer, holes: region.holes.clone(), ids: region.ids.clone() }
+}
+
 /// Press-pull of a planar face that has a bevel (chamfer or fillet) around it: the face and its bevels move together, the walls
 /// stretch (pull) or shorten (push) and the bevel keeps its shape at the new height. `None` when the face has no bevel.
 fn bevelled_press_pull(prev: &Model, plane: &Plane, seed: DVec3, d: f64) -> Result<Option<Model>, String> {
@@ -822,6 +847,9 @@ fn bevelled_press_pull(prev: &Model, plane: &Plane, seed: DVec3, d: f64) -> Resu
     }
     let zlow = -depth + d.min(0.0) - 0.01;
     let top = d.max(0.0) + 0.05;
+    // Pushing a face down subtracts a column of its outline; a curved wall is faceted, so the chords of that outline lie slightly
+    // inside the wall and would leave a thin sliver standing. The column is made a hair wider to swallow it.
+    let region = if d < 0.0 { grow_outer(&region, 0.15) } else { region };
     let column = |z0: f64, z1: f64| -> Result<Solid, String> { Solid::from_mesh(&geom::extrude_region(plane, &region, z0, z1).ok_or("не удалось построить грань")?) };
     let body = prev.bodies[bi].solid.clone();
     let shifted = body.transformed(&DMat4::from_translation(plane.normal() * d));
@@ -2133,6 +2161,64 @@ mod new_ops {
             assert!((v - expect).abs() < 1.0, "{distance}: {v} vs {expect}");
             let (_, hi) = m.bodies[0].mesh().bounds().unwrap();
             assert!((hi.z - (10.0 + distance)).abs() < 1e-3, "top at {}", hi.z);
+        }
+    }
+
+    #[test]
+    fn press_pull_of_a_filleted_top_moves_the_rounding_with_it_both_ways() {
+        let top = Plane { origin: [0.0, 0.0, 10.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+        let (mut d, body) = plate();
+        let edges: Vec<EdgeRef> = vec![
+            EdgeRef::line([0.0, 0.0, 10.0], [40.0, 0.0, 10.0]), EdgeRef::line([40.0, 0.0, 10.0], [40.0, 30.0, 10.0]),
+            EdgeRef::line([40.0, 30.0, 10.0], [0.0, 30.0, 10.0]), EdgeRef::line([0.0, 30.0, 10.0], [0.0, 0.0, 10.0]),
+        ];
+        d.insert(FeatureKind::Fillet { body, edges, radius: Expr::num(2.0) });
+        let rounded = run(&d).model().bodies[0].solid.volume();
+        for distance in [5.0, -4.0, -7.0] {
+            let mut d2 = d.clone();
+            d2.insert(FeatureKind::PressPull { plane: top, seed: [20.0, 15.0, 10.0], distance: Expr::num(distance) });
+            let ev = run(&d2);
+            assert!(ev.steps().iter().all(|s| s.error.is_none()), "{distance}: {:?}", ev.steps().iter().map(|s| s.error.clone()).collect::<Vec<_>>());
+            let m = ev.model();
+            assert_eq!(m.bodies.len(), 1, "{distance}");
+            let v = m.bodies[0].solid.volume();
+            let expect = rounded + 40.0 * 30.0 * distance;
+            assert!((v - expect).abs() < 2.0, "{distance}: {v} vs {expect}");
+            let (_, hi) = m.bodies[0].mesh().bounds().unwrap();
+            assert!((hi.z - (10.0 + distance)).abs() < 1e-3, "{distance}: top at {}", hi.z);
+        }
+    }
+
+    #[test]
+    fn press_pull_of_a_round_filleted_top_moves_the_rounding_with_it_both_ways() {
+        let top = Plane { origin: [0.0, 0.0, 10.0], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+        let mut d = Document::default();
+        let mut s = Sketch::default();
+        s.add_circle([0.0, 0.0], 20.0);
+        let sk = d.insert(FeatureKind::Sketch { plane: Plane::XY, sketch: s });
+        d.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![ProfileRef::at([1.0, 1.0])], extent: Extent::OneSide(Expr::num(10.0)), op: Op::NewBody, face: None, taper: Expr::num(0.0), thin: Expr::num(0.0), start: Expr::num(0.0) });
+        let body = run(&d).model().bodies[0].id;
+        d.insert(FeatureKind::Fillet { body, edges: vec![EdgeRef::round([20.0, 0.0, 10.0], [0.0, 0.0, 10.0], [0.0, 0.0, 1.0])], radius: Expr::num(2.0) });
+        let ev0 = run(&d);
+        assert!(ev0.steps().iter().all(|s| s.error.is_none()));
+        let rounded = ev0.model().bodies[0].solid.volume();
+        let area = std::f64::consts::PI * 400.0;
+        for distance in [5.0, -4.0, -7.0] {
+            let mut d2 = d.clone();
+            d2.insert(FeatureKind::PressPull { plane: top, seed: [0.0, 0.0, 10.0], distance: Expr::num(distance) });
+            let ev = run(&d2);
+            assert!(ev.steps().iter().all(|s| s.error.is_none()), "{distance}: {:?}", ev.steps().iter().map(|s| s.error.clone()).collect::<Vec<_>>());
+            let m = ev.model();
+            assert_eq!(m.bodies.len(), 1, "{distance}");
+            let v = m.bodies[0].solid.volume();
+            let expect = rounded + area * distance;
+            assert!((v - expect).abs() < area * 0.05, "{distance}: {v} vs {expect}");
+            let (_, hi) = m.bodies[0].mesh().bounds().unwrap();
+            if (hi.z - (10.0 + distance)).abs() > 1e-2 {
+                let mesh = m.bodies[0].mesh();
+                let high: Vec<_> = mesh.vertices.iter().filter(|v| v[2] > 10.0 + distance + 0.01).map(|v| format!("({:.2},{:.2},{:.2}) r={:.3}", v[0], v[1], v[2], (v[0]*v[0]+v[1]*v[1]).sqrt())).take(8).collect();
+                panic!("{distance}: top at {} volume {v} expect {expect}; high vertices {high:?}", hi.z);
+            }
         }
     }
 
