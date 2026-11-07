@@ -2,6 +2,8 @@
 
 Every change, even a small fix, gets a new version: `0.00.N — what was added` (up to five words, English only). Newest first.
 
+- 0.00.63 — Distance badge stays in view
+- 0.00.62 — Whole arrow head is grabbable
 - 0.00.61 — Solid extrusion arrow really drawn
 - 0.00.60 — Heart pull and push fixed
 - 0.00.59 — Pushing rounded faces down

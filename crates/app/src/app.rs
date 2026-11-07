@@ -4579,7 +4579,19 @@ impl App {
 
     fn handle_hot(&self, rect: Rect, ctx: &egui::Context) -> bool {
         let (Some((b, d, l)), Some(m)) = (self.extrude_handle(), ctx.pointer_hover_pos()) else { return false };
-        self.cam.project(rect, b + d * l).is_some_and(|p| p.distance(m) < 16.0)
+        self.on_extrude_arrow(rect, b, d, l, m, 16.0)
+    }
+
+    /// Whether the screen point `m` is on the solid extrusion arrow: its head and the first part of the shaft below it, not only the very tip.
+    fn on_extrude_arrow(&self, rect: Rect, base: DVec3, dir: DVec3, dist: f64, m: Pos2, slack: f32) -> bool {
+        let (Some(tip), Some(root)) = (self.cam.project(rect, base + dir * dist), self.cam.project(rect, base)) else { return false };
+        // the arrow reaches back from the tip by at most 40 px towards the root
+        let back = (root - tip).normalized();
+        let end = if back.x.is_finite() && back.y.is_finite() { tip + back * (root - tip).length().min(40.0) } else { tip };
+        let seg = end - tip;
+        let len2 = seg.length_sq();
+        let t = if len2 > 1e-6 { ((m - tip).dot(seg) / len2).clamp(0.0, 1.0) } else { 0.0 };
+        (tip + seg * t).distance(m) < slack
     }
 
     /// Тянем кончик стрелки: расстояние выдавливания следует за курсором (шаг 1 мм, с Alt — свободно).
@@ -4697,7 +4709,7 @@ impl App {
         }
         if resp.drag_started_by(egui::PointerButton::Primary) {
             if let (Some((base, dir, dist)), Some(press)) = (self.extrude_handle(), ctx.input(|i| i.pointer.press_origin())) {
-                if self.cam.project(rect, base + dir * dist).is_some_and(|p| p.distance(press) < 18.0) {
+                if self.on_extrude_arrow(rect, base, dir, dist, press, 18.0) {
                     let (o, d) = self.cam.ray(rect, press);
                     let t = line_param(base, dir, o, d);
                     self.manip = Some(Manip { base, dir, grab: t - dist });
@@ -4793,7 +4805,11 @@ impl App {
         let mut changed = false;
         // синие плашки: у ручки выдавливания, иначе сверху по центру
         let (pos, pivot) = match anchor {
-            Some(p) => (p + egui::vec2(16.0, -16.0), egui::Align2::LEFT_BOTTOM),
+            // kept inside the viewport: a long arrow must not push the badge over the toolbar or off the side
+            Some(p) => {
+                let at = p + egui::vec2(16.0, -16.0);
+                (Pos2::new(at.x.clamp(rect.left() + 8.0, (rect.right() - 260.0).max(rect.left() + 8.0)), at.y.clamp(rect.top() + 44.0, rect.bottom() - 8.0)), egui::Align2::LEFT_BOTTOM)
+            }
             None => (Pos2::new(rect.center().x, rect.top() + 14.0), egui::Align2::CENTER_TOP),
         };
         let blue = Color32::from_rgb(37, 99, 176);
@@ -5836,6 +5852,23 @@ mod lifecycle_tests {
         app.doc.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(w), d: n(d), h: n(h) }, at: [n(0.0), n(0.0), n(0.0)], op: fusion_core::Op::NewBody });
         app.after_doc_change();
         app
+    }
+
+    #[test]
+    fn the_whole_arrow_head_can_be_grabbed_not_only_its_tip() {
+        let mut app = box_app(40.0, 30.0, 20.0);
+        app.viewport = Rect::from_min_size(Pos2::ZERO, egui::vec2(1000.0, 800.0));
+        app.start_command("extrude", 0.0);
+        click_face(&mut app, 0, DVec3::Z, false);
+        let (base, dir, dist) = app.extrude_handle().expect("a picked face shows the arrow");
+        let rect = app.viewport;
+        let tip = app.cam.project(rect, base + dir * dist).unwrap();
+        let root = app.cam.project(rect, base).unwrap();
+        let toward = (root - tip).normalized();
+        assert!(app.on_extrude_arrow(rect, base, dir, dist, tip, 18.0), "the tip");
+        assert!(app.on_extrude_arrow(rect, base, dir, dist, tip + toward * 15.0, 18.0), "the middle of the head");
+        assert!(!app.on_extrude_arrow(rect, base, dir, dist, tip - toward * 60.0, 18.0), "beyond the tip");
+        assert!(!app.on_extrude_arrow(rect, base, dir, dist, tip + egui::vec2(120.0, 0.0), 18.0), "far to the side");
     }
 
     #[test]
