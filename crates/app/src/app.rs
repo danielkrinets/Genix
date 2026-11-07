@@ -5872,6 +5872,21 @@ mod lifecycle_tests {
     }
 
     #[test]
+    fn clicking_a_body_picks_it_for_move_scale_and_mirror() {
+        for tool in ["move", "scale", "mirror"] {
+            let mut app = box_app(40.0, 30.0, 20.0);
+            app.start_command(tool, 0.0);
+            click_face(&mut app, 0, DVec3::Z, false);
+            let Mode::Command(c) = &app.mode else { panic!("{tool}: the command ended") };
+            let bodies = match &app.doc.feature(c.uid).unwrap().kind {
+                FeatureKind::Move { bodies, .. } | FeatureKind::Scale { bodies, .. } | FeatureKind::Mirror { bodies, .. } => bodies.clone(),
+                _ => panic!("{tool}: wrong feature"),
+            };
+            assert_eq!(bodies, vec![app.ev.model().bodies[0].id], "{tool}: the clicked body must be taken");
+        }
+    }
+
+    #[test]
     fn clicking_each_face_of_a_box_pulls_it_out_and_pushes_it_in() {
         let dirs = [DVec3::X, -DVec3::X, DVec3::Y, -DVec3::Y, DVec3::Z, -DVec3::Z];
         for dir in dirs {
