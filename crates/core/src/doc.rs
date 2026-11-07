@@ -111,15 +111,49 @@ pub struct EdgeRef {
     /// Optional sweep in degrees for an open circular edge; old files mean a full circle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sweep: Option<f64>,
+    /// Outward normals of the two faces that meet at a straight edge, noted when it was picked. When an earlier step later
+    /// moves those faces, each is followed and the edge is found again where they meet. Old files have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub faces: Option<[[f64; 3]; 2]>,
 }
 
 impl EdgeRef {
     pub fn line(a: [f64; 3], b: [f64; 3]) -> Self {
-        EdgeRef { a, b, circle: false, axis: [0.0; 3], sweep: None }
+        EdgeRef { a, b, circle: false, axis: [0.0; 3], sweep: None, faces: None }
     }
 
     pub fn round(point: [f64; 3], center: [f64; 3], axis: [f64; 3]) -> Self {
-        EdgeRef { a: point, b: center, circle: true, axis, sweep: None }
+        EdgeRef { a: point, b: center, circle: true, axis, sweep: None, faces: None }
+    }
+
+    /// The outward normals of the two faces of `mesh` that meet along this straight edge (None for a round edge, or when the
+    /// edge is not found or more than two directions meet there).
+    pub fn face_normals(&self, mesh: &Mesh) -> Option<[[f64; 3]; 2]> {
+        if self.circle {
+            return None;
+        }
+        let (a, b) = (DVec3::from(self.a), DVec3::from(self.b));
+        let d = (b - a).normalize_or_zero();
+        let len = (b - a).length();
+        if len < 1e-9 {
+            return None;
+        }
+        let on = |p: DVec3| {
+            let t = (p - a).dot(d);
+            (p - a - d * t).length() < 1e-5 && t > -1e-5 && t < len + 1e-5
+        };
+        let mut normals: Vec<DVec3> = Vec::new();
+        for t in &mesh.triangles {
+            let [p, q, r] = mesh.tri(t);
+            let touches = [(p, q), (q, r), (r, p)].iter().any(|(x, y)| on(*x) && on(*y) && x.distance(*y) > 1e-9);
+            if touches {
+                let n = (q - p).cross(r - p).normalize_or_zero();
+                if n != DVec3::ZERO && !normals.iter().any(|m| m.dot(n) > 1.0 - 1e-6) {
+                    normals.push(n);
+                }
+            }
+        }
+        (normals.len() == 2).then(|| [normals[0].to_array(), normals[1].to_array()])
     }
 
     /// Ломаная для показа и выбора мышью (окружность — 72 отрезка).
@@ -817,6 +851,23 @@ fn union_all(parts: Vec<Mesh>) -> Result<Solid, String> {
 
 /// Применить тело-инструмент к модели согласно операции.
 
+/// The separate pieces of a cut body. Each outer shell (positive volume) is a piece; an inner shell (negative volume: the wall
+/// of a closed cavity) stays with the outer shell around it, so a pocket inside a part is not mistaken for a part of its own.
+fn split_shells(mesh: &Mesh) -> Vec<Solid> {
+    let comps = mesh.components();
+    let (outer, inner): (Vec<Mesh>, Vec<Mesh>) = comps.into_iter().partition(|c| c.volume() > 0.0);
+    if outer.len() < 2 {
+        return Vec::new();
+    }
+    let mut pieces: Vec<Mesh> = outer;
+    for cav in inner {
+        let probe = DVec3::from(cav.vertices[0]);
+        let host = pieces.iter().position(|o| point_in_mesh(o, probe, DVec3::new(0.3, 0.5, 0.8))).unwrap_or(0);
+        pieces[host].append(&cav);
+    }
+    pieces.iter().filter_map(|m| Solid::from_mesh(m).ok()).filter(|s| !s.is_empty() && s.volume() > 1e-9).collect()
+}
+
 /// Parity test: the ray from `p` along `dir` crosses the closed mesh an odd number of times when `p` is inside.
 fn point_in_mesh(mesh: &Mesh, p: DVec3, dir: DVec3) -> bool {
     // a slightly skewed direction avoids hitting edges exactly
@@ -934,7 +985,7 @@ fn sharp_lines(mesh: &Mesh) -> Vec<(DVec3, DVec3)> {
 /// Straight edges stored by their end points after an earlier step changed the body (a wider box): an edge that no longer lies
 /// on a sharp edge of the body is replaced by the nearest parallel one, and then every straight edge of the set is taken whole,
 /// as it was when picked. When every edge is still where it was the set is returned unchanged.
-fn followed_edges(mesh: &Mesh, edges: &[EdgeRef]) -> Vec<EdgeRef> {
+fn followed_edges(model: &Model, mesh: &Mesh, edges: &[EdgeRef]) -> Vec<EdgeRef> {
     let lines = sharp_lines(mesh);
     let on_line = |p: DVec3, (a, b): (DVec3, DVec3)| {
         let d = (b - a).normalize_or_zero();
@@ -953,6 +1004,48 @@ fn followed_edges(mesh: &Mesh, edges: &[EdgeRef]) -> Vec<EdgeRef> {
         }
         let (a, b) = (DVec3::from(e.a), DVec3::from(e.b));
         let (dir, mid) = ((b - a).normalize_or_zero(), (a + b) * 0.5);
+        // with the normals of its two faces known: follow each face, and the edge is where the two meet now
+        let by_faces = e.faces.filter(|_| !lines.iter().any(|l| holds(e, *l))).and_then(|[n1, n2]| {
+            let (n1, n2) = (DVec3::from(n1), DVec3::from(n2));
+            let c = n1.dot(n2);
+            let det = 1.0 - c * c;
+            if det < 1e-9 {
+                return None;
+            }
+            let mut h = [0.0; 2];
+            for (k, (ni, nj)) in [(n1, n2), (n2, n1)].into_iter().enumerate() {
+                // a point on face i just off the edge, away from face j
+                let into = -(nj - ni * ni.dot(nj)).normalize_or_zero();
+                let pl = Plane::from_point_normal(mid, ni);
+                let (moved, _) = followed(model, &pl, mid + into * 0.05);
+                h[k] = (moved.o() - pl.o()).dot(ni);
+            }
+            let (al, be) = ((h[0] - c * h[1]) / det, (h[1] - c * h[0]) / det);
+            let at = mid + n1 * al + n2 * be;
+            lines
+                .iter()
+                .filter(|(p, q)| (*q - *p).normalize_or_zero().dot(dir).abs() > 1.0 - 1e-9)
+                .filter(|(p, q)| {
+                    let d = (*q - *p).normalize_or_zero();
+                    (at - *p - d * (at - *p).dot(d)).length() < 1e-4
+                })
+                .min_by(|x, y| {
+                    let gap = |(p, q): &(DVec3, DVec3)| {
+                        let d = (*q - *p).normalize_or_zero();
+                        let t = (at - *p).dot(d).clamp(0.0, (*q - *p).length());
+                        (*p + d * t).distance(at)
+                    };
+                    gap(x).total_cmp(&gap(y))
+                })
+                .copied()
+        });
+        if let Some((p, q)) = by_faces {
+            let r = EdgeRef { faces: e.faces, ..EdgeRef::line(p.to_array(), q.to_array()) };
+            if !out.iter().any(|x: &EdgeRef| (DVec3::from(x.a).distance(p) < 1e-6 && DVec3::from(x.b).distance(q) < 1e-6) || (DVec3::from(x.a).distance(q) < 1e-6 && DVec3::from(x.b).distance(p) < 1e-6)) {
+                out.push(r);
+            }
+            continue;
+        }
         // only an edge that still lies on the body's surface (on a face that grew past it) is followed; one inside the body or
         // out in the air was never an edge of this body and stays an error
         let on_surface = mesh.triangles.iter().any(|t| {
@@ -977,7 +1070,7 @@ fn followed_edges(mesh: &Mesh, edges: &[EdgeRef]) -> Vec<EdgeRef> {
                 .copied()
         });
         let r = match found {
-            Some((p, q)) => EdgeRef::line(p.to_array(), q.to_array()),
+            Some((p, q)) => EdgeRef { faces: e.faces, ..EdgeRef::line(p.to_array(), q.to_array()) },
             None => *e,
         };
         let same = |x: &EdgeRef| (DVec3::from(x.a).distance(DVec3::from(r.a)) < 1e-6 && DVec3::from(x.b).distance(DVec3::from(r.b)) < 1e-6) || (DVec3::from(x.a).distance(DVec3::from(r.b)) < 1e-6 && DVec3::from(x.b).distance(DVec3::from(r.a)) < 1e-6);
@@ -989,14 +1082,78 @@ fn followed_edges(mesh: &Mesh, edges: &[EdgeRef]) -> Vec<EdgeRef> {
 }
 
 /// A stored face (plane and picked point) after earlier steps may have moved it along its normal: see [`geom::follow_face`].
+///
+/// 1. The face is still on its plane under the picked point: nothing to do.
+/// 2. The face moved outwards (a taller box): the picked point is now inside a body, and that body's face above it along the
+///    normal is the face.
+/// 3. Otherwise the nearer of: the rest of a face on the same plane (a face that got narrower, or was split by a groove), and
+///    the first face below the point along the normal with only air in between (a lower box). A neighbour's face that is
+///    merely in line with the point is never taken.
 fn followed(m: &Model, plane: &Plane, seed: DVec3) -> (Plane, DVec3) {
-    let meshes: Vec<&crate::mesh::Mesh> = m.bodies.iter().map(|b| b.mesh()).collect();
-    match geom::follow_face(&meshes, plane, seed) {
-        Some(moved) => {
-            let shift = moved.normal() * (moved.o() - plane.o()).dot(plane.normal());
-            (moved, seed + shift)
+    let (n, o) = (plane.normal(), plane.o());
+    if m.bodies.iter().any(|b| geom::face_seed_distance(b.mesh(), plane, seed).is_some_and(|d| d < 1e-6)) {
+        return (*plane, seed);
+    }
+    let s = seed - n * (seed - o).dot(n);
+    let inside = |p: DVec3| m.bodies.iter().any(|b| point_in_mesh(b.mesh(), p, n));
+    let facing = |p: DVec3, q: DVec3, r: DVec3| (q - p).cross(r - p).normalize_or_zero().dot(n) > 0.9999;
+    let contains = |p: DVec3, q: DVec3, r: DVec3, x: DVec3| [(p, q), (q, r), (r, p)].iter().all(|(u, v)| (*v - *u).cross(x - *u).dot(n) > -1e-6);
+    let shifted = |h: f64| (Plane { origin: (o + n * h).to_array(), ..*plane }, s + n * h);
+    // 2. grown past the point: the face of the body the point is now inside, straight above it
+    let below = s - n * 1e-4;
+    if let Some(bi) = m.bodies.iter().position(|b| point_in_mesh(b.mesh(), below, n)) {
+        let mesh = m.bodies[bi].mesh();
+        let mut best: Option<f64> = None;
+        for t in &mesh.triangles {
+            let [p, q, r] = mesh.tri(t);
+            let h = (p - o).dot(n);
+            if h > 0.0 && facing(p, q, r) && contains(p, q, r, s + n * h) && best.is_none_or(|x| h < x) {
+                best = Some(h);
+            }
         }
-        None => (*plane, seed),
+        if let Some(h) = best {
+            return shifted(h);
+        }
+    }
+    // 3a. the nearest part of a face still on the same plane
+    let mut same: Option<(f64, DVec3)> = None;
+    // 3b. the first face below, with air between it and the point
+    let mut lower: Option<f64> = None;
+    for b in &m.bodies {
+        let mesh = b.mesh();
+        for t in &mesh.triangles {
+            let [p, q, r] = mesh.tri(t);
+            if !facing(p, q, r) {
+                continue;
+            }
+            let h = (p - o).dot(n);
+            if h.abs() < 1e-3 {
+                let c = (p + q + r) / 3.0;
+                // the point of the triangle nearest the picked point (in the plane), nudged inside it
+                let x = s + n * h;
+                let near = if contains(p, q, r, x) {
+                    x
+                } else {
+                    [(p, q), (q, r), (r, p)].into_iter().map(|(u, v)| {
+                        let e = v - u;
+                        u + e * ((x - u).dot(e) / e.length_squared().max(1e-24)).clamp(0.0, 1.0)
+                    }).min_by(|a, b| a.distance(x).total_cmp(&b.distance(x))).unwrap()
+                };
+                let at = near + (c - near) * 1e-3;
+                if same.is_none_or(|(dd, _)| near.distance(s) < dd) {
+                    same = Some((near.distance(s), at));
+                }
+            } else if h < 0.0 && contains(p, q, r, s + n * h) && lower.is_none_or(|x| h > x) {
+                lower = Some(h);
+            }
+        }
+    }
+    let lower = lower.filter(|h| !inside(s + n * (h * 0.5)) && !inside(s + n * 1e-4));
+    match (same, lower) {
+        (Some((d, at)), Some(h)) if d <= h.abs() * 1.5 => (*plane, at),
+        (Some((_, at)), None) => (*plane, at),
+        (_, Some(h)) => shifted(h),
+        (None, None) => (*plane, seed),
     }
 }
 
@@ -1115,7 +1272,7 @@ pub fn apply_op(model: &mut Model, tool: Solid, op: Op, new_id: u64) -> Result<(
                     continue;
                 }
                 // a cut right through a body leaves separate pieces: each becomes a body of its own, as in other CAD programs
-                let parts: Vec<Solid> = if op == Op::Cut { r.mesh.components().iter().filter_map(|c| Solid::from_mesh(c).ok()).filter(|s| !gone(s)).collect() } else { Vec::new() };
+                let parts: Vec<Solid> = if op == Op::Cut { split_shells(&r.mesh) } else { Vec::new() };
                 if parts.len() > 1 {
                     let mut parts = parts.into_iter();
                     model.bodies[i].solid = Arc::new(parts.next().unwrap());
@@ -1166,7 +1323,19 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             let mut s = sketch.clone();
             let status = s.solve(p, &[])?;
             let regions = s.regions();
-            Ok((prev.clone(), Some(SketchResult { plane: *plane, sketch: s, regions, status })))
+            // A sketch drawn on a face moves with that face when an earlier step moves it along its normal (a taller box), so
+            // its boss or pocket keeps its place on the part. Sketches on the origin planes or on a construction plane stay put.
+            let on_origin = [Plane::XY, Plane::XZ, Plane::YZ].iter().any(|o| o.normal().cross(plane.normal()).length() < 1e-9 && (plane.o() - o.o()).dot(o.normal()).abs() < 1e-9);
+            let on_user_plane = feats.iter().any(|f| match &f.kind {
+                FeatureKind::OffsetPlane { base, offset } => offset.eval(p).is_ok_and(|d| base.normal().cross(plane.normal()).length() < 1e-9 && (plane.o() - (base.o() + base.normal() * d)).dot(base.normal()).abs() < 1e-6),
+                FeatureKind::AnglePlane { .. } => true,
+                _ => false,
+            });
+            let plane = match regions.first().map(|r| r.interior_point()).or_else(|| s.points.first().map(|q| q.pos)) {
+                Some(local) if !on_origin && !on_user_plane && !prev.bodies.is_empty() => followed(prev, plane, plane.to_world(local)).0,
+                _ => *plane,
+            };
+            Ok((prev.clone(), Some(SketchResult { plane, sketch: s, regions, status })))
         }
         FeatureKind::Extrude { face: Some(f), extent, taper, thin, .. } => {
             let (plane, seed) = followed(prev, &f.plane, DVec3::from(f.seed));
@@ -1211,7 +1380,17 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             let (z0, z1) = match extent {
                 Extent::All(both) => {
                     let far = through_all(prev, &sk.plane);
-                    (if *both { -far } else { 0.0 }, far)
+                    // one side «through all» of a cut goes where the material is: a sketch on a top face cuts down into the part,
+                    // not up into the air above it
+                    let (n, o) = (sk.plane.normal(), sk.plane.o());
+                    let ahead = prev.bodies.iter().flat_map(|b| b.mesh().vertices.iter()).any(|v| (DVec3::from(*v) - o).dot(n) > 1e-6);
+                    if *both {
+                        (-far, far)
+                    } else if *op == Op::Cut && !ahead {
+                        (-far, 0.0)
+                    } else {
+                        (0.0, far)
+                    }
                 }
                 Extent::ToBody(id) => (0.0, distance_to_body(prev, &sk.plane, *id)?),
                 Extent::OneSide(d) => (0.0, d.eval(p)?),
@@ -1770,7 +1949,7 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             if edges.is_empty() {
                 return Err("не выбрано ни одного ребра".into());
             }
-            let edges = &followed_edges(b.mesh(), edges);
+            let edges = &followed_edges(prev, b.mesh(), edges);
             let v = positive(size, p, if is_fillet { "радиус" } else { "расстояние" })?;
             // a size beyond the body itself can only break the geometry (and a drag past it would keep the window busy for minutes)
             if let Some((lo, hi)) = b.solid.mesh.bounds() {

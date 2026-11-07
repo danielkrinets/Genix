@@ -37,6 +37,9 @@ pub struct Command {
     /// Операцию выбирает программа (вырезать при выдавливании внутрь, объединить — наружу),
     /// пока пользователь не выбрал её сам.
     pub auto_op: bool,
+    /// The extrude distance at which the automatic operation turned into «New body» (the tool lay inside a body). Another
+    /// distance lets it pick join or cut again.
+    pub settled_at: Option<Expr>,
 }
 
 pub enum CmdResult {

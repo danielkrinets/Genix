@@ -591,7 +591,6 @@ fn conflicting_constraints_report_conflict_quickly_and_do_not_panic() {
 }
 
 #[test]
-#[ignore = "BUG: solver 'satisfies' contradictory parallel+perpendicular (or horizontal+vertical) by collapsing a line to zero length and reports Ok"]
 fn contradictory_direction_constraints_do_not_collapse_lines() {
     let mut s = Sketch::default();
     let a = s.add_line([0.0, 0.0], [10.0, 0.0]);
@@ -1868,7 +1867,6 @@ fn a_line_through_two_rectangle_corners_gives_two_triangles() {
 }
 
 #[test]
-#[ignore = "BUG: self-crossings of a single curve are never detected (arrange() only intersects different curves): a figure-eight closed spline gives one zero-area region"]
 fn a_figure_eight_spline_gives_two_lobes() {
     // fit points (0,0) (20,6) (0,6) (20,0): the closed spline crosses itself near (10,3)
     let mut s = Sketch::default();

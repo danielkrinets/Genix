@@ -290,7 +290,7 @@ impl Sketch {
     /// Скруглить угол в точке `p`, где сходятся ровно две линии.
     pub fn fillet_corner(&mut self, p: usize, r: f64) -> Result<(), &'static str> {
         let lines: Vec<usize> = (0..self.entities.len())
-            .filter(|&i| matches!(self.entities[i], Entity::Line { a, b, .. } if a == p || b == p))
+            .filter(|&i| matches!(self.entities[i], Entity::Line { a, b, construction: false } if a == p || b == p))
             .collect();
         if lines.len() != 2 || r <= 1e-9 {
             return Err("corner");
@@ -318,8 +318,28 @@ impl Sketch {
         let center = corner + (u1 + u2).normalize() * (r / (theta / 2.0).sin());
         let (n1, n2) = (self.add_point(t1.to_array()), self.add_point(t2.to_array()));
         let nc = self.add_point(center.to_array());
+        // The old sharp corner stays as a "virtual sharp", as in other CAD programs: a construction line from each line's far end
+        // to the corner keeps that line's dimensions (length, equal, midpoint), so the shape and its sizes survive the rounding.
+        let mut virtual_lines = Vec::new();
         for (l, np) in [(lines[0], n1), (lines[1], n2)] {
-            self.constraints.retain(|c| !(c.entities().contains(&l) && !matches!(c, Constraint::Horizontal(_) | Constraint::Vertical(_))));
+            let far = match self.entities[l] {
+                Entity::Line { a, b, .. } => if a == p { b } else { a },
+                _ => unreachable!(),
+            };
+            let v = self.add(Entity::Line { a: far, b: p, construction: true });
+            virtual_lines.push(v);
+            for c in self.constraints.iter_mut() {
+                match c {
+                    Constraint::Length(e, _) | Constraint::Midpoint(_, e) if *e == l => *e = v,
+                    Constraint::Equal(x, y) if *x == l || *y == l => {
+                        if *x == l { *x = v } else { *y = v }
+                    }
+                    _ => {}
+                }
+            }
+            // the direction of the shortened line is unchanged, so its direction constraints stay; the rest went with the end
+            self.constraints.retain(|c| !(c.entities().contains(&l) && !matches!(c, Constraint::Horizontal(_) | Constraint::Vertical(_) | Constraint::Parallel(..) | Constraint::Perpendicular(..) | Constraint::Angle(..))));
+            self.constraints.push(Constraint::Collinear(l, v));
             if let Entity::Line { a, b, .. } = &mut self.entities[l] {
                 if *a == p {
                     *a = np
@@ -333,6 +353,8 @@ impl Sketch {
         // касание дуги с обеими линиями
         self.constraints.push(Constraint::Tangent(lines[0], arc));
         self.constraints.push(Constraint::Tangent(lines[1], arc));
+        // the radius is a dimension, so a later change of the sketch keeps the rounding as drawn
+        self.constraints.push(Constraint::Diameter(arc, crate::expr::Expr::num(2.0 * r)));
         self.gc_points();
         Ok(())
     }

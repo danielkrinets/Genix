@@ -774,6 +774,21 @@ impl Sketch {
                 break;
             }
         }
+        // A direction constraint (parallel, perpendicular, horizontal, vertical, angle) on a line that the solver shrank to a point
+        // is only "met" because a point has every direction: contradictory constraints. That is a conflict, and the drawing stays.
+        let directional = |c: &Constraint| matches!(c, Constraint::Parallel(..) | Constraint::Perpendicular(..) | Constraint::Horizontal(..) | Constraint::Vertical(..) | Constraint::Angle(..) | Constraint::Collinear(..));
+        let collapsed = self.constraints.iter().filter(|c| directional(c)).flat_map(|c| c.entities()).any(|e| {
+            if let Some(Entity::Line { a, b, .. }) = self.entities.get(e) {
+                let before = self.p(*a).distance(self.p(*b));
+                let after = DVec2::new(x[2 * *a] - x[2 * *b], x[2 * *a + 1] - x[2 * *b + 1]).length();
+                before > 1e-6 && after < 1e-6 * before.max(1.0)
+            } else {
+                false
+            }
+        });
+        if collapsed {
+            return Ok(SolveStatus::Conflict(1.0));
+        }
         // записываем результат (даже частичный — так видно, где конфликт)
         for (i, p) in self.points.iter_mut().enumerate() {
             p.pos = [x[2 * i], x[2 * i + 1]];
@@ -1412,6 +1427,38 @@ fn arrange(s: &Sketch) -> Arrangement {
                 }
             }
         }
+        // a spline can cross itself (a figure eight): its own non-neighbouring segments are cut where they cross
+        for c in curves.iter_mut() {
+            if !matches!(s.entities[c.entity], Entity::Spline { .. }) {
+                continue;
+            }
+            let nseg = c.pts.len().saturating_sub(1);
+            let mut hits: Vec<(f64, f64, P2)> = Vec::new();
+            for ia in 0..nseg {
+                for ib in ia + 2..nseg {
+                    if c.closed && ia == 0 && ib == nseg - 1 {
+                        continue;
+                    }
+                    let (p, r) = (DVec2::from(c.pts[ia]), DVec2::from(c.pts[ia + 1]) - DVec2::from(c.pts[ia]));
+                    let (q, d) = (DVec2::from(c.pts[ib]), DVec2::from(c.pts[ib + 1]) - DVec2::from(c.pts[ib]));
+                    let den = r.perp_dot(d);
+                    if den.abs() <= 1e-12 * r.length() * d.length() {
+                        continue;
+                    }
+                    let t = (q - p).perp_dot(d) / den;
+                    let u = (q - p).perp_dot(r) / den;
+                    // a crossing can fall exactly on a vertex of the tessellation (a symmetric figure eight); repeats are merged later
+                    if t >= -1e-9 && t <= 1.0 + 1e-9 && u >= -1e-9 && u <= 1.0 + 1e-9 {
+                        let (t, u) = (t.clamp(0.0, 1.0), u.clamp(0.0, 1.0));
+                        hits.push((ia as f64 + t, ib as f64 + u, (p + r * t).to_array()));
+                    }
+                }
+            }
+            for (ta, tb, pt) in hits {
+                c.cuts.push((ta, pt));
+                c.cuts.push((tb, pt));
+            }
+        }
     }
     let mut verts: Vec<P2> = Vec::new();
     let mut vid = |p: P2| -> usize {
@@ -1432,10 +1479,12 @@ fn arrange(s: &Sketch) -> Arrangement {
         }
         cuts.sort_by(|a, b| a.0.total_cmp(&b.0));
         // a crossing exactly at a vertex shows up once per neighbouring segment: keep one
-        cuts.dedup_by(|a, b| (a.1[0] - b.1[0]).abs() <= tol && (a.1[1] - b.1[1]).abs() <= tol);
+        // (only near the same place along the curve: a curve that passes the same point twice, a figure eight, keeps both)
+        cuts.dedup_by(|a, b| (a.0 - b.0).abs() < 0.5 && (a.1[0] - b.1[0]).abs() <= tol && (a.1[1] - b.1[1]).abs() <= tol);
         if c.closed {
             // the seam (start = end) counts as one place
-            if cuts.len() > 1 && { let (f, l) = (cuts[0].1, cuts[cuts.len() - 1].1); (f[0] - l[0]).abs() <= tol && (f[1] - l[1]).abs() <= tol } {
+            // (a curve can also pass one point twice in the middle, a figure eight: that is not the seam)
+            if cuts.len() > 1 && cuts[0].0 < 0.5 && cuts[cuts.len() - 1].0 > (n - 1) as f64 - 0.5 && { let (f, l) = (cuts[0].1, cuts[cuts.len() - 1].1); (f[0] - l[0]).abs() <= tol && (f[1] - l[1]).abs() <= tol } {
                 cuts.pop();
             }
             if cuts.len() < 2 {

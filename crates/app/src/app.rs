@@ -686,6 +686,7 @@ impl App {
     /// leave the window alive, showing the previous model and a "calculating" card.
     fn start_eval(&mut self) {
         self.sync_auto_op();
+        self.note_edge_faces();
         let started = std::time::Instant::now();
         let (tx, rx) = mpsc::channel();
         let (mut ev, doc) = (self.ev.clone(), self.doc.clone());
@@ -721,6 +722,28 @@ impl App {
     }
 
     /// While the operation is automatic, the sign of a one-sided extrusion picks it: «+» joins, «−» cuts, however the number was entered.
+    /// Straight edges picked for the open fillet or chamfer remember the normals of their two faces, so the step can find the
+    /// edge again when an earlier step later moves those faces.
+    fn note_edge_faces(&mut self) {
+        let Mode::Command(cmd) = &self.mode else { return };
+        let uid = cmd.uid;
+        let Some(i) = self.doc.index_of(uid) else { return };
+        let body = match self.doc.feature(uid).map(|f| &f.kind) {
+            Some(FeatureKind::Fillet { body, edges, .. } | FeatureKind::Chamfer { body, edges, .. }) if edges.iter().any(|e| !e.circle && e.faces.is_none()) => *body,
+            _ => return,
+        };
+        let model = self.ev.model_before(i);
+        let Some(b) = model.body(body) else { return };
+        let mesh = b.mesh().clone();
+        if let Some(f) = self.doc.feature_mut(uid) {
+            if let FeatureKind::Fillet { edges, .. } | FeatureKind::Chamfer { edges, .. } = &mut f.kind {
+                for e in edges.iter_mut().filter(|e| !e.circle && e.faces.is_none()) {
+                    e.faces = e.face_normals(&mesh);
+                }
+            }
+        }
+    }
+
     fn sync_auto_op(&mut self) {
         let Mode::Command(cmd) = &self.mode else { return };
         if !cmd.auto_op {
@@ -732,8 +755,13 @@ impl App {
             return;
         }
         let params = self.doc.params.clone();
+        let settled = cmd.settled_at.clone();
         if let Some(f) = self.doc.feature_mut(uid) {
             if let FeatureKind::Extrude { extent: fusion_core::doc::Extent::OneSide(d), op, .. } = &mut f.kind {
+                // «New body» chosen automatically for a tool inside a body: a new distance may now reach out of it
+                if *op == fusion_core::Op::NewBody && settled.as_ref().is_some_and(|s| s != d) {
+                    *op = fusion_core::Op::Join;
+                }
                 if let Ok(v) = d.eval(&params) {
                     if v < 0.0 && *op == fusion_core::Op::Join {
                         *op = fusion_core::Op::Cut;
@@ -761,10 +789,17 @@ impl App {
         let before = volume(&self.ev.model_before(i));
         let after = self.ev.steps().get(i).map(|s| volume(&s.model)).unwrap_or(before);
         if before > 0.0 && (after - before).abs() <= before * 1e-6 {
+            let mut at = None;
             if let Some(f) = self.doc.feature_mut(uid) {
-                if let FeatureKind::Extrude { op, .. } = &mut f.kind {
+                if let FeatureKind::Extrude { op, extent, .. } = &mut f.kind {
                     *op = fusion_core::Op::NewBody;
+                    if let fusion_core::doc::Extent::OneSide(d) = extent {
+                        at = Some(d.clone());
+                    }
                 }
+            }
+            if let Mode::Command(c) = &mut self.mode {
+                c.settled_at = at;
             }
             let now = self.now;
             self.toast(tr("Тело целиком внутри другого: создано отдельное тело («Новое тело»)"), false, now);
@@ -1790,7 +1825,7 @@ impl App {
             kind => {
                 // an existing put-on-plane / press-pull already has its face: show the result, re-pick on request
                 let pick = if matches!(kind, FeatureKind::PlaceOnPlane { .. } | FeatureKind::PressPull { .. }) { PickTarget::None } else { Command::pick_for(&kind) };
-                self.mode = Mode::Command(Command { uid, before: self.doc.clone(), pick, auto_op: false });
+                self.mode = Mode::Command(Command { uid, before: self.doc.clone(), pick, auto_op: false, settled_at: None });
             }
         }
     }
@@ -1845,7 +1880,7 @@ impl App {
         for sk in used_sketches(&self.doc.feature(uid).map(|f| f.kind.clone()).unwrap()) {
             self.doc.visible_sketches.insert(sk);
         }
-        self.mode = Mode::Command(Command { uid, before, pick, auto_op: true });
+        self.mode = Mode::Command(Command { uid, before, pick, auto_op: true, settled_at: None });
         self.after_doc_change();
     }
 
@@ -1928,6 +1963,12 @@ impl App {
         if !keep {
             return;
         }
+        // a sketch opened and closed without a change leaves nothing to undo
+        if let Some(uid) = s.uid {
+            if self.doc.feature(uid).is_some_and(|f| matches!(&f.kind, FeatureKind::Sketch { plane, sketch } if *plane == s.plane && *sketch == s.sketch)) {
+                return;
+            }
+        }
         self.checkpoint();
         match s.uid {
             Some(uid) => {
@@ -2000,6 +2041,7 @@ impl App {
                 consider(Hit::Body { slot, tri, t });
             }
         }
+        let mut profile_best: Option<Hit> = None;
         if picking_profiles {
             let skip = self.path_sketch();
             for uid in self.sketches_to_show() {
@@ -2011,9 +2053,12 @@ impl App {
                     if t > 0.0 {
                         let local = sk.plane.to_local(origin + dir * t);
                         if let Some(region) = region_at(&sk.regions, local) {
-                            // профиль на грани тела выигрывает у самой грани
+                            // профиль на грани тела выигрывает у самой грани; a profile inside a body is drawn over it and is
+                            // what the tool waits for, so it wins over the body's faces in front of it too
                             let h = Hit::Profile { sketch: uid, region, local, t: t - 1e-6 * t.abs().max(1.0) };
-                            consider(h);
+                            if profile_best.is_none_or(|b: Hit| h.t() < b.t()) {
+                                profile_best = Some(h);
+                            }
                         }
                     }
                 }
@@ -2038,6 +2083,12 @@ impl App {
                         consider(Hit::UserPlane(i, t));
                     }
                 }
+            }
+        }
+        // a profile is what the tool waits for: it wins over body faces in front of it as well
+        if let Some(h) = profile_best {
+            if best.is_none_or(|b| matches!(b, Hit::Body { .. }) || h.t() < b.t()) {
+                best = Some(h);
             }
         }
         best
@@ -6086,3 +6137,8 @@ mod lifecycle_tests {
 #[cfg(test)]
 #[path = "qa_flows.rs"]
 mod qa_flows;
+
+// Second round of QA flows (sketches, profiles, editing history), written by testing agents.
+#[cfg(test)]
+#[path = "qa_flows2.rs"]
+mod qa_flows2;
