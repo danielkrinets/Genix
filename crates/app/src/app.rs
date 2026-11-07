@@ -3671,17 +3671,9 @@ impl App {
             let wpp = self.cam.world_per_pixel(rect);
             let hot = self.manip.is_some();
             let col = if hot { Color32::from_rgb(255, 150, 30) } else { crate::theme::accent() };
-            ov.lines_top.push(render::line(base, tip, col, 3.0));
-            let (x, y) = fusion_core::geom::perp_frame(dir);
-            let head = wpp * 16.0 * dist.signum();
-            let ring: Vec<DVec3> = (0..10).map(|i| {
-                let a = std::f64::consts::TAU * i as f64 / 10.0;
-                tip - dir * head + (x * a.cos() + y * a.sin()) * head.abs() * 0.38
-            }).collect();
-            for (i, q) in ring.iter().enumerate() {
-                ov.lines_top.push(render::line(tip, *q, col, 2.5));
-                ov.lines_top.push(render::line(*q, ring[(i + 1) % ring.len()], col, 2.0));
-            }
+            // a solid arrow (shaft and cone) with a thin line to the root, so a very short distance still has something to grab
+            ov.lines_top.push(render::line(base, tip, col, 1.5));
+            render::fill_arrow(&mut ov.tris_top, base, dir, dist, wpp, col);
         }
         // видимые чертежи (не активный)
         let (cmd_sel, cmd_pick): (Vec<(u64, ProfileRef)>, bool) = match &self.mode {
@@ -5821,6 +5813,101 @@ mod lifecycle_tests {
         assert!(app.dirty());
         assert!(matches!(app.confirm, Some(Confirm::CloseTab)));
         assert!(!app.allow_close);
+    }
+
+    /// Click the face of body `slot` whose outward normal is `dir`, the way the viewport does.
+    fn click_face(app: &mut App, slot: usize, dir: DVec3, shift: bool) {
+        let model = app.pick_model();
+        let mesh = model.bodies[slot].mesh();
+        let tri = mesh.triangles.iter().position(|t| {
+            let [a, b, c] = mesh.tri(t);
+            (b - a).cross(c - a).normalize_or_zero().dot(dir) > 0.999
+        }).expect("a face with that normal");
+        let [a, b, c] = mesh.tri(&mesh.triangles[tri]);
+        let at = (a + b + c) / 3.0;
+        app.last_ray = (at + dir * 50.0, -dir);
+        app.handle_click(Some(Hit::Body { slot, tri, t: 50.0 }), shift, 0.0);
+    }
+
+    fn box_app(w: f64, d: f64, h: f64) -> App {
+        use fusion_core::doc::Shape;
+        let mut app = app();
+        let n = Expr::num;
+        app.doc.insert(FeatureKind::Primitive { shape: Shape::Box { w: n(w), d: n(d), h: n(h) }, at: [n(0.0), n(0.0), n(0.0)], op: fusion_core::Op::NewBody });
+        app.after_doc_change();
+        app
+    }
+
+    #[test]
+    fn clicking_each_face_of_a_box_pulls_it_out_and_pushes_it_in() {
+        let dirs = [DVec3::X, -DVec3::X, DVec3::Y, -DVec3::Y, DVec3::Z, -DVec3::Z];
+        for dir in dirs {
+            let mut app = box_app(40.0, 30.0, 20.0);
+            let v0 = app.ev.model().bodies[0].solid.volume();
+            app.start_command("press_pull", 0.0);
+            click_face(&mut app, 0, dir, false);
+            let Mode::Command(c) = &app.mode else { panic!("{dir:?}: the command ended on the face click") };
+            let uid = c.uid;
+            for dist in [5.0, -5.0] {
+                if let Some(f) = app.doc.feature_mut(uid) {
+                    if let FeatureKind::PressPull { distance, .. } = &mut f.kind { *distance = Expr::num(dist); }
+                }
+                app.after_doc_change();
+                assert_eq!(app.ev.error(uid), None, "{dir:?} {dist}");
+                assert_eq!(app.ev.model().bodies.len(), 1, "{dir:?} {dist}: one body");
+                let v = app.ev.model().bodies[0].solid.volume();
+                let area = 40.0 * 30.0 * 20.0 / if dir.x != 0.0 { 40.0 } else if dir.y != 0.0 { 30.0 } else { 20.0 };
+                assert!((v - (v0 + area * dist)).abs() < 1e-3 * v0, "{dir:?} {dist}: volume {v} vs {}", v0 + area * dist);
+            }
+        }
+    }
+
+    #[test]
+    fn clicking_a_face_shells_the_box_and_a_shift_click_opens_a_second_face() {
+        let mut app = box_app(40.0, 30.0, 20.0);
+        let v0 = app.ev.model().bodies[0].solid.volume();
+        app.start_command("shell", 0.0);
+        click_face(&mut app, 0, DVec3::Z, false);
+        let Mode::Command(c) = &app.mode else { panic!("the command ended") };
+        let uid = c.uid;
+        assert_eq!(app.ev.error(uid), None);
+        let one_open = app.ev.model().bodies[0].solid.volume();
+        assert!(one_open < v0 * 0.6 && one_open > 0.0, "{one_open} of {v0}");
+        click_face(&mut app, 0, DVec3::X, true);
+        assert_eq!(app.ev.error(uid), None);
+        let two_open = app.ev.model().bodies[0].solid.volume();
+        assert!(two_open < one_open, "a second open face removes more of the wall: {two_open} vs {one_open}");
+    }
+
+    #[test]
+    fn clicking_a_face_with_the_hole_tool_drills_it_from_that_side() {
+        for dir in [DVec3::Z, -DVec3::Z, DVec3::X, DVec3::Y] {
+            let mut app = box_app(40.0, 30.0, 20.0);
+            let v0 = app.ev.model().bodies[0].solid.volume();
+            app.start_command("hole", 0.0);
+            click_face(&mut app, 0, dir, false);
+            let Mode::Command(c) = &app.mode else { panic!("{dir:?}: the command ended") };
+            let uid = c.uid;
+            assert_eq!(app.ev.error(uid), None, "{dir:?}");
+            let v = app.ev.model().bodies[0].solid.volume();
+            assert!(v < v0, "{dir:?}: the hole removed nothing ({v} vs {v0})");
+            assert!(app.ev.model().bodies[0].mesh().bounds().is_some());
+        }
+    }
+
+    #[test]
+    fn clicking_a_face_with_the_fillet_tool_rounds_its_edges() {
+        for dir in [DVec3::Z, -DVec3::Z, DVec3::X, -DVec3::Y] {
+            let mut app = box_app(40.0, 30.0, 20.0);
+            let v0 = app.ev.model().bodies[0].solid.volume();
+            app.start_command("fillet", 0.0);
+            click_face(&mut app, 0, dir, false);
+            let Mode::Command(c) = &app.mode else { panic!("{dir:?}: the command ended") };
+            let uid = c.uid;
+            assert_eq!(app.ev.error(uid), None, "{dir:?}");
+            let v = app.ev.model().bodies[0].solid.volume();
+            assert!(v < v0 && v > v0 * 0.9, "{dir:?}: rounding a face removes a little: {v} vs {v0}");
+        }
     }
 
     #[test]
