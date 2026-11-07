@@ -5485,6 +5485,57 @@ mod lifecycle_tests {
     }
 
     #[test]
+    fn a_rounded_heart_can_be_pulled_up_and_pushed_down_by_its_face() {
+        use fusion_core::doc::{Extent, FaceRef};
+        use fusion_core::sketch::{Entity, ProfileRef};
+        let mut app = app();
+        let mut s = fusion_core::Sketch::default();
+        let tip = s.add_point([0.0, -25.0]);
+        let (lc, rc) = (s.add_point([-8.0, 8.0]), s.add_point([8.0, 8.0]));
+        let k = std::f64::consts::FRAC_1_SQRT_2 * 10.0;
+        let (lp, rp) = (s.add_point([-8.0 - k, 8.0 - k]), s.add_point([8.0 + k, 8.0 - k]));
+        let cusp = s.add_point([0.0, 14.0]);
+        s.add(Entity::Line { a: tip, b: lp, construction: false });
+        s.add(Entity::Arc { c: lc, a: cusp, b: lp, construction: false });
+        s.add(Entity::Arc { c: rc, a: rp, b: cusp, construction: false });
+        s.add(Entity::Line { a: rp, b: tip, construction: false });
+        let sk = app.doc.insert(FeatureKind::Sketch { plane: Plane::XY, sketch: s });
+        app.doc.insert(FeatureKind::Extrude { sketch: sk, profiles: vec![ProfileRef::at([0.0, 0.0])], extent: Extent::OneSide(Expr::num(12.0)), op: fusion_core::Op::NewBody, face: None, taper: Expr::num(0.0), thin: Expr::num(0.0), start: Expr::num(0.0) });
+        app.after_doc_change();
+        app.start_command("fillet", 0.0);
+        assert!(app.select_all_edges(), "all edges of the heart can be selected");
+        let Mode::Command(c) = &app.mode else { panic!("the command did not start") };
+        let fillet_uid = c.uid;
+        assert_eq!(app.ev.error(fillet_uid), None, "the rounding of the heart must build");
+        app.finish_command(true);
+        let rounded = app.ev.model().bodies[0].solid.volume();
+        let (lo, hi) = app.ev.model().bodies[0].mesh().bounds().unwrap();
+        let top_z = hi.z;
+        assert!((top_z - 12.0).abs() < 1e-3 && lo.z.abs() < 1e-3, "{lo:?} {hi:?}");
+        let top = Plane { origin: [0.0, 0.0, top_z], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+        for dist in [7.0, -7.0, -3.0] {
+            let mut copy = app.doc.clone();
+            copy.insert(FeatureKind::Extrude { sketch: 0, profiles: vec![], extent: Extent::OneSide(Expr::num(dist)), op: fusion_core::Op::Join, face: Some(FaceRef { plane: top, seed: [0.0, 0.0, top_z] }), taper: Expr::num(0.0), thin: Expr::num(0.0), start: Expr::num(0.0) });
+            let mut ev = Evaluator::default();
+            ev.evaluate(&copy);
+            let last = copy.features.last().unwrap().uid;
+            assert_eq!(ev.error(last), None, "face extrude {dist} must build");
+            let m = ev.model();
+            assert_eq!(m.bodies.len(), 1, "{dist}: one body");
+            let (_, h) = m.bodies[0].mesh().bounds().unwrap();
+            if (h.z - (top_z + dist)).abs() >= 1e-2 {
+                let mesh = m.bodies[0].mesh();
+                let hi: Vec<String> = mesh.vertices.iter().filter(|v| v[2] > top_z + dist + 0.01).take(10).map(|v| format!("({:.2},{:.2},{:.2})", v[0], v[1], v[2])).collect();
+                let cnt = mesh.vertices.iter().filter(|v| v[2] > top_z + dist + 0.01).count();
+                panic!("{dist}: the top must be at {} but is at {}; {cnt} vertices above it, e.g. {hi:?}", top_z + dist, h.z);
+            }
+            let v = m.bodies[0].solid.volume();
+            let area = (rounded - 0.0) / 12.0;
+            assert!(v > 0.0 && (v - (rounded + area * dist)).abs() < area * 3.0, "{dist}: volume {v} vs about {}", rounded + area * dist);
+        }
+    }
+
+    #[test]
     fn a_fillet_on_all_edges_of_a_box_builds_and_has_no_error() {
         use fusion_core::doc::Shape;
         let mut app = app();

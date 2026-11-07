@@ -812,9 +812,59 @@ fn union_all(parts: Vec<Mesh>) -> Result<Solid, String> {
 
 /// Применить тело-инструмент к модели согласно операции.
 
+/// Parity test: the ray from `p` along `dir` crosses the closed mesh an odd number of times when `p` is inside.
+fn point_in_mesh(mesh: &Mesh, p: DVec3, dir: DVec3) -> bool {
+    // a slightly skewed direction avoids hitting edges exactly
+    let dir = (dir + DVec3::new(1e-3, 2e-3, 3e-4)).normalize();
+    let mut hits = 0;
+    for t in &mesh.triangles {
+        let [a, b, c] = [0, 1, 2].map(|k| DVec3::from(mesh.vertices[t[k] as usize]));
+        let (e1, e2) = (b - a, c - a);
+        let pv = dir.cross(e2);
+        let det = e1.dot(pv);
+        if det.abs() < 1e-14 {
+            continue;
+        }
+        let inv = 1.0 / det;
+        let s = p - a;
+        let u = s.dot(pv) * inv;
+        if !(0.0..=1.0).contains(&u) {
+            continue;
+        }
+        let q = s.cross(e1);
+        let w = dir.dot(q) * inv;
+        if w < 0.0 || u + w > 1.0 {
+            continue;
+        }
+        if e2.dot(q) * inv > 1e-9 {
+            hits += 1;
+        }
+    }
+    hits % 2 == 1
+}
+
 /// The region with its outer outline moved outwards by `e` (mitred corners, the spike length is capped). Holes stay as they are.
-fn grow_outer(region: &crate::sketch::Region, e: f64) -> crate::sketch::Region {
-    let pts = &region.outer;
+fn grow_outer(region: &crate::sketch::Region, e: f64, free: &dyn Fn(crate::sketch::P2) -> bool) -> crate::sketch::Region {
+    // tiny facet edges would fold over each other when pushed out: drop the vertices that barely bend the outline first
+    let mut pts = region.outer.clone();
+    loop {
+        let n = pts.len();
+        if n <= 4 {
+            break;
+        }
+        let dev = |i: usize| {
+            let (a, b, c) = (pts[(i + n - 1) % n], pts[i], pts[(i + 1) % n]);
+            let (dx, dy) = (c[0] - a[0], c[1] - a[1]);
+            let l = (dx * dx + dy * dy).sqrt();
+            if l < 1e-12 { 0.0 } else { ((b[0] - a[0]) * dy - (b[1] - a[1]) * dx).abs() / l }
+        };
+        let (k, d) = (0..n).map(|i| (i, dev(i))).min_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
+        if d > 0.02 {
+            break;
+        }
+        pts.remove(k);
+    }
+    let pts = &pts;
     let n = pts.len();
     if n < 3 {
         return region.clone();
@@ -831,7 +881,9 @@ fn grow_outer(region: &crate::sketch::Region, e: f64) -> crate::sketch::Region {
             let (n1, n2) = (normal(p, c), normal(c, q));
             let k = 1.0 + n1[0] * n2[0] + n1[1] * n2[1];
             let (mx, my) = ((n1[0] + n2[0]) / k.max(0.3), (n1[1] + n2[1]) / k.max(0.3));
-            [c[0] + mx * e, c[1] + my * e]
+            let moved = [c[0] + mx * e, c[1] + my * e];
+            // only where the outline is free air: next to a wall that rises there the outline must stay put
+            if free(moved) { moved } else { c }
         })
         .collect();
     crate::sketch::Region { outer, holes: region.holes.clone(), ids: region.ids.clone() }
@@ -849,7 +901,23 @@ fn bevelled_press_pull(prev: &Model, plane: &Plane, seed: DVec3, d: f64) -> Resu
     let top = d.max(0.0) + 0.05;
     // Pushing a face down subtracts a column of its outline; a curved wall is faceted, so the chords of that outline lie slightly
     // inside the wall and would leave a thin sliver standing. The column is made a hair wider to swallow it.
-    let region = if d < 0.0 { grow_outer(&region, 0.15) } else { region };
+    // Pushing a face down subtracts a column of its outline. The outline taken from the bevel's boundary is faceted differently from
+    // the wall below it and leaves slivers standing, so the column uses the exact cross-section of the wall just below the bevel.
+    let region = if d < 0.0 {
+        let wall = geom::section_region(prev.bodies[bi].mesh(), plane, -(depth + 0.02), seed);
+        let wall = wall.filter(|w| w.outer.len() >= 3 && crate::sketch::signed_area(&w.outer).abs() > 0.5 * crate::sketch::signed_area(&region.outer).abs());
+        match wall {
+            // coincident faces make the boolean fragile, so the column is a hair wider than the wall (where the outside is free air)
+            Some(w) => {
+                let solid = &prev.bodies[bi].solid;
+                let free = |q: crate::sketch::P2| !point_in_mesh(&solid.mesh, plane.to_world(q) + plane.normal() * 1e-3 - plane.normal() * (depth + 0.02), plane.normal());
+                grow_outer(&w, 0.05, &free)
+            }
+            None => region,
+        }
+    } else {
+        region
+    };
     let column = |z0: f64, z1: f64| -> Result<Solid, String> { Solid::from_mesh(&geom::extrude_region(plane, &region, z0, z1).ok_or("не удалось построить грань")?) };
     let body = prev.bodies[bi].solid.clone();
     let shifted = body.transformed(&DMat4::from_translation(plane.normal() * d));

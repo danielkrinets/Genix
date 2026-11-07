@@ -991,7 +991,8 @@ fn face_region_impl(mesh: &Mesh, plane: &Plane, seed: DVec3, bevel: bool) -> Opt
         *ids.entry(((v.x * 1e5).round() as i64, (v.y * 1e5).round() as i64, (v.z * 1e5).round() as i64)).or_insert_with(|| { pos.push(v); pos.len() - 1 })
     }).collect();
     let tris: Vec<[usize; 3]> = mesh.triangles.iter().map(|t| t.map(|i| vid[i as usize])).collect();
-    let facing = |t: &[usize; 3]| t.iter().all(|&i| (pos[i] - o).dot(n).abs() < 1e-4)
+    // booleans leave float noise of about 1e-4 on big flat triangles, so the plane test is a little wider than that
+    let facing = |t: &[usize; 3]| t.iter().all(|&i| (pos[i] - o).dot(n).abs() < 1e-3)
         && (pos[t[1]] - pos[t[0]]).cross(pos[t[2]] - pos[t[0]]).normalize_or_zero().dot(n) > 0.9999;
     let flat: Vec<usize> = (0..tris.len()).filter(|&i| facing(&tris[i])).collect();
     let inside = |t: &[usize; 3]| (0..3).all(|k| (pos[t[(k + 1) % 3]] - pos[t[k]]).cross(seed - pos[t[k]]).dot(n) > -1e-6);
@@ -1025,9 +1026,17 @@ fn face_region_impl(mesh: &Mesh, plane: &Plane, seed: DVec3, bevel: bool) -> Opt
                 all_edge.entry((a.min(b), a.max(b))).or_default().push(i);
             }
         }
+        // a bevel cannot be deeper than the largest rounding that fits the body (half of its shortest side); this keeps the growth
+        // from running down a curved wall through the slightly tilted triangles of its facets
+        let (mut lo, mut hi) = (DVec3::splat(f64::MAX), DVec3::splat(f64::MIN));
+        for p in pos.iter() {
+            lo = lo.min(*p);
+            hi = hi.max(*p);
+        }
+        let max_depth = (hi - lo).min_element() / 2.0 + 1e-6;
         let slanted = |t: &[usize; 3]| {
             let c = (pos[t[1]] - pos[t[0]]).cross(pos[t[2]] - pos[t[0]]).normalize_or_zero().dot(n);
-            c > 0.02 && c < 0.9999 && t.iter().all(|&i| (pos[i] - o).dot(n) < 1e-4)
+            c > 0.02 && c < 0.9999 && t.iter().all(|&i| { let h = (pos[i] - o).dot(n); h < 1e-3 && -h <= max_depth })
         };
         let mut stack: Vec<usize> = face.iter().copied().collect();
         while let Some(i) = stack.pop() {
@@ -1063,7 +1072,25 @@ fn face_region_impl(mesh: &Mesh, plane: &Plane, seed: DVec3, bevel: bool) -> Opt
     let big = (0..loops.len()).max_by(|&a, &b| area(&loops[a]).abs().total_cmp(&area(&loops[b]).abs()))?;
     if area(&loops[big]) < 0.0 { loops.iter_mut().for_each(|l| l.reverse()); }
     let outer = loops.remove(big);
-    Some((Region { outer, holes: loops.into_iter().filter(|l| area(l) < 0.0).collect(), ids: Vec::new() }, depth))
+    let mut holes: Vec<Vec<P2>> = loops.into_iter().filter(|l| area(l) < 0.0).collect();
+    if bevel {
+        // A loop inside the outline is a real opening only when no flat triangle of this very plane lies over it. A piece of the
+        // flat top that the edge walk could not reach (the mesh has T-junctions) would otherwise turn into a phantom hole, and so
+        // would the tiny gaps between bevel facets.
+        let over_flat = |q: P2| {
+            let p = plane.to_world(q);
+            flat.iter().any(|&i| { let t = &tris[i]; (0..3).all(|k| (pos[t[(k + 1) % 3]] - pos[t[k]]).cross(p - pos[t[k]]).dot(n) > -1e-6) })
+        };
+        // gaps of a fraction of a square millimetre are mesh slivers between bevel facets, not openings
+        holes.retain(|h| area(h).abs() > 0.25);
+        holes.retain(|h| {
+            let mut rev = h.clone();
+            rev.reverse();
+            let probe = Region { outer: rev, holes: Vec::new(), ids: Vec::new() }.interior_point();
+            !over_flat(probe)
+        });
+    }
+    Some((Region { outer, holes, ids: Vec::new() }, depth))
 }
 
 /// Draft as in Fusion: every face parallel to `pull` leans by `angle_deg` away from the neutral plane
@@ -1107,4 +1134,101 @@ pub fn draft_mesh(mesh: &Mesh, pull: DVec3, neutral: f64, angle_deg: f64) -> Mes
         m.vertices[i] = (p + shift).to_array();
     }
     m
+}
+
+
+/// The cross-section of `mesh` by the plane parallel to `plane` at `height` along its normal, as the region of the loop that contains
+/// `seed` (projected onto the plane): its outline is the exact wall of the part there, with the loops directly inside it as holes.
+pub fn section_region(mesh: &Mesh, plane: &Plane, height: f64, seed: DVec3) -> Option<Region> {
+    use std::collections::HashMap;
+    let (n, o) = (plane.normal(), plane.o() + plane.normal() * height);
+    let side = |v: DVec3| { let d = (v - o).dot(n); if d.abs() < 1e-9 { 1e-9 } else { d } };
+    let key = |q: P2| ((q[0] * 1e5).round() as i64, (q[1] * 1e5).round() as i64);
+    let mut adj: HashMap<(i64, i64), Vec<(i64, i64)>> = HashMap::new();
+    let mut at: HashMap<(i64, i64), P2> = HashMap::new();
+    for t in &mesh.triangles {
+        let v = [0, 1, 2].map(|k| DVec3::from(mesh.vertices[t[k] as usize]));
+        let s = v.map(side);
+        if s.iter().all(|x| *x > 0.0) || s.iter().all(|x| *x < 0.0) {
+            continue;
+        }
+        let mut pts: Vec<P2> = Vec::new();
+        for k in 0..3 {
+            let (a, b) = (k, (k + 1) % 3);
+            if (s[a] > 0.0) != (s[b] > 0.0) {
+                let w = v[a] + (v[b] - v[a]) * (s[a] / (s[a] - s[b]));
+                pts.push(plane.to_local(w));
+            }
+        }
+        if pts.len() == 2 {
+            let (ka, kb) = (key(pts[0]), key(pts[1]));
+            if ka != kb {
+                at.insert(ka, pts[0]);
+                at.insert(kb, pts[1]);
+                adj.entry(ka).or_default().push(kb);
+                adj.entry(kb).or_default().push(ka);
+            }
+        }
+    }
+    let mut used: std::collections::HashSet<((i64, i64), (i64, i64))> = Default::default();
+    let mut loops: Vec<Vec<P2>> = Vec::new();
+    let starts: Vec<(i64, i64)> = adj.keys().copied().collect();
+    for st in starts {
+        for first in adj[&st].clone() {
+            if used.contains(&(st, first)) {
+                continue;
+            }
+            let mut poly = vec![at[&st]];
+            let (mut prev, mut cur) = (st, first);
+            used.insert((st, first));
+            used.insert((first, st));
+            let mut closed = false;
+            for _ in 0..100_000 {
+                if cur == st {
+                    closed = true;
+                    break;
+                }
+                poly.push(at[&cur]);
+                let Some(&next) = adj[&cur].iter().find(|&&c| c != prev && !used.contains(&(cur, c))) else { break };
+                used.insert((cur, next));
+                used.insert((next, cur));
+                prev = cur;
+                cur = next;
+            }
+            if closed && poly.len() >= 3 {
+                loops.push(poly);
+            }
+        }
+    }
+    let area = |l: &[P2]| 0.5 * (0..l.len()).map(|i| l[i][0] * l[(i + 1) % l.len()][1] - l[(i + 1) % l.len()][0] * l[i][1]).sum::<f64>();
+    let contains = |l: &[P2], q: P2| {
+        let mut inside = false;
+        for i in 0..l.len() {
+            let (a, b) = (l[i], l[(i + 1) % l.len()]);
+            if (a[1] > q[1]) != (b[1] > q[1]) && q[0] < (b[0] - a[0]) * (q[1] - a[1]) / (b[1] - a[1]) + a[0] {
+                inside = !inside;
+            }
+        }
+        inside
+    };
+    let sp = plane.to_local(seed);
+    let outer_i = (0..loops.len()).filter(|&i| contains(&loops[i], sp)).min_by(|&a, &b| area(&loops[a]).abs().total_cmp(&area(&loops[b]).abs()))?;
+    let mut outer = loops[outer_i].clone();
+    if area(&outer) < 0.0 {
+        outer.reverse();
+    }
+    // loops directly inside the outline are holes; deeper ones are islands inside them
+    let inside_outer: Vec<usize> = (0..loops.len()).filter(|&i| i != outer_i && contains(&outer, loops[i][0])).collect();
+    let mut holes = Vec::new();
+    for &i in &inside_outer {
+        let nested = inside_outer.iter().any(|&j| j != i && area(&loops[j]).abs() > area(&loops[i]).abs() && contains(&loops[j], loops[i][0]));
+        if !nested {
+            let mut h = loops[i].clone();
+            if area(&h) > 0.0 {
+                h.reverse();
+            }
+            holes.push(h);
+        }
+    }
+    Some(Region { outer, holes, ids: Vec::new() })
 }
