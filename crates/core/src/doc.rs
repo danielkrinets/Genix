@@ -894,6 +894,112 @@ fn grow_outer(region: &crate::sketch::Region, e: f64, free: &dyn Fn(crate::sketc
     crate::sketch::Region { outer, holes: region.holes.clone(), ids: region.ids.clone() }
 }
 
+/// The straight sharp edges of a mesh, collinear pieces joined into whole lines. Pieces are grouped by the line they lie on
+/// (direction and offset, rounded), then joined along it, so the cost stays near linear even for a plate with many holes.
+fn sharp_lines(mesh: &Mesh) -> Vec<(DVec3, DVec3)> {
+    use std::collections::HashMap;
+    let mut groups: HashMap<[i64; 6], (DVec3, DVec3, Vec<(f64, f64)>)> = HashMap::new();
+    for (i, j) in mesh.sharp_edges(20.0) {
+        let (a, b) = (DVec3::from(mesh.vertices[i as usize]), DVec3::from(mesh.vertices[j as usize]));
+        let mut d = (b - a).normalize_or_zero();
+        if d == DVec3::ZERO {
+            continue;
+        }
+        // one sign per direction, so both orders of a piece land in the same group
+        if d.x < -1e-9 || (d.x.abs() <= 1e-9 && (d.y < -1e-9 || (d.y.abs() <= 1e-9 && d.z < 0.0))) {
+            d = -d;
+        }
+        let foot = a - d * a.dot(d);
+        let key = [(d.x * 1e6).round() as i64, (d.y * 1e6).round() as i64, (d.z * 1e6).round() as i64, (foot.x * 1e4).round() as i64, (foot.y * 1e4).round() as i64, (foot.z * 1e4).round() as i64];
+        let (ta, tb) = (a.dot(d), b.dot(d));
+        groups.entry(key).or_insert((d, foot, Vec::new())).2.push((ta.min(tb), ta.max(tb)));
+    }
+    let mut out = Vec::new();
+    for (_, (d, foot, mut spans)) in groups {
+        spans.sort_by(|x, y| x.0.total_cmp(&y.0));
+        let mut cur = spans[0];
+        for s in spans.into_iter().skip(1) {
+            if s.0 <= cur.1 + 1e-6 {
+                cur.1 = cur.1.max(s.1);
+            } else {
+                out.push((foot + d * cur.0, foot + d * cur.1));
+                cur = s;
+            }
+        }
+        out.push((foot + d * cur.0, foot + d * cur.1));
+    }
+    out
+}
+
+/// Straight edges stored by their end points after an earlier step changed the body (a wider box): an edge that no longer lies
+/// on a sharp edge of the body is replaced by the nearest parallel one, and then every straight edge of the set is taken whole,
+/// as it was when picked. When every edge is still where it was the set is returned unchanged.
+fn followed_edges(mesh: &Mesh, edges: &[EdgeRef]) -> Vec<EdgeRef> {
+    let lines = sharp_lines(mesh);
+    let on_line = |p: DVec3, (a, b): (DVec3, DVec3)| {
+        let d = (b - a).normalize_or_zero();
+        let t = (p - a).dot(d);
+        (p - a - d * t).length() < 1e-5 && t > -1e-5 && t < (b - a).length() + 1e-5
+    };
+    let holds = |e: &EdgeRef, l: (DVec3, DVec3)| on_line(DVec3::from(e.a), l) && on_line(DVec3::from(e.b), l);
+    if edges.iter().all(|e| e.circle || lines.iter().any(|l| holds(e, *l))) {
+        return edges.to_vec();
+    }
+    let mut out: Vec<EdgeRef> = Vec::new();
+    for e in edges {
+        if e.circle {
+            out.push(*e);
+            continue;
+        }
+        let (a, b) = (DVec3::from(e.a), DVec3::from(e.b));
+        let (dir, mid) = ((b - a).normalize_or_zero(), (a + b) * 0.5);
+        // only an edge that still lies on the body's surface (on a face that grew past it) is followed; one inside the body or
+        // out in the air was never an edge of this body and stays an error
+        let on_surface = mesh.triangles.iter().any(|t| {
+            let [p, q, r] = mesh.tri(t);
+            let n = (q - p).cross(r - p).normalize_or_zero();
+            (mid - p).dot(n).abs() < 1e-5 && [(p, q), (q, r), (r, p)].iter().all(|(x, y)| (*y - *x).cross(mid - *x).dot(n) > -1e-9)
+        });
+        let found = lines.iter().find(|l| holds(e, **l)).copied().or_else(|| {
+            if !on_surface {
+                return None;
+            }
+            lines
+                .iter()
+                .filter(|(p, q)| (*q - *p).normalize_or_zero().dot(dir).abs() > 1.0 - 1e-9)
+                .min_by(|x, y| {
+                    let dist = |(p, q): &(DVec3, DVec3)| {
+                        let d = (*q - *p).normalize_or_zero();
+                        (mid - *p - d * (mid - *p).dot(d)).length()
+                    };
+                    dist(x).total_cmp(&dist(y))
+                })
+                .copied()
+        });
+        let r = match found {
+            Some((p, q)) => EdgeRef::line(p.to_array(), q.to_array()),
+            None => *e,
+        };
+        let same = |x: &EdgeRef| (DVec3::from(x.a).distance(DVec3::from(r.a)) < 1e-6 && DVec3::from(x.b).distance(DVec3::from(r.b)) < 1e-6) || (DVec3::from(x.a).distance(DVec3::from(r.b)) < 1e-6 && DVec3::from(x.b).distance(DVec3::from(r.a)) < 1e-6);
+        if !out.iter().any(same) {
+            out.push(r);
+        }
+    }
+    out
+}
+
+/// A stored face (plane and picked point) after earlier steps may have moved it along its normal: see [`geom::follow_face`].
+fn followed(m: &Model, plane: &Plane, seed: DVec3) -> (Plane, DVec3) {
+    let meshes: Vec<&crate::mesh::Mesh> = m.bodies.iter().map(|b| b.mesh()).collect();
+    match geom::follow_face(&meshes, plane, seed) {
+        Some(moved) => {
+            let shift = moved.normal() * (moved.o() - plane.o()).dot(plane.normal());
+            (moved, seed + shift)
+        }
+        None => (*plane, seed),
+    }
+}
+
 /// The body whose face on `plane` holds the picked `seed` point.
 fn picked_body(m: &Model, plane: &Plane, seed: DVec3) -> Option<usize> {
     let meshes: Vec<&crate::mesh::Mesh> = m.bodies.iter().map(|b| b.mesh()).collect();
@@ -1063,6 +1169,8 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             Ok((prev.clone(), Some(SketchResult { plane: *plane, sketch: s, regions, status })))
         }
         FeatureKind::Extrude { face: Some(f), extent, taper, thin, .. } => {
+            let (plane, seed) = followed(prev, &f.plane, DVec3::from(f.seed));
+            let f = &FaceRef { plane, seed: seed.to_array() };
             // a face with a chamfer or fillet around it moves together with its bevel
             if let Extent::OneSide(dist) = extent {
                 let dist = dist.eval(p)?;
@@ -1349,6 +1457,10 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                 PatternKind::Rect { nx, dx, ny, dy, nz, dz } => {
                     let (nx, ny, nz) = (count(nx, p)?, count(ny, p)?, count(nz, p)?);
                     let (dx, dy, dz) = (dx.eval(p)?, dy.eval(p)?, dz.eval(p)?);
+                    // copies a zero step apart all land on the original: nothing visible changes, but the body gets heavier
+                    if (nx > 1 && dx.abs() < 1e-9) || (ny > 1 && dy.abs() < 1e-9) || (nz > 1 && dz.abs() < 1e-9) {
+                        return Err("шаг массива равен нулю — копии легли бы друг на друга".into());
+                    }
                     for k in 0..nz {
                         for j in 0..ny {
                             for i in 0..nx {
@@ -1362,6 +1474,9 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
                 PatternKind::Circular { count: c, axis, angle } => {
                     let c = count(c, p)?;
                     let ang = angle.eval(p)?;
+                    if c > 1 && ang.abs() < 1e-9 {
+                        return Err("угол массива равен нулю — копии легли бы друг на друга".into());
+                    }
                     // полный круг: копии не должны совпасть с исходным телом
                     let step = if (ang.abs() - 360.0).abs() < 1e-9 { ang / c as f64 } else { ang / (c.max(2) - 1) as f64 };
                     for k in 1..c {
@@ -1446,6 +1561,8 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             Ok((Arc::new(m), None))
         }
         FeatureKind::Hole { plane, at, dia, depth, kind, more } => {
+            // the face the hole was placed on may have moved since (a taller box): the hole starts from where it is now
+            let plane = &followed(prev, plane, plane.to_world([at[0].eval(p)?, at[1].eval(p)?])).0;
             let r = positive(dia, p, "диаметр")? / 2.0;
             let n = plane.normal();
             let big = prev.bodies.iter().filter_map(|b| b.mesh().bounds()).fold(0.0f64, |m, (l, h)| m.max((h - l).length())) + 10.0;
@@ -1519,6 +1636,8 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             Ok((Arc::new(m), None))
         }
         FeatureKind::PressPull { plane, seed, distance } => {
+            let (plane, seed) = followed(prev, plane, DVec3::from(*seed));
+            let (plane, seed) = (&plane, &seed.to_array());
             let d = distance.eval(p)?;
             if d.abs() < 1e-9 {
                 return Err("расстояние не может быть нулевым".into());
@@ -1651,6 +1770,7 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
             if edges.is_empty() {
                 return Err("не выбрано ни одного ребра".into());
             }
+            let edges = &followed_edges(b.mesh(), edges);
             let v = positive(size, p, if is_fillet { "радиус" } else { "расстояние" })?;
             // a size beyond the body itself can only break the geometry (and a drag past it would keep the window busy for minutes)
             if let Some((lo, hi)) = b.solid.mesh.bounds() {
@@ -1794,7 +1914,9 @@ fn eval_feature(f: &Feature, prev: &Arc<Model>, p: &Params, steps: &[StepResult]
         }
         FeatureKind::Shell { plane, thickness, open, more } => {
             let t = positive(thickness, p, "толщина")?;
-            let ball = Solid::from_mesh(&geom::sphere_mesh(DVec3::ZERO, t))?;
+            // the erosion costs (body facets) x (ball facets): a 16-sided ball keeps flat walls exact (it has vertices on the axes and
+            // its faces touch the sphere there) and makes walls on slanted or round faces at most 2 % thinner, many times faster
+            let ball = Solid::from_mesh(&geom::sphere_mesh_n(DVec3::ZERO, t, 16))?;
             let mut m = (**prev).clone();
             let mut done = 0;
             let faces: Vec<&Plane> = std::iter::once(plane).chain(more.iter()).collect();

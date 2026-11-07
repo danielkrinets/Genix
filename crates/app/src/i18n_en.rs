@@ -1139,4 +1139,11 @@ pub const EN: &[(&str, &str)] = &[
     ("Исключающее", "Exclusive"),
     ("Три угла одного шага применяются по порядку Z, затем Y, затем X вокруг неподвижных осей. Нужен другой порядок — сделайте два шага. Несколько тел поворачиваются вместе вокруг центра всей группы", "The three angles of one step are applied Z, then Y, then X about fixed axes. For another order use two steps. Several bodies turn together about the centre of the whole group"),
     ("Ничего не выбрано — операция не добавлена", "Nothing selected — the operation was not added"),
+    ("вырез удалил бы тело целиком — уменьшите размер или расстояние", "the cut would remove the whole body — make the size or distance smaller"),
+    ("шаг массива равен нулю — копии легли бы друг на друга", "the pattern step is zero — the copies would lie on top of each other"),
+    ("угол массива равен нулю — копии легли бы друг на друга", "the pattern angle is zero — the copies would lie on top of each other"),
+    ("толщина слишком велика для этого тела", "the thickness is too large for this body"),
+    ("в чертеже есть точка без координат", "a sketch point has no coordinates"),
+    ("кривая чертежа ссылается на несуществующую точку", "a sketch curve refers to a point that does not exist"),
+    ("ограничение чертежа ссылается на несуществующий объект", "a sketch constraint refers to an object that does not exist"),
 ];

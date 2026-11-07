@@ -930,7 +930,6 @@ fn coplanar_loft_is_a_clean_error() {
 }
 
 #[test]
-#[ignore = "BUG: sweep end caps are square to the first/last chord, not to the arc tangent (a 90 deg elbow ends 2.5 deg off)"]
 fn sweep_along_an_arc_ends_flush_with_the_tangent_planes() {
     // a 20 mm radius disc swept along a quarter arc of radius 50: the ends must lie in the planes y = 0 and x = 0
     let mut d = Document::default();
@@ -1026,7 +1025,6 @@ fn pipe_along_open_and_closed_paths() {
 }
 
 #[test]
-#[ignore = "BUG: a pipe along a closed polyline is swept as an open chain: the seam corner is not mitred and the end overlaps the start"]
 fn pipe_along_a_closed_rectangle_is_a_closed_ring() {
     let fac = (2.0 * PI / 72.0).sin() * 72.0 / (2.0 * PI);
     let mut d = Document::default();
@@ -1049,7 +1047,6 @@ fn pipe_along_a_closed_rectangle_is_a_closed_ring() {
 }
 
 #[test]
-#[ignore = "BUG: a pipe along a closed path of arcs keeps both end caps at the seam (internal double wall)"]
 fn pipe_along_a_closed_circle_of_arcs() {
     let fac = (2.0 * PI / 72.0).sin() * 72.0 / (2.0 * PI);
     let mut d = Document::default();
@@ -1700,7 +1697,6 @@ fn draft_of_a_body_with_a_hole_and_a_cylinder() {
 
 
 #[test]
-#[ignore = "BUG: square pipe fails with NotManifold when the corner radius equals the wall (sharp inner corner) or half the width"]
 fn square_pipe_with_corner_equal_to_wall() {
     for (corner, l_path) in [(0.5, false), (0.5, true), (2.0, false)] {
         let mut d = Document::default();
@@ -1719,7 +1715,6 @@ fn square_pipe_with_corner_equal_to_wall() {
 }
 
 #[test]
-#[ignore = "BUG (performance): Shell of a box with blind holes takes 9-30 s in release and multiplies the triangle count 20x"]
 fn shell_of_a_holed_box_is_fast_enough() {
     let mut d = Document::default();
     boxp(&mut d, [0.0; 3], 40.0, 30.0, 20.0, Op::NewBody);

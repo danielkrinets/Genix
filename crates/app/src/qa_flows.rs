@@ -245,7 +245,6 @@ fn cancelling_an_edit_keeps_the_old_value() {
 
 /// Editing the box under a fillet (a wider box): the fillet has to follow, not break.
 #[test]
-#[ignore = "BUG: editing the box width under a fillet breaks it: 'выберите ребро между двумя гранями' (edges stored by absolute coordinates)"]
 fn widening_the_box_under_a_fillet_keeps_the_fillet_building() {
     use fusion_core::doc::Shape;
     let mut app = box_app(40.0, 30.0, 20.0);
@@ -266,7 +265,6 @@ fn widening_the_box_under_a_fillet_keeps_the_fillet_building() {
 
 /// A taller box under a press-pull of its top face: the press-pull refers to the top face, which moved.
 #[test]
-#[ignore = "BUG: editing the box height under a press-pull breaks it: 'грань не найдена: тело изменилось' (face stored by absolute plane)"]
 fn making_the_box_taller_under_a_press_pull_keeps_pulling_the_top_face() {
     use fusion_core::doc::Shape;
     let mut app = box_app(40.0, 30.0, 20.0);
@@ -1054,7 +1052,6 @@ fn suppressing_a_hole_and_undoing_it() {
 
 /// A through hole on the top face, then the box made taller: the hole must still go all the way through.
 #[test]
-#[ignore = "BUG: a through hole keeps its old absolute face plane; after the box is made taller (20 -> 30) it silently drills only the lower 20 mm, no error"]
 fn a_through_hole_stays_through_when_the_box_gets_taller() {
     use fusion_core::doc::Shape;
     let mut app = box_app(40.0, 30.0, 20.0);

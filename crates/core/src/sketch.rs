@@ -1177,11 +1177,38 @@ impl Region {
 
     /// Треугольники области: вершины (внешний контур, затем отверстия подряд) и индексы против часовой.
     pub fn triangulate(&self) -> (Vec<P2>, Vec<[usize; 3]>) {
-        let mut verts: Vec<P2> = self.outer.clone();
+        // earcut can drop a triangle when a hole's corner lines up exactly with outer vertices (a square hole in a rounded
+        // square): the cap then has a gap and the solid is not closed. The triangles must cover the region's area; if they do
+        // not, the same outlines are tried again starting from other vertices, which changes the bridges earcut makes.
+        let want = signed_area(&self.outer).abs() - self.holes.iter().map(|h| signed_area(h).abs()).sum::<f64>();
+        let mut best: Option<(f64, Vec<P2>, Vec<[usize; 3]>)> = None;
+        let tries = 1 + self.holes.iter().map(|h| h.len()).max().unwrap_or(0).min(8) + self.outer.len().min(8);
+        for k in 0..tries {
+            let (oshift, hshift) = if k == 0 { (0, 0) } else if k <= 8 { (0, k) } else { (k - 8, 0) };
+            let (verts, tris) = Self::earcut_once(&self.outer, &self.holes, oshift, hshift);
+            let got: f64 = tris.iter().map(|t| {
+                let (a, b, c) = (verts[t[0]], verts[t[1]], verts[t[2]]);
+                ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs() * 0.5
+            }).sum();
+            let miss = (got - want).abs();
+            if miss <= 1e-9 * want.abs().max(1.0) {
+                return (verts, tris);
+            }
+            if best.as_ref().is_none_or(|b| miss < b.0) {
+                best = Some((miss, verts, tris));
+            }
+        }
+        let (_, v, t) = best.unwrap();
+        (v, t)
+    }
+
+    fn earcut_once(outer: &[P2], holes: &[Vec<P2>], oshift: usize, hshift: usize) -> (Vec<P2>, Vec<[usize; 3]>) {
+        let rot = |l: &[P2], k: usize| -> Vec<P2> { if l.is_empty() { Vec::new() } else { let k = k % l.len(); l[k..].iter().chain(l[..k].iter()).copied().collect() } };
+        let mut verts: Vec<P2> = rot(outer, oshift);
         let mut holes_idx = Vec::new();
-        for h in &self.holes {
+        for h in holes {
             holes_idx.push(verts.len());
-            verts.extend_from_slice(h);
+            verts.extend(rot(h, hshift));
         }
         let mut out: Vec<usize> = Vec::new();
         let mut ec = earcut::Earcut::new();
@@ -1198,6 +1225,45 @@ impl Region {
                 }
             })
             .collect();
+        let mut tris: Vec<[usize; 3]> = tris;
+        // earcut can leave a vertex lying inside another triangle's edge (a hole's corner lined up with outer vertices). A solid
+        // made from the region uses every vertex in its walls, so such a T-junction is a crack in the cap: the triangle whose
+        // edge holds the vertex is split there, until none is left.
+        let on = |p: P2, a: P2, b: P2| {
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let l2 = dx * dx + dy * dy;
+            if l2 < 1e-24 {
+                return false;
+            }
+            let t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2;
+            let cross = (p[0] - a[0]) * dy - (p[1] - a[1]) * dx;
+            t > 1e-9 && t < 1.0 - 1e-9 && cross.abs() / l2.sqrt() < 1e-9 * l2.sqrt().max(1.0)
+        };
+        // a full triangulation of a polygon with holes has V + 2H - 2 triangles; only a short one can hold a T-junction
+        let full = tris.len() + 2 >= verts.len() + 2 * holes.len();
+        let mut guard = if full { usize::MAX - 1 } else { 0 };
+        'outer: loop {
+            guard = guard.saturating_add(1);
+            if guard > verts.len() * 4 + 16 {
+                break;
+            }
+            for v in 0..verts.len() {
+                let hit = tris.iter().enumerate().find_map(|(ti, t)| {
+                    if t.contains(&v) {
+                        return None;
+                    }
+                    (0..3).find(|&e| on(verts[v], verts[t[e]], verts[t[(e + 1) % 3]])).map(|e| (ti, e))
+                });
+                if let Some((ti, e)) = hit {
+                    let t = tris[ti];
+                    let (a, b, c) = (t[e], t[(e + 1) % 3], t[(e + 2) % 3]);
+                    tris[ti] = [a, v, c];
+                    tris.push([v, b, c]);
+                    continue 'outer;
+                }
+            }
+            break;
+        }
         (verts, tris)
     }
 

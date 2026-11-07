@@ -286,6 +286,11 @@ pub fn rounded_rect_loop(c: DVec3, t: DVec3, hw: f64, hh: f64, corner: f64, ccw:
             pts.push(at(cu + r * a.cos(), cv + r * a.sin()));
         }
     }
+    // a corner as big as half the side makes neighbouring arcs meet: drop the repeated points
+    pts.dedup_by(|a, b| a.distance(*b) < 1e-9);
+    if pts.len() > 2 && pts[0].distance(*pts.last().unwrap()) < 1e-9 {
+        pts.pop();
+    }
     if !ccw {
         pts.reverse();
     }
@@ -296,6 +301,21 @@ pub fn rounded_rect_loop(c: DVec3, t: DVec3, hw: f64, hh: f64, corner: f64, ccw:
 pub fn round_path(pts: &[DVec3], radius: f64) -> Vec<DVec3> {
     if radius < 1e-9 || pts.len() < 3 {
         return pts.to_vec();
+    }
+    // a closed path (ends on its start) has a corner at the seam as well: every corner is rounded, and the path ends where it starts
+    let closed = pts.len() > 3 && pts[0].distance(pts[pts.len() - 1]) < 1e-6;
+    if closed {
+        let q = &pts[..pts.len() - 1];
+        let n = q.len();
+        let rotated: Vec<DVec3> = (0..=n + 1).map(|i| q[(i + n - 1) % n]).collect();
+        // rotated = [last, q0, q1, ..., q_{n-1}, q0]: rounding its inner corners covers every corner of the loop once
+        let mut out = round_path(&rotated, radius);
+        out.remove(0);
+        out.pop();
+        if let Some(&first) = out.first() {
+            out.push(first);
+        }
+        return out;
     }
     let mut out = vec![pts[0]];
     for i in 1..pts.len() - 1 {
@@ -353,8 +373,14 @@ pub fn sweep_loops(path: &[DVec3], outer: &[DVec3], holes: &[Vec<DVec3>]) -> Res
     if p.len() < 2 {
         return Err("путь слишком короткий".into());
     }
+    // a path that ends where it starts is a ring: no end caps, and the seam is a mitred corner like any other
+    let closed = p.len() > 3 && p[0].distance(*p.last().unwrap()) < 1e-6;
+    if closed {
+        p.pop();
+    }
     let m = p.len();
-    let d: Vec<DVec3> = (0..m - 1).map(|i| (p[i + 1] - p[i]).normalize()).collect();
+    let segs = if closed { m } else { m - 1 };
+    let d: Vec<DVec3> = (0..segs).map(|i| (p[(i + 1) % m] - p[i]).normalize()).collect();
     let (x0, y0) = perp_frame(d[0]);
     let to2d = |l: &[DVec3]| -> Vec<[f64; 2]> { l.iter().map(|q| [(*q - p[0]).dot(x0), (*q - p[0]).dot(y0)]).collect() };
     let mut o2 = to2d(outer);
@@ -380,23 +406,35 @@ pub fn sweep_loops(path: &[DVec3], outer: &[DVec3], holes: &[Vec<DVec3>]) -> Res
     // оси по сегментам (параллельный перенос)
     let mut fx = vec![x0];
     let mut fy = vec![y0];
-    for j in 0..m - 2 {
+    for j in 0..segs - 1 {
         let q = glam::DQuat::from_rotation_arc(d[j], d[j + 1]);
         fx.push(q * fx[j]);
         fy.push(q * fy[j]);
     }
     let mut mesh = Mesh::default();
+    // An open path that is a curve (an arc cut into chords) should end square to the curve's tangent, not to its first or last
+    // chord: the tangent is the end chord turned back by half the turn to the next chord. A real corner (a sharp turn) is left alone.
+    let end_tangent = |a: DVec3, b: DVec3| -> Option<DVec3> {
+        let turn = a.dot(b).clamp(-1.0, 1.0).acos();
+        (turn > 1e-6 && turn < 0.35).then(|| glam::DQuat::IDENTITY.slerp(glam::DQuat::from_rotation_arc(b, a), 0.5) * a)
+    };
+    let (t_start, t_end) = if closed || segs < 2 { (None, None) } else { (end_tangent(d[0], d[1]), end_tangent(d[segs - 1], d[segs - 2])) };
     for k in 0..m {
-        let seg = k.saturating_sub(1); // кольцо в точке k лежит в системе входящего сегмента
+        // кольцо в точке k лежит в системе входящего сегмента
+        let seg = if closed { (k + m - 1) % m } else { k.saturating_sub(1) };
         for v in &verts {
             let mut pt = p[k] + fx[seg] * v[0] + fy[seg] * v[1];
-            if k > 0 && k < m - 1 {
-                let tb = (d[k - 1] + d[k]).normalize_or_zero();
-                let c = d[k - 1].dot(tb);
+            if closed || (k > 0 && k < m - 1) {
+                let (din, dout) = (d[seg], d[k % segs]);
+                let tb = (din + dout).normalize_or_zero();
+                let c = din.dot(tb);
                 if c < 0.05 {
                     return Err("слишком резкий поворот пути".into());
                 }
-                pt += d[k - 1] * (-((pt - p[k]).dot(tb)) / c);
+                pt += din * (-((pt - p[k]).dot(tb)) / c);
+            } else if let Some(t) = if k == 0 { t_start } else { t_end } {
+                let along = if k == 0 { d[0] } else { d[segs - 1] };
+                pt += along * (-((pt - p[k]).dot(t)) / along.dot(t));
             }
             mesh.vertices.push(pt.to_array());
         }
@@ -405,21 +443,23 @@ pub fn sweep_loops(path: &[DVec3], outer: &[DVec3], holes: &[Vec<DVec3>]) -> Res
     let loops = std::iter::once(region.outer.len()).chain(region.holes.iter().map(|h| h.len()));
     for len in loops {
         let len = len as u32;
-        for k in 0..(m as u32 - 1) {
-            let o = k * n;
+        for k in 0..segs as u32 {
+            let (o, o2) = (k * n, ((k + 1) % m as u32) * n);
             for i in 0..len {
-                let (a, b) = (start + i + o, start + (i + 1) % len + o);
-                mesh.triangles.push([a, b, b + n]);
-                mesh.triangles.push([a, b + n, a + n]);
+                let (i0, i1) = (start + i, start + (i + 1) % len);
+                mesh.triangles.push([i0 + o, i1 + o, i1 + o2]);
+                mesh.triangles.push([i0 + o, i1 + o2, i0 + o2]);
             }
         }
         start += len;
     }
-    let last = (m as u32 - 1) * n;
-    for t in &caps {
-        let [a, b, c] = t.map(|i| i as u32);
-        mesh.triangles.push([a, c, b]);
-        mesh.triangles.push([a + last, b + last, c + last]);
+    if !closed {
+        let last = (m as u32 - 1) * n;
+        for t in &caps {
+            let [a, b, c] = t.map(|i| i as u32);
+            mesh.triangles.push([a, c, b]);
+            mesh.triangles.push([a + last, b + last, c + last]);
+        }
     }
     if mesh.volume() < 0.0 {
         mesh.flip();
@@ -986,6 +1026,35 @@ pub fn face_seed_distance(mesh: &Mesh, plane: &Plane, seed: DVec3) -> Option<f64
         best = Some(best.map_or(d, |x: f64| x.min(d)));
     }
     best
+}
+
+/// Where a picked face is now. A face is stored by its plane and a picked point; when an earlier step changes (the box grows
+/// taller) the face moves along its normal and is no longer on the stored plane. Then the face with the same outward normal
+/// that lies under or over the picked point, nearest along the normal, is taken: the returned plane is the stored one moved
+/// there. `None` when the stored plane still holds the face or no such face exists.
+pub fn follow_face(meshes: &[&Mesh], plane: &Plane, seed: DVec3) -> Option<Plane> {
+    let (n, o) = (plane.normal(), plane.o());
+    if meshes.iter().any(|m| face_seed_distance(m, plane, seed).is_some_and(|d| d < 1e-6)) {
+        return None;
+    }
+    let s = seed - n * (seed - o).dot(n);
+    let mut best: Option<f64> = None;
+    for m in meshes {
+        for t in &m.triangles {
+            let [a, b, c] = m.tri(t);
+            if (b - a).cross(c - a).normalize_or_zero().dot(n) <= 0.9999 {
+                continue;
+            }
+            let h = (a - o).dot(n);
+            let q = s + n * h;
+            let inside = [(a, b), (b, c), (c, a)].iter().all(|(p, r)| (*r - *p).cross(q - *p).dot(n) > -1e-6);
+            if inside && best.is_none_or(|x| h.abs() < x.abs()) {
+                best = Some(h);
+            }
+        }
+    }
+    let h = best?;
+    Some(Plane { origin: (plane.o() + n * h).to_array(), ..*plane })
 }
 
 /// The index of the body whose face on `plane` the point `seed` was picked on (the nearest one when it lies on none).
